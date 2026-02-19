@@ -1,0 +1,152 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
+import { ensureApiAuth } from '@/lib/api-auth';
+import { inferCategory, inferDealType, normalizeIntent, normalizePhone, ORIGINS } from '@/lib/domain';
+import { resolvePipelineAndStages } from '@/lib/deals';
+import { prisma } from '@/lib/prisma';
+
+function dayBucket(value: Date): Date {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+}
+
+export async function GET(req: NextRequest) {
+  const denied = ensureApiAuth(req);
+  if (denied) return denied;
+
+  const mode = req.nextUrl.searchParams.get('mode');
+  if (mode !== 'list') {
+    return NextResponse.json({ error: 'Modo inválido' }, { status: 400 });
+  }
+
+  const items = await prisma.lead.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 150,
+    select: {
+      id: true,
+      source: true,
+      name: true,
+      email: true,
+      phone: true,
+      interest: true,
+      stage: true,
+      createdAt: true,
+    },
+  });
+
+  return NextResponse.json({ items });
+}
+
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const name = String(body.name || '').trim();
+  const email = body.email ? String(body.email).trim().toLowerCase() : null;
+  const phone = normalizePhone(body.phone ? String(body.phone) : null) || null;
+  const rawAssunto = String(body.assunto || body.interest || '').trim();
+
+  if (!name || (!email && !phone)) {
+    return NextResponse.json({ error: 'name e contato são obrigatórios' }, { status: 422 });
+  }
+
+  const intent = normalizeIntent(String(body.intent || rawAssunto));
+  const category = body.category ? String(body.category).toUpperCase() : inferCategory(intent);
+  const dealType = inferDealType(category);
+  const source = String(body.src || ORIGINS.SITE_FORM).toUpperCase();
+  const now = new Date();
+  const bucket = dayBucket(now);
+
+  const dedupeBase = `${email || ''}|${phone || ''}|${intent}`;
+  const pipelineType = category === 'RECORRENTE' ? 'hospedagem' : 'avulsos';
+
+  try {
+    const pipeline = await resolvePipelineAndStages(pipelineType);
+    const firstStage = pipeline.stages[0];
+
+    const result = await prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.create({
+        data: {
+          source: 'site_form',
+          sourceRef: source,
+          name,
+          email,
+          phone,
+          interest: rawAssunto || intent,
+          payload: body,
+          stage: 'NOVO',
+        },
+      });
+
+      await tx.leadDedupeKey.create({
+        data: {
+          source,
+          dedupeKey: dedupeBase,
+          leadId: lead.id,
+          dayBucket: bucket,
+        },
+      });
+
+      const stagePosition = await tx.deal.count({
+        where: {
+          pipelineId: pipeline.id,
+          stageId: firstStage.id,
+          lifecycleStatus: { not: 'CLIENT' },
+        },
+      });
+
+      const deal = await tx.deal.create({
+        data: {
+          pipelineId: pipeline.id,
+          stageId: firstStage.id,
+          leadId: lead.id,
+          title: `${name} - ${rawAssunto || intent}`,
+          contactName: name,
+          contactEmail: email,
+          contactPhone: phone,
+          dealType,
+          category,
+          intent,
+          origin: source,
+          planCode: intent.startsWith('hospedagem_') ? intent.replace('hospedagem_', '') : null,
+          productCode: intent.startsWith('hospedagem_') ? null : intent,
+          positionIndex: stagePosition,
+          lifecycleStatus: 'OPEN',
+          isClosed: false,
+          metadata: body,
+        },
+      });
+
+      await tx.dealStageHistory.create({
+        data: {
+          dealId: deal.id,
+          fromStageId: null,
+          toStageId: firstStage.id,
+          changedBy: 'SYSTEM',
+          reason: 'Lead recebido do formulário do site',
+        },
+      });
+
+      await tx.crmContactEvent.create({
+        data: {
+          leadId: lead.id,
+          channel: 'WEB_FORM',
+          direction: 'INBOUND',
+          message: 'Lead recebido via formulário do site',
+          metadata: body,
+        },
+      });
+
+      return { lead, deal };
+    });
+
+    return NextResponse.json({ ok: true, leadId: result.lead.id, dealId: result.deal.id }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const existing = await prisma.leadDedupeKey.findFirst({
+        where: { source, dedupeKey: dedupeBase, dayBucket: bucket },
+        orderBy: { createdAt: 'desc' },
+      });
+      return NextResponse.json({ ok: true, idempotent: true, leadId: existing?.leadId || null });
+    }
+
+    return NextResponse.json({ error: 'Falha ao ingerir lead', details: String(error) }, { status: 500 });
+  }
+}

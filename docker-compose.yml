@@ -1,0 +1,97 @@
+name: projero-area-cliente
+
+services:
+  ac_web_cliente:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: ac_web_cliente
+    working_dir: /var/www
+    volumes:
+      - ./:/var/www
+    environment:
+      APP_CONTEXT: cliente
+    depends_on:
+      - ac_postgres
+      - ac_redis
+    restart: unless-stopped
+
+  ac_nginx_cliente:
+    image: nginx:alpine
+    container_name: ac_nginx_cliente
+    ports:
+      - "8081:80"
+    volumes:
+      - ./:/var/www
+      - ./nginx/cliente.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - ac_web_cliente
+    restart: unless-stopped
+
+  ac_crm_next:
+    build:
+      context: .
+      dockerfile: docker/crm-next/Dockerfile
+    container_name: ac_crm_next
+    ports:
+      - "8082:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://ac_user:ac_pass@ac_postgres:5432/ac_db?schema=public
+      CRM_ADMIN_EMAIL: admin@koddahub.local
+      CRM_ADMIN_PASSWORD: admin123
+      CRM_ADMIN_SESSION_TOKEN: koddahub-crm-v2-session
+    depends_on:
+      - ac_postgres
+    labels:
+      icon: https://koddahub.com.br/assets/logo/koddahub-logo-v2.png
+    restart: unless-stopped
+
+  ac_postgres:
+    image: postgres:16
+    container_name: ac_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ac_db
+      POSTGRES_USER: ac_user
+      POSTGRES_PASSWORD: ac_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./storage/postgres:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+
+  ac_redis:
+    image: redis:7-alpine
+    container_name: ac_redis
+    ports:
+      - "6381:6379"
+    restart: unless-stopped
+
+  ac_worker:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: ac_worker
+    working_dir: /var/www
+    volumes:
+      - ./:/var/www
+    command: ["php", "worker/worker.php"]
+    depends_on:
+      - ac_postgres
+      - ac_redis
+    labels:
+      icon: https://koddahub.com.br/assets/logo/koddahub-logo-v2.png
+    restart: unless-stopped
+
+x-casaos:
+  author: self
+  category: self
+  hostname: koddacrm.koddahub.com.br
+  icon: https://koddahub.com.br/assets/logo/koddahub-logo-v2.png
+  index: /
+  is_uncontrolled: false
+  port_map: ""
+  scheme: https
+  title:
+    custom: KoddaCRM V2
