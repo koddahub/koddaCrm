@@ -119,6 +119,8 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<DealData | null>(null);
   const [tab, setTab] = useState('resumo');
+  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
+  const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
 
   const [activityForm, setActivityForm] = useState({ activityType: 'NOTE', content: '' });
   const [agendaForm, setAgendaForm] = useState({ title: '', description: '', dueAt: '' });
@@ -253,8 +255,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         .filter(Boolean),
     };
 
-    const res = await fetch(`/api/deals/${dealId}/proposals/generate`, {
-      method: 'POST',
+    const isEditing = Boolean(editingProposalId);
+    const endpoint = isEditing
+      ? `/api/deals/${dealId}/proposals/${editingProposalId}`
+      : `/api/deals/${dealId}/proposals/generate`;
+
+    const res = await fetch(endpoint, {
+      method: isEditing ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
@@ -263,7 +270,8 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setNotice(body.error || 'Falha ao gerar proposta');
       return;
     }
-    setNotice('Proposta gerada com PDF anexável.');
+    setEditingProposalId(null);
+    setNotice(isEditing ? 'Proposta atualizada com sucesso.' : 'Proposta gerada com PDF anexável.');
     await loadDeal();
   }
 
@@ -279,6 +287,42 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setNotice('Proposta enviada para fila de e-mail.');
+    await loadDeal();
+  }
+
+  function startEditProposal(proposal: DealData['proposals'][number]) {
+    const snapshot = (proposal as unknown as { snapshot?: Record<string, unknown> }).snapshot || {};
+    const features = Array.isArray(snapshot.features) ? snapshot.features.map((item) => String(item)) : [];
+
+    setEditingProposalId(proposal.id);
+    setProposalForm({
+      title: proposal.title || 'Proposta comercial KoddaHub',
+      scope: (proposal as unknown as { scope?: string | null }).scope || '',
+      proposalType: String(snapshot.proposalType || (data?.deal.dealType === 'HOSPEDAGEM' ? 'hospedagem' : 'personalizado')),
+      planCode: String(snapshot.planCode || data?.deal.planCode || 'basic'),
+      projectType: String(snapshot.projectType || data?.deal.productCode || data?.deal.intent || 'Institucional'),
+      paymentCondition: String(snapshot.paymentCondition || 'avista'),
+      baseValue: '',
+      features: features.join(', '),
+      notes: String(snapshot.notes || ''),
+    });
+    setTab('proposta');
+    setNotice('Modo edição de proposta habilitado.');
+  }
+
+  async function deleteProposal() {
+    if (!deletingProposalId) return;
+    const res = await fetch(`/api/deals/${dealId}/proposals/${deletingProposalId}`, { method: 'DELETE' });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao excluir proposta');
+      return;
+    }
+    setDeletingProposalId(null);
+    if (editingProposalId === deletingProposalId) {
+      setEditingProposalId(null);
+    }
+    setNotice('Proposta excluída com sucesso.');
     await loadDeal();
   }
 
@@ -361,7 +405,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       ) : null}
 
       {tab === 'proposta' ? (
-        <div className="deal-tab-panel">
+        <div className="deal-tab-panel proposal-tab-panel">
           <form className="stack-form" onSubmit={generateProposal}>
             <label>Título</label>
             <input value={proposalForm.title} onChange={(e) => setProposalForm((p) => ({ ...p, title: e.target.value }))} required />
@@ -400,7 +444,30 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
             <label>Observações</label>
             <textarea value={proposalForm.notes} onChange={(e) => setProposalForm((p) => ({ ...p, notes: e.target.value }))} />
 
-            <button type="submit" className="primary-btn">Gerar proposta com PDF</button>
+            <div className="proposal-form-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="submit" className="primary-btn">
+                {editingProposalId ? 'Salvar edição da proposta' : 'Gerar proposta com PDF'}
+              </button>
+              {editingProposalId ? (
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => {
+                    setEditingProposalId(null);
+                    setProposalForm((prev) => ({
+                      ...prev,
+                      title: 'Proposta comercial KoddaHub',
+                      scope: '',
+                      notes: '',
+                      baseValue: '',
+                      features: '',
+                    }));
+                  }}
+                >
+                  Cancelar edição
+                </button>
+              ) : null}
+            </div>
           </form>
 
           <div className="table-wrap" style={{ marginTop: 16 }}>
@@ -422,9 +489,25 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     <td>{currency(proposal.valueCents)}</td>
                     <td>{proposal.pdfPath ? 'Gerado' : '-'}</td>
                     <td>
-                      <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id)}>
-                        Enviar por e-mail
-                      </button>
+                      <div className="row-actions proposal-row-actions">
+                        <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id)}>
+                          Enviar por e-mail
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          onClick={() => window.open(`/api/deals/${dealId}/proposals/${proposal.id}/pdf`, '_blank')}
+                          disabled={!proposal.pdfPath}
+                        >
+                          Ver PDF
+                        </button>
+                        <button type="button" className="secondary-btn" onClick={() => startEditProposal(proposal)}>
+                          Editar
+                        </button>
+                        <button type="button" className="danger-btn" onClick={() => setDeletingProposalId(proposal.id)}>
+                          Excluir
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -638,6 +721,34 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+
+      {deletingProposalId ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar exclusão da proposta">
+          <div className="crm-v2-modal-backdrop" onClick={() => setDeletingProposalId(null)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Excluir proposta</h3>
+              <button type="button" onClick={() => setDeletingProposalId(null)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p style={{ marginTop: 4, color: '#334155' }}>
+              Tem certeza que deseja excluir esta proposta?
+            </p>
+            <p style={{ marginTop: 0, color: '#64748b', fontSize: '0.92rem' }}>
+              O PDF vinculado também será removido.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setDeletingProposalId(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="danger-btn" onClick={deleteProposal}>
+                Excluir proposta
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

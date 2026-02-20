@@ -919,6 +919,18 @@ td {
   border-radius: 8px;
   background: #f8fafc;
   min-width: 32px;
+  cursor: pointer;
+}
+
+.row-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.row-actions .danger-inline-btn {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(254, 226, 226, 0.9);
+  color: #b91c1c;
 }
 
 .deal-detail-wrapper {
@@ -1150,5 +1162,41 @@ td {
   .crm-v2-modal-content {
     width: calc(100vw - 8px);
     margin: 1vh auto;
+  }
+
+  /* Ajuste específico da aba Proposta (deal) no mobile */
+  .proposal-tab-panel {
+    overflow: hidden;
+  }
+
+  .proposal-tab-panel table {
+    table-layout: fixed;
+  }
+
+  .proposal-tab-panel th,
+  .proposal-tab-panel td {
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .proposal-tab-panel .proposal-form-actions {
+    display: grid !important;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .proposal-tab-panel .proposal-form-actions button {
+    width: 100%;
+  }
+
+  .proposal-tab-panel .proposal-row-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .proposal-tab-panel .proposal-row-actions button {
+    width: 100%;
   }
 }

@@ -1,1 +1,1 @@
-{"version":1,"functions":{"/api/deals/[id]/documents":{},"/api/deals/[id]/proposals/generate":{}}}
+{"version":1,"functions":{"/api/deals/[id]/documents":{},"/api/deals/[id]/proposals/[proposalId]/pdf":{},"/api/deals/[id]/proposals/[proposalId]":{},"/api/deals/[id]/proposals/generate":{}}}

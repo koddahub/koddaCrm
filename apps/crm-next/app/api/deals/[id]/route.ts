@@ -179,6 +179,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       if (typeof body.contactName === 'string') patch.contactName = body.contactName.trim();
       if (typeof body.contactEmail === 'string') patch.contactEmail = body.contactEmail.trim().toLowerCase();
       if (typeof body.contactPhone === 'string') patch.contactPhone = body.contactPhone.trim();
+      if (typeof body.intent === 'string') patch.intent = body.intent.trim();
       if (body.value !== undefined) patch.valueCents = toCentsFromInput(body.value);
 
       if (Object.keys(patch).length > 0) {
@@ -204,5 +205,46 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ ok: true, deal: result });
   } catch (error) {
     return NextResponse.json({ error: 'Falha ao atualizar deal', details: String(error) }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+  const denied = ensureApiAuth(req);
+  if (denied) return denied;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const deal = await tx.deal.findUnique({
+        where: { id: params.id },
+        select: { id: true, leadId: true },
+      });
+
+      if (!deal) {
+        throw new Error('Deal não encontrado');
+      }
+
+      await tx.dealStageHistory.deleteMany({ where: { dealId: deal.id } });
+      await tx.dealOperation.deleteMany({ where: { dealId: deal.id } });
+      await tx.dealDocument.deleteMany({ where: { dealId: deal.id } });
+      await tx.dealActivity.deleteMany({ where: { dealId: deal.id } });
+      await tx.dealAgenda.deleteMany({ where: { dealId: deal.id } });
+      await tx.dealProposal.deleteMany({ where: { dealId: deal.id } });
+      await tx.financialEntry.deleteMany({ where: { dealId: deal.id } });
+      await tx.collectionAction.deleteMany({ where: { dealId: deal.id } });
+
+      await tx.deal.delete({ where: { id: deal.id } });
+
+      if (deal.leadId) {
+        const remainingDeals = await tx.deal.count({ where: { leadId: deal.leadId } });
+        if (remainingDeals === 0) {
+          await tx.leadDedupeKey.deleteMany({ where: { leadId: deal.leadId } });
+          await tx.lead.deleteMany({ where: { id: deal.leadId } });
+        }
+      }
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: 'Falha ao excluir deal', details: String(error) }, { status: 500 });
   }
 }

@@ -86,6 +86,21 @@ type ClienteItem = {
   updatedAt: string;
 };
 
+type EditDealForm = {
+  id: string;
+  title: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  intent: string;
+  value: string;
+};
+
+type DeleteTarget = {
+  id: string;
+  label: string;
+} | null;
+
 type FinanceOverview = {
   mrr: number;
   recebidosMes: number;
@@ -204,6 +219,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
   const [leadForm, setLeadForm] = useState({
     name: '',
     email: '',
@@ -212,6 +230,15 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     productCode: 'site_institucional',
     value: '',
     intent: '',
+  });
+  const [editForm, setEditForm] = useState<EditDealForm>({
+    id: '',
+    title: '',
+    contactName: '',
+    contactEmail: '',
+    contactPhone: '',
+    intent: '',
+    value: '',
   });
 
   const [financialForm, setFinancialForm] = useState({
@@ -345,6 +372,20 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     if (pipelineType) await loadPipeline(pipelineType);
   }
 
+  async function moveToAdjacentStage(dealIdValue: string, currentStageId: string, direction: 'prev' | 'next') {
+    const stages = pipelineData?.stages || [];
+    const currentIndex = stages.findIndex((item) => item.id === currentStageId);
+    if (currentIndex < 0) return;
+
+    const targetIndex = direction === 'prev' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= stages.length) {
+      setNotice(direction === 'prev' ? 'Este lead já está no primeiro estágio.' : 'Este lead já está no último estágio.');
+      return;
+    }
+
+    await updateStage(dealIdValue, stages[targetIndex].id);
+  }
+
   async function reorderDeal(dealIdValue: string, stageId: string, positionIndex: number) {
     const res = await fetch(`/api/deals/${dealIdValue}/reorder`, {
       method: 'PATCH',
@@ -356,6 +397,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
       setNotice(data.error || 'Falha ao reordenar linha');
       return;
     }
+    setNotice('Linha reordenada com sucesso.');
     if (pipelineType) await loadPipeline(pipelineType);
   }
 
@@ -434,6 +476,80 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     }
     setNotice('Ação de cobrança registrada.');
     setCollectionForm((prev) => ({ ...prev, notes: '', outcome: '' }));
+  }
+
+  function openEditDeal(data: {
+    id: string;
+    title?: string | null;
+    contactName?: string | null;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+    intent?: string | null;
+    valueCents?: number | null;
+  }) {
+    setEditForm({
+      id: data.id,
+      title: data.title || '',
+      contactName: data.contactName || '',
+      contactEmail: data.contactEmail || '',
+      contactPhone: data.contactPhone || '',
+      intent: data.intent || '',
+      value: data.valueCents !== null && data.valueCents !== undefined ? String(data.valueCents / 100) : '',
+    });
+    setShowEditModal(true);
+  }
+
+  async function submitEditDeal(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editForm.id) return;
+
+    setLoading(true);
+    const res = await fetch(`/api/deals/${editForm.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: editForm.title,
+        contactName: editForm.contactName,
+        contactEmail: editForm.contactEmail,
+        contactPhone: editForm.contactPhone,
+        intent: editForm.intent,
+        value: editForm.value,
+      }),
+    });
+    const data = await res.json();
+    setLoading(false);
+
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao editar registro');
+      return;
+    }
+
+    setShowEditModal(false);
+    setNotice('Registro atualizado com sucesso.');
+    await reloadSection();
+  }
+
+  function openDeleteDealModal(dealIdValue: string, label: string) {
+    setDeleteTarget({ id: dealIdValue, label });
+    setShowDeleteModal(true);
+  }
+
+  async function confirmDeleteDeal() {
+    if (!deleteTarget?.id) return;
+    setLoading(true);
+    const res = await fetch(`/api/deals/${deleteTarget.id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    setLoading(false);
+
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao excluir registro');
+      return;
+    }
+
+    setShowDeleteModal(false);
+    setDeleteTarget(null);
+    setNotice('Registro excluído com sucesso.');
+    await reloadSection();
   }
 
   const activeMenu = MENU_ITEMS.find((item) => pathname.startsWith(item.href))?.key || (section === 'deal' ? 'clientes' : section);
@@ -592,11 +708,44 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                                   <option key={st.id} value={st.id}>{st.name}</option>
                                 ))}
                               </select>
-                              <button type="button" onClick={() => reorderDeal(row.id, stage.id, Math.max(index - 1, 0))}>
+                              <button
+                                type="button"
+                                onClick={() => moveToAdjacentStage(row.id, stage.id, 'prev')}
+                              >
                                 <i className="bi bi-arrow-up" aria-hidden="true" />
                               </button>
-                              <button type="button" onClick={() => reorderDeal(row.id, stage.id, index + 1)}>
+                              <button
+                                type="button"
+                                onClick={() => moveToAdjacentStage(row.id, stage.id, 'next')}
+                              >
                                 <i className="bi bi-arrow-down" aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Editar lead"
+                                title="Editar"
+                                onClick={() =>
+                                  openEditDeal({
+                                    id: row.id,
+                                    title: row.title,
+                                    contactName: row.contactName,
+                                    contactEmail: row.contactEmail,
+                                    contactPhone: row.contactPhone,
+                                    intent: row.intent,
+                                    valueCents: row.valueCents,
+                                  })
+                                }
+                              >
+                                <i className="bi bi-pencil-square" aria-hidden="true" />
+                              </button>
+                              <button
+                                type="button"
+                                className="danger-inline-btn"
+                                aria-label="Excluir lead"
+                                title="Excluir"
+                                onClick={() => openDeleteDealModal(row.id, row.contactName || row.title)}
+                              >
+                                <i className="bi bi-trash3" aria-hidden="true" />
                               </button>
                             </div>
                           </td>
@@ -623,6 +772,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                     <th>Plano/Produto</th>
                     <th>Valor</th>
                     <th>Atualizado</th>
+                    <th>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -634,6 +784,35 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       <td>{item.planCode || item.productCode || '-'}</td>
                       <td>{currency(item.valueCents)}</td>
                       <td>{dateTime(item.updatedAt)}</td>
+                      <td>
+                        <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            aria-label="Editar cliente"
+                            title="Editar"
+                            onClick={() =>
+                              openEditDeal({
+                                id: item.id,
+                                title: item.title,
+                                contactName: item.contactName,
+                                contactEmail: item.contactEmail,
+                                valueCents: item.valueCents,
+                              })
+                            }
+                          >
+                            <i className="bi bi-pencil-square" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-inline-btn"
+                            aria-label="Excluir cliente"
+                            title="Excluir"
+                            onClick={() => openDeleteDealModal(item.id, item.contactName || item.title)}
+                          >
+                            <i className="bi bi-trash3" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -880,6 +1059,65 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                 {loading ? 'Salvando...' : 'Salvar lead'}
               </button>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {showEditModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Editar registro">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowEditModal(false)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Editar lead/cliente</h3>
+              <button type="button" onClick={() => setShowEditModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <form className="stack-form" onSubmit={submitEditDeal}>
+              <label>Título</label>
+              <input required value={editForm.title} onChange={(e) => setEditForm((p) => ({ ...p, title: e.target.value }))} />
+              <label>Nome do contato</label>
+              <input value={editForm.contactName} onChange={(e) => setEditForm((p) => ({ ...p, contactName: e.target.value }))} />
+              <label>E-mail</label>
+              <input type="email" value={editForm.contactEmail} onChange={(e) => setEditForm((p) => ({ ...p, contactEmail: e.target.value }))} />
+              <label>Telefone</label>
+              <input value={editForm.contactPhone} onChange={(e) => setEditForm((p) => ({ ...p, contactPhone: e.target.value }))} />
+              <label>Interesse</label>
+              <input value={editForm.intent} onChange={(e) => setEditForm((p) => ({ ...p, intent: e.target.value }))} />
+              <label>Valor (R$)</label>
+              <input type="number" min="0" step="0.01" value={editForm.value} onChange={(e) => setEditForm((p) => ({ ...p, value: e.target.value }))} />
+              <button type="submit" className="primary-btn" disabled={loading}>
+                {loading ? 'Salvando...' : 'Salvar alterações'}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {showDeleteModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar exclusão">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowDeleteModal(false)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Confirmar exclusão</h3>
+              <button type="button" onClick={() => setShowDeleteModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p style={{ marginTop: 4, color: '#334155' }}>
+              Deseja excluir <strong>{deleteTarget?.label || 'este registro'}</strong>?
+            </p>
+            <p style={{ marginTop: 0, color: '#64748b', fontSize: '0.92rem' }}>
+              Esta ação não pode ser desfeita.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setShowDeleteModal(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="danger-btn" onClick={confirmDeleteDeal} disabled={loading}>
+                {loading ? 'Excluindo...' : 'Excluir'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
