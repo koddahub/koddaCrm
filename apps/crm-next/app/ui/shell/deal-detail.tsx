@@ -105,6 +105,92 @@ type DealData = {
   }[];
 };
 
+type OperationFlowData = {
+  deal: {
+    id: string;
+    dealType: string;
+    lifecycleStatus: string;
+    organizationId: string | null;
+    organizationName: string | null;
+    organizationDomain: string | null;
+    billingEmail: string | null;
+  };
+  operation: {
+    activeStageCode: string | null;
+    history: {
+      id: string;
+      operationType: string;
+      stageCode: string;
+      stageName: string;
+      stageOrder: number;
+      status: string;
+      startedAt: string;
+      completedAt: string | null;
+    }[];
+  };
+  prompt: {
+    latest: {
+      id: string;
+      version: number;
+      promptText: string;
+      promptJson: unknown;
+      status: string;
+      requestedNotes: string | null;
+      createdAt: string;
+      updatedAt: string;
+    } | null;
+  };
+  template: {
+    latest: {
+      id: string;
+      version: number;
+      projectPath: string;
+      entryFile: string;
+      previewUrl: string | null;
+      sourceHash: string | null;
+      status: string;
+      createdAt: string;
+      updatedAt: string;
+    } | null;
+    revisions: Array<{
+      id: string;
+      version: number;
+      projectPath: string;
+      entryFile: string;
+      previewUrl: string | null;
+      sourceHash: string | null;
+      status: string;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    vscode: {
+      deepLink: string;
+      webLink: string | null;
+    } | null;
+  };
+  approval: {
+    latest: {
+      id: string;
+      status: string;
+      expiresAt: string;
+      clientNote: string | null;
+      actedAt: string | null;
+      templateRevisionId: string;
+    } | null;
+  };
+  publication: {
+    checks: Array<{
+      id: string;
+      targetDomain: string | null;
+      expectedHash: string | null;
+      lastLiveHash: string | null;
+      lastHttpStatus: number | null;
+      matches: boolean;
+      checkedAt: string;
+    }>;
+  };
+};
+
 function currency(cents: number | null | undefined) {
   if (cents === null || cents === undefined) return 'R$ 0,00';
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cents / 100);
@@ -121,6 +207,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [tab, setTab] = useState('resumo');
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
+  const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
+  const [prePromptForm, setPrePromptForm] = useState({ promptText: '', notes: '' });
+  const [templateForm, setTemplateForm] = useState({ entryFile: 'index.html', sourceHash: '', status: 'GENERATED' });
+  const [approvalSending, setApprovalSending] = useState(false);
 
   const [activityForm, setActivityForm] = useState({ activityType: 'NOTE', content: '' });
   const [agendaForm, setAgendaForm] = useState({ title: '', description: '', dueAt: '' });
@@ -157,11 +247,34 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     if (body.deal?.dealType === 'PROJETO_AVULSO') {
       setProposalForm((prev) => ({ ...prev, proposalType: 'personalizado' }));
     }
+
+    if (body.deal?.lifecycleStatus === 'CLIENT') {
+      await loadOperationFlow();
+    }
+  }
+
+  async function loadOperationFlow() {
+    const res = await fetch(`/api/deals/${dealId}/operation-flow`);
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao carregar fluxo de operação');
+      return;
+    }
+    setOperationFlow(body);
+    if (body.prompt?.latest?.promptText) {
+      setPrePromptForm((prev) => ({ ...prev, promptText: body.prompt.latest.promptText }));
+    }
   }
 
   useEffect(() => {
     loadDeal();
   }, [dealId]);
+
+  useEffect(() => {
+    if (tab === 'operacao' && canShowClientTabs) {
+      loadOperationFlow();
+    }
+  }, [tab, canShowClientTabs]);
 
   async function changeDealStage(stageId: string) {
     const res = await fetch(`/api/deals/${dealId}/stage`, {
@@ -190,6 +303,85 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setNotice('Etapa operacional atualizada.');
+    await loadDeal();
+  }
+
+  async function requestPrePromptInfo() {
+    if (!prePromptForm.notes.trim()) {
+      setNotice('Descreva quais informações adicionais precisam ser enviadas pelo cliente.');
+      return;
+    }
+
+    const res = await fetch(`/api/deals/${dealId}/preprompt/request-info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: prePromptForm.notes }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao solicitar informações adicionais');
+      return;
+    }
+    setNotice('Solicitação enviada por e-mail ao cliente.');
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
+  async function approvePrePrompt() {
+    if (!prePromptForm.promptText.trim()) {
+      setNotice('Preencha/ajuste o texto do pré-prompt antes de aprovar.');
+      return;
+    }
+    const res = await fetch(`/api/deals/${dealId}/preprompt/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ promptText: prePromptForm.promptText }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao aprovar pré-prompt');
+      return;
+    }
+    setNotice('Pré-prompt aprovado. Pasta do projeto preparada para gerar o Template V1.');
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
+  async function createTemplateRevision() {
+    const res = await fetch(`/api/deals/${dealId}/template/generate-record`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entryFile: templateForm.entryFile,
+        sourceHash: templateForm.sourceHash || null,
+        status: templateForm.status,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao registrar revisão de template');
+      return;
+    }
+    setNotice('Revisão de template registrada com preview.');
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
+  async function sendTemplateForApproval(templateRevisionId?: string) {
+    setApprovalSending(true);
+    const res = await fetch(`/api/deals/${dealId}/template/send-approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ templateRevisionId: templateRevisionId || null }),
+    });
+    const body = await res.json();
+    setApprovalSending(false);
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao enviar link de aprovação');
+      return;
+    }
+    setNotice('Link de aprovação enviado para o cliente.');
+    await loadOperationFlow();
     await loadDeal();
   }
 
@@ -336,12 +528,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
   const operationOptions = data.deal.dealType === 'HOSPEDAGEM'
     ? [
-        { code: 'boas_vindas', label: 'Boas-vindas' },
-        { code: 'briefing', label: 'Briefing' },
-        { code: 'producao', label: 'Produção' },
-        { code: 'revisao', label: 'Revisão' },
+        { code: 'briefing_pendente', label: 'Briefing pendente' },
+        { code: 'pre_prompt', label: 'Pré-prompt' },
+        { code: 'template_v1', label: 'Template V1' },
+        { code: 'ajustes', label: 'Ajustes' },
+        { code: 'aprovacao_cliente', label: 'Aprovação do cliente' },
+        { code: 'publicacao', label: 'Publicação' },
         { code: 'publicado', label: 'Publicado' },
-        { code: 'pos_entrega', label: 'Pós-entrega' },
       ]
     : [
         { code: 'kickoff', label: 'Kickoff' },
@@ -519,10 +712,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {tab === 'operacao' && canShowClientTabs ? (
         <div className="deal-tab-panel">
-          <div className="stack-form">
-            <label>Avançar operação</label>
+          <div className="stack-form operation-inline-control">
+            <label>Etapa operacional</label>
             <select onChange={(e) => e.target.value && advanceOperation(e.target.value)} defaultValue="">
-              <option value="" disabled>Selecione etapa operacional</option>
+              <option value="" disabled>Mover operação para...</option>
               {operationOptions.map((op) => (
                 <option key={op.code} value={op.code}>{op.label}</option>
               ))}
@@ -553,6 +746,163 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               </tbody>
             </table>
           </div>
+
+          {data.deal.dealType === 'HOSPEDAGEM' ? (
+            <div className="operation-flow-blocks">
+              <section className="operation-card">
+                <h4>Pré-prompt</h4>
+                <p className="muted">Edite o prompt base, solicite informações adicionais por e-mail e aprove para gerar o Template V1.</p>
+                <label>Prompt</label>
+                <textarea
+                  rows={8}
+                  value={prePromptForm.promptText}
+                  onChange={(e) => setPrePromptForm((prev) => ({ ...prev, promptText: e.target.value }))}
+                  placeholder="Prompt para geração do site institucional..."
+                />
+                <label>Solicitação adicional ao cliente (e-mail)</label>
+                <textarea
+                  rows={3}
+                  value={prePromptForm.notes}
+                  onChange={(e) => setPrePromptForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Descreva quais informações faltam para seguir..."
+                />
+                <div className="operation-actions">
+                  <button type="button" className="secondary-btn" onClick={requestPrePromptInfo}>Solicitar informações</button>
+                  <button type="button" className="primary-btn" onClick={approvePrePrompt}>Aprovar pré-prompt</button>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(prePromptForm.promptText || '');
+                        setNotice('Prompt copiado para a área de transferência.');
+                      } catch {
+                        setNotice('Não foi possível copiar automaticamente. Copie manualmente o texto.');
+                      }
+                    }}
+                  >
+                    Copiar prompt
+                  </button>
+                </div>
+                {operationFlow?.prompt?.latest ? (
+                  <small className="muted">
+                    Última revisão: v{operationFlow.prompt.latest.version} ({operationFlow.prompt.latest.status}) em {dateTime(operationFlow.prompt.latest.updatedAt)}
+                  </small>
+                ) : null}
+              </section>
+
+              <section className="operation-card">
+                <h4>Template V1 / Ajustes</h4>
+                <p className="muted">Registre revisões, abra a pasta no VS Code e acompanhe o preview temporário.</p>
+                <div className="template-form-grid">
+                  <div>
+                    <label>Arquivo de entrada</label>
+                    <input value={templateForm.entryFile} onChange={(e) => setTemplateForm((prev) => ({ ...prev, entryFile: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label>Hash da revisão (opcional)</label>
+                    <input value={templateForm.sourceHash} onChange={(e) => setTemplateForm((prev) => ({ ...prev, sourceHash: e.target.value }))} placeholder="sha256..." />
+                  </div>
+                  <div>
+                    <label>Status da revisão</label>
+                    <select value={templateForm.status} onChange={(e) => setTemplateForm((prev) => ({ ...prev, status: e.target.value }))}>
+                      <option value="GENERATED">Gerado</option>
+                      <option value="IN_ADJUSTMENT">Em ajustes</option>
+                      <option value="APPROVED_INTERNAL">Aprovado internamente</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="operation-actions">
+                  <button type="button" className="primary-btn" onClick={createTemplateRevision}>Registrar revisão</button>
+                  {operationFlow?.template?.vscode?.deepLink ? (
+                    <a className="secondary-btn link-btn" href={operationFlow.template.vscode.deepLink}>Abrir VS Code (SSH)</a>
+                  ) : null}
+                  {operationFlow?.template?.vscode?.webLink ? (
+                    <a className="secondary-btn link-btn" href={operationFlow.template.vscode.webLink} target="_blank" rel="noreferrer">Abrir VS Code Web</a>
+                  ) : null}
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Versão</th>
+                        <th>Status</th>
+                        <th>Preview</th>
+                        <th>Hash</th>
+                        <th>Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(operationFlow?.template?.revisions || []).map((revision) => (
+                        <tr key={revision.id}>
+                          <td>v{revision.version}</td>
+                          <td>{revision.status}</td>
+                          <td>
+                            {revision.previewUrl ? (
+                              <a href={revision.previewUrl} target="_blank" rel="noreferrer">Abrir preview</a>
+                            ) : '-'}
+                          </td>
+                          <td>{revision.sourceHash ? `${revision.sourceHash.slice(0, 12)}...` : '-'}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() => sendTemplateForApproval(revision.id)}
+                              disabled={approvalSending}
+                            >
+                              Enviar para aprovação
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="operation-card">
+                <h4>Aprovação do cliente e publicação</h4>
+                <div className="operation-meta-grid">
+                  <div>
+                    <label>Status aprovação</label>
+                    <strong>{operationFlow?.approval?.latest?.status || 'Sem envio'}</strong>
+                  </div>
+                  <div>
+                    <label>Expira em</label>
+                    <strong>{dateTime(operationFlow?.approval?.latest?.expiresAt || null)}</strong>
+                  </div>
+                  <div>
+                    <label>Resposta do cliente</label>
+                    <strong>{operationFlow?.approval?.latest?.clientNote || '-'}</strong>
+                  </div>
+                </div>
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Domínio</th>
+                        <th>HTTP</th>
+                        <th>Match hash</th>
+                        <th>Check em</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(operationFlow?.publication?.checks || []).map((check) => (
+                        <tr key={check.id}>
+                          <td>{check.targetDomain || '-'}</td>
+                          <td>{check.lastHttpStatus ?? '-'}</td>
+                          <td>{check.matches ? 'Sim' : 'Não'}</td>
+                          <td>{dateTime(check.checkedAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

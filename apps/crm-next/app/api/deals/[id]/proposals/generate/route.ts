@@ -5,10 +5,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { buildProposalLines, buildProposalValueCents, renderSimpleProposalPdf } from '@/lib/proposals';
 import { prisma } from '@/lib/prisma';
+import { storageRelativePath, uploadsDir } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 
-const PROPOSALS_DIR = path.resolve(process.cwd(), '../../storage/uploads/proposals');
+const PROPOSALS_DIR = uploadsDir('proposals');
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const denied = ensureApiAuth(req);
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       },
       status: 'GERADA',
       valueCents,
-      pdfPath: `storage/uploads/proposals/${storedName}`,
+      pdfPath: storageRelativePath('proposals', storedName),
       createdBy: 'ADMIN',
     },
   });

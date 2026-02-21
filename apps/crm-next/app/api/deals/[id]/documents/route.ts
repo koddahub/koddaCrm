@@ -4,10 +4,11 @@ import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { prisma } from '@/lib/prisma';
+import { storageRelativePath, uploadsDir } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 
-const DEAL_UPLOAD_DIR = path.resolve(process.cwd(), '../../storage/uploads/deals');
+const DEAL_UPLOAD_DIR = uploadsDir('deals');
 
 function serializeDocument(doc: {
   id: string;
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     data: {
       dealId: params.id,
       fileName: safeName,
-      storagePath: `storage/uploads/deals/${storedFileName}`,
+      storagePath: storageRelativePath('deals', storedFileName),
       mimeType: file.type || null,
       sizeBytes: BigInt(bytes.byteLength),
       uploadedBy: 'ADMIN',

@@ -1021,6 +1021,87 @@ td {
   margin-top: 3px;
 }
 
+.operation-inline-control {
+  margin-bottom: 6px;
+}
+
+.operation-flow-blocks {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.operation-card {
+  border: 1px solid #dbe4ef;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.operation-card h4 {
+  margin: 0;
+}
+
+.operation-card .muted {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.operation-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.link-btn {
+  text-decoration: none;
+}
+
+.template-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.template-form-grid label {
+  display: block;
+  margin-bottom: 4px;
+  color: #334155;
+}
+
+.template-form-grid input,
+.template-form-grid select,
+.operation-card textarea {
+  width: 100%;
+}
+
+.operation-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.operation-meta-grid > div {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.operation-meta-grid label {
+  display: block;
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.operation-meta-grid strong {
+  display: block;
+  margin-top: 3px;
+}
+
 .crm-v2-modal {
   position: fixed;
   inset: 0;
@@ -1142,6 +1223,11 @@ td {
   }
 
   .deal-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .template-form-grid,
+  .operation-meta-grid {
     grid-template-columns: 1fr;
   }
 }

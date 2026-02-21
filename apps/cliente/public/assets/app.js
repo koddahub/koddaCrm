@@ -3,6 +3,15 @@
   const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
 
   const state = { step: 1, maxStep: 4 };
+  const csrfToken = document.body?.dataset?.csrfToken || '';
+
+  async function apiFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (csrfToken && !headers.has('X-CSRF-Token')) {
+      headers.set('X-CSRF-Token', csrfToken);
+    }
+    return fetch(url, { ...options, headers });
+  }
 
   function setNotice(message, type = 'err') {
     const notice = $('#authInlineNotice');
@@ -52,33 +61,6 @@
     if (submit) submit.classList.toggle('hidden', state.step !== state.maxStep);
   }
 
-  function luhnCheck(num) {
-    const digits = String(num || '').replace(/\D/g, '');
-    if (digits.length < 13) return false;
-    let sum = 0;
-    let shouldDouble = false;
-    for (let i = digits.length - 1; i >= 0; i--) {
-      let digit = parseInt(digits.charAt(i), 10);
-      if (shouldDouble) {
-        digit *= 2;
-        if (digit > 9) digit -= 9;
-      }
-      sum += digit;
-      shouldDouble = !shouldDouble;
-    }
-    return sum % 10 === 0;
-  }
-
-  function detectBrand(number) {
-    const n = String(number).replace(/\D/g, '');
-    if (/^4/.test(n)) return 'Visa';
-    if (/^5[1-5]/.test(n) || /^2(2[2-9]|[3-6]|7[01]|720)/.test(n)) return 'Mastercard';
-    if (/^3[47]/.test(n)) return 'Amex';
-    if (/^6(?:011|5)/.test(n)) return 'Discover';
-    if (/^5067|^4576|^4011/.test(n)) return 'Elo';
-    return 'Cartão';
-  }
-
   function validateStep(step) {
     const block = $(`.wizard-step[data-step='${step}']`);
     if (!block) return true;
@@ -106,62 +88,7 @@
       }
     }
 
-    if (step === 4) {
-      const method = $('input[name="payment_method"]:checked')?.value || 'CREDIT_CARD';
-      if (method === 'CREDIT_CARD') {
-        const card = $('#card_number')?.value || '';
-        const exp = $('#card_expiry')?.value || '';
-        const cvv = $('#card_cvv')?.value || '';
-
-        if (!luhnCheck(card)) {
-          setNotice('Número do cartão inválido.');
-          return false;
-        }
-        if (!/^\d{2}\/\d{2}$/.test(exp)) {
-          setNotice('Validade inválida. Use MM/AA.');
-          return false;
-        }
-        const [mm, yy] = exp.split('/').map((x) => parseInt(x, 10));
-        if (mm < 1 || mm > 12) {
-          setNotice('Mês de validade inválido.');
-          return false;
-        }
-        const now = new Date();
-        const curY = now.getFullYear() % 100;
-        const curM = now.getMonth() + 1;
-        if (yy < curY || (yy === curY && mm < curM)) {
-          setNotice('Cartão vencido.');
-          return false;
-        }
-        if (!/^\d{3,4}$/.test(cvv)) {
-          setNotice('CVV inválido.');
-          return false;
-        }
-      }
-    }
-
     return true;
-  }
-
-  function updateCardPreview() {
-    const number = $('#card_number')?.value || '';
-    const holder = $('#card_holder')?.value || 'Titular';
-    const exp = $('#card_expiry')?.value || 'MM/AA';
-
-    const last = String(number).replace(/\D/g, '').slice(-4).padStart(4, '•');
-    const brand = detectBrand(number);
-
-    $('#previewBrand') && ($('#previewBrand').textContent = brand);
-    $('#previewNumber') && ($('#previewNumber').textContent = `•••• •••• •••• ${last}`);
-    $('#previewHolder') && ($('#previewHolder').textContent = holder);
-    $('#previewExpiry') && ($('#previewExpiry').textContent = exp);
-
-    const valid = luhnCheck(number);
-    const chip = $('#cardValidChip');
-    if (chip) {
-      chip.textContent = valid ? 'Cartão válido' : 'Aguardando validação';
-      chip.className = `status-chip ${valid ? 'status-ok' : 'status-bad'}`;
-    }
   }
 
   async function loginSubmit(e) {
@@ -172,7 +99,7 @@
       return;
     }
     const body = Object.fromEntries(new FormData(e.target).entries());
-    const res = await fetch('/api/auth/login', {
+    const res = await apiFetch('/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     const data = await res.json();
@@ -193,17 +120,32 @@
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
 
-    const res = await fetch('/api/auth/register-contract', {
+    const res = await apiFetch('/api/auth/register-contract', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) {
       let message = data.error || 'Falha no cadastro';
+      if (data.gateway_message) {
+        message += ` (${data.gateway_message})`;
+      }
       if (data.details && typeof data.details === 'object') {
         const firstDetail = Object.values(data.details)[0];
         if (firstDetail) message = String(firstDetail);
       }
       setNotice(message);
+      return;
+    }
+    if (data.payment_redirect_url) {
+      setNotice('Cadastro concluído. Redirecionando para pagamento seguro...', 'ok');
+      const sid = encodeURIComponent(data.asaas_subscription_id || '');
+      const pay = encodeURIComponent(data.payment_redirect_url);
+      window.location.href = `/checkout/pending?sid=${sid}&pay=${pay}`;
+      return;
+    }
+    if (data.awaiting_payment && data.asaas_subscription_id) {
+      const sid = encodeURIComponent(data.asaas_subscription_id || '');
+      window.location.href = `/checkout/pending?sid=${sid}&pay=`;
       return;
     }
     location.href = `/portal/dashboard?new=1&subscription_id=${encodeURIComponent(data.subscription_id || '')}`;
@@ -226,7 +168,7 @@
       setNotice('Informe um e-mail para continuar com Google (modo demo).');
       return;
     }
-    const res = await fetch('/api/auth/google-demo', {
+    const res = await apiFetch('/api/auth/google-demo', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name })
     });
     const data = await res.json();
@@ -260,15 +202,6 @@
     $('#googleDemoCancel')?.addEventListener('click', () => toggleGoogleDemoPanel(false));
     $('#googleDemoSubmit')?.addEventListener('click', googleDemoSubmit);
 
-    ['#card_number', '#card_holder', '#card_expiry'].forEach((sel) => {
-      $(sel)?.addEventListener('input', updateCardPreview);
-    });
-
-    $$('.payment-method').forEach((r) => r.addEventListener('change', () => {
-      const isCard = $('input[name="payment_method"]:checked')?.value === 'CREDIT_CARD';
-      $('.card-fields')?.classList.toggle('hidden', !isCard);
-    }));
-
     const personType = $('#person_type');
     const trade = $('#trade_name_col');
     personType?.addEventListener('change', () => {
@@ -299,7 +232,6 @@
 
     setTab('login');
     setStep(1);
-    updateCardPreview();
   }
 
   function applyRealtimeValidation() {
@@ -325,7 +257,7 @@
       notice.classList.add(type);
     };
 
-    const validSections = new Set(['dashboard', 'chamados', 'pagamentos', 'planos', 'perfil']);
+    const validSections = new Set(['dashboard', 'chamados', 'pagamentos', 'operacao', 'planos', 'perfil']);
     const getHashSection = () => {
       const value = (window.location.hash || '#dashboard').replace('#', '').trim();
       return validSections.has(value) ? value : 'dashboard';
@@ -377,7 +309,7 @@
     ticketForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(ticketForm).entries());
-      const r = await fetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const r = await apiFetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json();
       if (!r.ok) {
         setPortalNotice(d.error || 'Erro ao abrir chamado', 'err');
@@ -391,7 +323,7 @@
     planForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(planForm).entries());
-      const r = await fetch('/api/billing/subscriptions/' + encodeURIComponent(body.asaas_subscription_id) + '/change-plan', {
+      const r = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(body.asaas_subscription_id) + '/change-plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       const d = await r.json();
@@ -402,27 +334,31 @@
       setPortalNotice('Solicitação de troca de plano enviada.', 'ok');
     });
 
-    const cardForm = $('#cardForm');
-    cardForm?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const body = Object.fromEntries(new FormData(cardForm).entries());
-      const r = await fetch('/api/billing/card/update', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    $('#retryPaymentBtn')?.addEventListener('click', async () => {
+      const sid = $('#retryPaymentBtn')?.dataset?.subscriptionId;
+      if (!sid) return;
+      const r = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(sid) + '/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
       });
       const d = await r.json();
       if (!r.ok) {
-        setPortalNotice(d.error || 'Erro ao atualizar cartão', 'err');
+        setPortalNotice(d.error || 'Não foi possível abrir a cobrança.', 'err');
         return;
       }
-      setPortalNotice('Cartão atualizado com sucesso.', 'ok');
-      cardForm.reset();
+      if (d.payment_redirect_url) {
+        window.open(d.payment_redirect_url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      setPortalNotice('Nenhuma cobrança pendente encontrada no momento.', 'err');
     });
 
     const profileForm = $('#profileForm');
     profileForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(profileForm).entries());
-      const r = await fetch('/api/profile/update', {
+      const r = await apiFetch('/api/profile/update', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       const d = await r.json();
@@ -684,7 +620,7 @@
       fd.set('integrations', integrations.join(', '));
       fd.set('services', [fd.get('services') || '', pages.length ? `Páginas: ${pages.join(', ')}` : ''].filter(Boolean).join('\n'));
       fd.set('extra_requirements', [fd.get('extra_requirements') || '', fd.get('secondary_goals') || '', fd.get('has_differentiation') || ''].filter(Boolean).join('\n'));
-      const r = await fetch('/api/onboarding/site-brief', { method: 'POST', body: fd });
+      const r = await apiFetch('/api/onboarding/site-brief', { method: 'POST', body: fd });
       const d = await r.json();
       const out = $('#briefPromptResult');
       if (!r.ok) {

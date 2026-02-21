@@ -29,7 +29,7 @@ async function findOrCreateDealForSession(params: {
   const existing = await prisma.deal.findFirst({
     where: {
       pipelineId: params.pipelineId,
-      OR: whereOr.length > 0 ? whereOr : [{ id: '__no-match__' }],
+      OR: whereOr.length > 0 ? whereOr : [{ id: '00000000-0000-0000-0000-000000000000' }],
     },
     orderBy: { updatedAt: 'desc' },
   });
@@ -135,7 +135,7 @@ async function syncClosedAvulsoDeals() {
     const existing = await prisma.deal.findFirst({
       where: {
         pipelineId: pipeline.id,
-        OR: whereOr.length > 0 ? whereOr : [{ id: '__no-match__' }],
+        OR: whereOr.length > 0 ? whereOr : [{ id: '00000000-0000-0000-0000-000000000000' }],
       },
       orderBy: { updatedAt: 'desc' },
     });

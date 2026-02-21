@@ -1,7 +1,23 @@
 <?php
 declare(strict_types=1);
 
-session_start();
+function secureSessionStart(): void {
+  if (session_status() === PHP_SESSION_ACTIVE) {
+    return;
+  }
+  $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+  session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => $isHttps,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+  session_start();
+}
+secureSessionStart();
 
 use Shared\Core\Router;
 use Shared\Infra\AsaasClient;
@@ -15,15 +31,106 @@ require_once __DIR__ . '/../../shared/src/bootstrap.php';
 
 function h(string $v): string { return htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
 
+function applySecurityHeaders(): void {
+  header('X-Frame-Options: SAMEORIGIN');
+  header('X-Content-Type-Options: nosniff');
+  header('Referrer-Policy: strict-origin-when-cross-origin');
+  header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
+  header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com https://accounts.google.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self'; frame-src 'self' https://www.google.com;");
+}
+applySecurityHeaders();
+
 function boolInput(mixed $v): bool {
   return in_array((string)$v, ['1','true','on','yes','sim'], true);
 }
 
-function requireClientAuth(): void {
+function getClientIp(): string {
+  return (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+}
+
+function csrfToken(): string {
+  if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+  }
+  return $_SESSION['csrf_token'];
+}
+
+function requestHeader(Request $request, string $name): ?string {
+  foreach ($request->headers as $k => $v) {
+    if (strcasecmp((string)$k, $name) === 0) {
+      return is_array($v) ? (string)($v[0] ?? '') : (string)$v;
+    }
+  }
+  return null;
+}
+
+function requireCsrf(Request $request): void {
+  $token = (string)(requestHeader($request, 'X-CSRF-Token') ?? $request->body['csrf_token'] ?? '');
+  if ($token === '' || !hash_equals((string)($_SESSION['csrf_token'] ?? ''), $token)) {
+    Response::json(['error' => 'CSRF token inválido'], 419);
+    exit;
+  }
+}
+
+function rateLimitAllow(string $scope, int $limit, int $windowSeconds): bool {
+  $ip = getClientIp();
+  $key = sha1($scope . '|' . $ip);
+  $file = sys_get_temp_dir() . '/koddahub_rl_' . $key . '.json';
+  $now = time();
+  $payload = ['start' => $now, 'count' => 0];
+
+  $fh = @fopen($file, 'c+');
+  if (!$fh) {
+    return true;
+  }
+  if (!flock($fh, LOCK_EX)) {
+    fclose($fh);
+    return true;
+  }
+
+  $raw = stream_get_contents($fh);
+  if (is_string($raw) && trim($raw) !== '') {
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) {
+      $payload = array_merge($payload, $decoded);
+    }
+  }
+
+  if (($now - (int)$payload['start']) > $windowSeconds) {
+    $payload = ['start' => $now, 'count' => 0];
+  }
+  $payload['count'] = (int)$payload['count'] + 1;
+
+  ftruncate($fh, 0);
+  rewind($fh);
+  fwrite($fh, json_encode($payload, JSON_UNESCAPED_UNICODE));
+  fflush($fh);
+  flock($fh, LOCK_UN);
+  fclose($fh);
+
+  return (int)$payload['count'] <= $limit;
+}
+
+function requireClientAuth(?string $nextPath = null): void {
   if (!isset($_SESSION['client_user'])) {
+    if ($nextPath !== null && $nextPath !== '') {
+      $_SESSION['after_login_redirect'] = $nextPath;
+    }
     header('Location: /login');
     exit;
   }
+}
+
+function resolveAfterLoginRedirect(): string {
+  $redirect = '/portal/dashboard';
+  if (!empty($_SESSION['after_login_redirect']) && is_string($_SESSION['after_login_redirect'])) {
+    $candidate = $_SESSION['after_login_redirect'];
+    if (str_starts_with($candidate, '/portal/')) {
+      $redirect = $candidate;
+    }
+  }
+  unset($_SESSION['after_login_redirect']);
+  return $redirect;
 }
 
 function recaptchaSiteKey(): string {
@@ -77,32 +184,6 @@ function verifyRecaptchaToken(?string $token): bool {
   return is_array($decoded) && !empty($decoded['success']);
 }
 
-function cardLuhnValid(string $number): bool {
-  $digits = preg_replace('/\D+/', '', $number) ?? '';
-  if (strlen($digits) < 13) return false;
-  $sum = 0;
-  $double = false;
-  for ($i = strlen($digits) - 1; $i >= 0; $i--) {
-    $digit = (int)$digits[$i];
-    if ($double) {
-      $digit *= 2;
-      if ($digit > 9) $digit -= 9;
-    }
-    $sum += $digit;
-    $double = !$double;
-  }
-  return $sum % 10 === 0;
-}
-
-function cardBrand(string $number): string {
-  $n = preg_replace('/\D+/', '', $number) ?? '';
-  if (preg_match('/^4/', $n)) return 'VISA';
-  if (preg_match('/^5[1-5]|^2(2[2-9]|[3-6]|7[01]|720)/', $n)) return 'MASTERCARD';
-  if (preg_match('/^3[47]/', $n)) return 'AMEX';
-  if (preg_match('/^5067|^4576|^4011/', $n)) return 'ELO';
-  return 'CARD';
-}
-
 function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   $plan = in_array($plan, ['basic','profissional','pro'], true) ? $plan : 'basic';
   $recaptchaKey = recaptchaSiteKey();
@@ -125,7 +206,7 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 </head>
-<body data-page="auth" data-recaptcha-sitekey="<?= h($recaptchaKey) ?>">
+<body data-page="auth" data-recaptcha-sitekey="<?= h($recaptchaKey) ?>" data-csrf-token="<?= h(csrfToken()) ?>">
   <div class="auth-shell">
     <aside class="auth-left">
       <div>
@@ -298,21 +379,14 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
                   </div>
                   <div class="form-col full">
                     <label>Método de pagamento recorrente</label>
-                    <label class="switch"><input class="payment-method" type="radio" name="payment_method" value="CREDIT_CARD" checked> Cartão de crédito (recorrência)</label>
+                    <label class="switch"><input class="payment-method" type="radio" name="payment_method" value="CREDIT_CARD" checked> Cartão de crédito (checkout seguro ASAAS)</label>
                     <label class="switch"><input class="payment-method" type="radio" name="payment_method" value="PIX"> PIX</label>
                   </div>
-                </div>
-                <div class="card-fields">
-                  <div class="form-grid" style="margin-top:10px">
-                    <div class="form-col full"><label for="card_holder">Titular do cartão</label><input id="card_holder" name="card_holder" data-required="true"></div>
-                    <div class="form-col full"><label for="card_number">Número do cartão</label><input id="card_number" name="card_number" data-required="true" placeholder="0000 0000 0000 0000"></div>
-                    <div class="form-col"><label for="card_expiry">Validade (MM/AA)</label><input id="card_expiry" name="card_expiry" data-required="true" placeholder="12/30"></div>
-                    <div class="form-col"><label for="card_cvv">CVV</label><input id="card_cvv" name="card_cvv" data-required="true" placeholder="123"></div>
-                  </div>
-                  <div class="card-preview" style="margin-top:12px">
-                    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><strong id="previewBrand">Cartão</strong><span id="cardValidChip" class="status-chip status-bad">Aguardando validação</span></div>
-                    <div id="previewNumber" style="font-size:1.2rem;margin:8px 0">•••• •••• •••• ••••</div>
-                    <div style="display:flex;justify-content:space-between;gap:10px"><small id="previewHolder">Titular</small><small id="previewExpiry">MM/AA</small></div>
+                  <div class="form-col full">
+                    <div class="status-note">
+                      Seus dados de pagamento serão informados diretamente no checkout hospedado do ASAAS.
+                      Nenhum dado bruto de cartão é processado por este portal.
+                    </div>
                   </div>
                 </div>
               </div>
@@ -320,7 +394,7 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
               <div class="wizard-nav">
                 <button type="button" class="btn btn-ghost" id="wizardPrev">Voltar</button>
                 <button type="button" class="btn btn-primary" id="wizardNext">Próximo</button>
-                <button type="submit" class="btn btn-accent hidden" id="wizardSubmit">Validar pagamento e entrar</button>
+                <button type="submit" class="btn btn-accent hidden" id="wizardSubmit">Continuar para pagamento seguro</button>
               </div>
             </form>
           </div>
@@ -329,6 +403,75 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
     </main>
   </div>
   <script src="/assets/app.js"></script>
+</body>
+</html>
+<?php
+  return (string)ob_get_clean();
+}
+
+function renderCheckoutPendingPage(string $asaasSubscriptionId, string $paymentUrl): string {
+  ob_start();
+  ?>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aguardando confirmação de pagamento</title>
+  <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body data-page="auth" data-csrf-token="<?= h(csrfToken()) ?>">
+  <div class="auth-shell">
+    <aside class="auth-left">
+      <div>
+        <div class="brand-row">
+          <img src="https://koddahub.com.br/assets/logo/koddahub-logo-v2.png" alt="Logo KoddaHub">
+          <div class="brand-text"><span class="kodda">Kodda</span><span class="hub">Hub</span></div>
+        </div>
+        <h1>Pagamento em análise</h1>
+        <p>Finalize o pagamento no ASAAS. Assim que confirmado, você será redirecionado automaticamente para o login.</p>
+        <p class="note">Depois do login, você já poderá preencher o briefing para publicar seu primeiro site em até 24h.</p>
+      </div>
+    </aside>
+    <main class="auth-right">
+      <section class="auth-panel">
+        <div class="panel-body">
+          <div class="alert ok" id="pendingNotice">Aguardando confirmação do pagamento...</div>
+          <div class="action-row" style="margin-top:16px">
+            <?php if ($paymentUrl !== ''): ?>
+            <a class="btn btn-primary" href="<?= h($paymentUrl) ?>" target="_blank" rel="noopener noreferrer">Abrir cobrança no ASAAS</a>
+            <?php endif; ?>
+            <a class="btn btn-ghost" href="/checkout/return">Já finalizei o pagamento</a>
+            <a class="btn btn-ghost" href="/login">Ir para login</a>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    (function () {
+      const sid = <?= json_encode($asaasSubscriptionId, JSON_UNESCAPED_UNICODE) ?>;
+      const notice = document.getElementById('pendingNotice');
+      if (!sid) return;
+      const tick = async () => {
+        try {
+          const res = await fetch('/api/billing/subscriptions/' + encodeURIComponent(sid) + '/status', { credentials: 'same-origin' });
+          const data = await res.json();
+          if (!res.ok) return;
+          const status = String(data?.subscription?.status || '').toUpperCase();
+          if (status === 'ACTIVE') {
+            if (notice) notice.textContent = 'Pagamento confirmado! Redirecionando para o login...';
+            setTimeout(() => {
+              window.location.href = '/login?payment=confirmed';
+            }, 700);
+          }
+        } catch (e) {}
+      };
+      setInterval(tick, 8000);
+      tick();
+    })();
+  </script>
 </body>
 </html>
 <?php
@@ -391,6 +534,84 @@ function renderDashboard(?string $notice = null): string {
     $fullAddress = 'Não informado';
   }
 
+  $operationStagesBlueprint = [
+    ['code' => 'briefing_pendente', 'name' => 'Briefing pendente', 'description' => 'Preencher o briefing inicial do site.'],
+    ['code' => 'pre_prompt', 'name' => 'Pré-prompt', 'description' => 'Prompt gerado e validado para produção.'],
+    ['code' => 'template_v1', 'name' => 'Template V1', 'description' => 'Primeira versão do site institucional gerada.'],
+    ['code' => 'ajustes', 'name' => 'Ajustes', 'description' => 'Correções e micro ajustes antes da aprovação.'],
+    ['code' => 'aprovacao_cliente', 'name' => 'Aprovação do cliente', 'description' => 'Cliente valida versão temporária.'],
+    ['code' => 'publicacao', 'name' => 'Publicação', 'description' => 'Deploy e validação final no domínio.'],
+    ['code' => 'publicado', 'name' => 'Publicado', 'description' => 'Site publicado e monitorado.'],
+  ];
+  $operationOrderByCode = [];
+  foreach ($operationStagesBlueprint as $idx => $stage) {
+    $operationOrderByCode[$stage['code']] = $idx + 1;
+  }
+  $operationLegacyCodeMap = [
+    'boas_vindas' => 'briefing_pendente',
+    'briefing' => 'briefing_pendente',
+    'producao' => 'template_v1',
+    'revisao' => 'ajustes',
+    'pos_entrega' => 'publicacao',
+  ];
+  $normalizeOperationCode = static function (?string $code) use ($operationLegacyCodeMap): string {
+    $value = trim((string)$code);
+    return $operationLegacyCodeMap[$value] ?? $value;
+  };
+
+  $operationDeal = $orgId ? db()->one("
+    SELECT d.id, d.title, d.deal_type, d.lifecycle_status, d.plan_code, d.product_code, d.updated_at
+    FROM crm.deal d
+    WHERE d.organization_id=:oid AND d.lifecycle_status='CLIENT'
+    ORDER BY d.updated_at DESC
+    LIMIT 1
+  ", [':oid' => $orgId]) : null;
+  $operationRecordsRaw = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->all("
+    SELECT id, stage_code, stage_name, stage_order, status, started_at, completed_at, updated_at
+    FROM crm.deal_operation
+    WHERE deal_id=:did
+    ORDER BY stage_order ASC, started_at ASC
+  ", [':did' => $operationDeal['id']]) : [];
+  $operationRecords = [];
+  $operationActiveCode = null;
+  $operationActiveOrder = 0;
+  $operationCompletedMaxOrder = 0;
+  foreach ($operationRecordsRaw as $row) {
+    $normalizedCode = $normalizeOperationCode((string)($row['stage_code'] ?? ''));
+    if ($normalizedCode === '') {
+      continue;
+    }
+    $normalizedOrder = $operationOrderByCode[$normalizedCode] ?? (int)($row['stage_order'] ?? 0);
+    $operationRecords[$normalizedCode] = [
+      'id' => (string)$row['id'],
+      'stage_code' => $normalizedCode,
+      'stage_name' => (string)$row['stage_name'],
+      'stage_order' => $normalizedOrder,
+      'status' => strtoupper((string)($row['status'] ?? 'ACTIVE')),
+      'started_at' => $row['started_at'] ?? null,
+      'completed_at' => $row['completed_at'] ?? null,
+      'updated_at' => $row['updated_at'] ?? null,
+    ];
+    if (strtoupper((string)($row['status'] ?? '')) === 'ACTIVE' && $normalizedOrder >= $operationActiveOrder) {
+      $operationActiveOrder = $normalizedOrder;
+      $operationActiveCode = $normalizedCode;
+    }
+    if (strtoupper((string)($row['status'] ?? '')) === 'COMPLETED' && $normalizedOrder > $operationCompletedMaxOrder) {
+      $operationCompletedMaxOrder = $normalizedOrder;
+    }
+  }
+
+  $operationApprovalPending = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->one("
+    SELECT
+      a.expires_at,
+      tr.preview_url
+    FROM crm.deal_client_approval a
+    JOIN crm.deal_template_revision tr ON tr.id = a.template_revision_id
+    WHERE a.deal_id=:did AND a.status='PENDING' AND a.expires_at > now()
+    ORDER BY a.created_at DESC
+    LIMIT 1
+  ", [':did' => $operationDeal['id']]) : null;
+
   ob_start();
   ?>
 <!doctype html>
@@ -407,7 +628,7 @@ function renderDashboard(?string $notice = null): string {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
-<body data-page="dashboard" data-theme="dark" data-open-briefing="<?= $hasBriefing ? '0' : '1' ?>">
+<body data-page="dashboard" data-theme="dark" data-open-briefing="<?= $hasBriefing ? '0' : '1' ?>" data-csrf-token="<?= h(csrfToken()) ?>">
   <div class="client-layout">
     <aside class="client-sidebar">
       <div class="client-sidebar-logo-wrap">
@@ -424,6 +645,7 @@ function renderDashboard(?string $notice = null): string {
         <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i> Dashboard</a>
         <a data-nav-section="chamados" href="/portal/dashboard#chamados"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i> Chamados</a>
         <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i> Pagamentos</a>
+        <a data-nav-section="operacao" href="/portal/dashboard#operacao"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i> Operação</a>
         <a data-nav-section="planos" href="/portal/dashboard#planos"><i class="bi bi-box-seam-fill" aria-hidden="true"></i> Planos</a>
         <a data-nav-section="perfil" href="/portal/dashboard#perfil"><i class="bi bi-person-badge-fill" aria-hidden="true"></i> Perfil</a>
       </nav>
@@ -528,14 +750,12 @@ function renderDashboard(?string $notice = null): string {
               <div class="readonly-field"><label>Cartão atual</label><span><?= h(($billingProfile['card_brand'] ?? 'N/D') . ' •••• ' . ($billingProfile['card_last4'] ?? '----')) ?></span></div>
               <div class="readonly-field"><label>Vencimento</label><span><?= h(!empty($billingProfile['exp_month']) ? str_pad((string)$billingProfile['exp_month'], 2, '0', STR_PAD_LEFT) . '/' . $billingProfile['exp_year'] : 'N/D') ?></span></div>
             </div>
-            <form id="cardForm" class="grid-2">
-              <div class="form-col"><label>Titular do cartão</label><input name="card_holder" required></div>
-              <div class="form-col"><label>Número do cartão</label><input name="card_number" required></div>
-              <div class="form-col"><label>Validade (MM/AA)</label><input name="card_expiry" required></div>
-              <div class="form-col"><label>CVV</label><input name="card_cvv" required></div>
-              <div class="form-col full"><label>Senha da conta para confirmar</label><input type="password" name="account_password" required></div>
-              <div class="form-col full"><button class="btn btn-primary" type="submit">Trocar cartão</button></div>
-            </form>
+            <p class="note" style="margin-top:12px">A gestão de cartão é feita no checkout seguro do ASAAS. Este portal não processa dados brutos de cartão.</p>
+            <?php if (!empty($sub['asaas_subscription_id'])): ?>
+              <div style="margin-top:12px">
+                <button class="btn btn-primary" id="retryPaymentBtn" type="button" data-subscription-id="<?= h((string)$sub['asaas_subscription_id']) ?>">Abrir cobrança segura</button>
+              </div>
+            <?php endif; ?>
           </section>
           <section class="portal-card modern-card">
             <h3>Histórico de Faturas</h3>
@@ -602,6 +822,57 @@ function renderDashboard(?string $notice = null): string {
           </section>
         </section>
 
+        <section class="portal-section" data-section="operacao">
+          <section class="portal-card modern-card">
+            <h3>Operação do site 24h</h3>
+            <?php if (!$operationDeal): ?>
+              <p class="note">Ainda não existe uma operação ativa para este cliente. Assim que o pagamento e o fechamento forem confirmados, as etapas aparecem aqui automaticamente.</p>
+            <?php else: ?>
+              <div class="contract-grid" style="margin-top:12px">
+                <div class="readonly-field"><label>Projeto</label><span><?= h((string)($operationDeal['title'] ?? 'Projeto')) ?></span></div>
+                <div class="readonly-field"><label>Tipo</label><span><?= h((string)($operationDeal['deal_type'] ?? 'HOSPEDAGEM')) ?></span></div>
+                <div class="readonly-field"><label>Plano / Produto</label><span><?= h((string)($operationDeal['plan_code'] ?? ($operationDeal['product_code'] ?? 'N/D'))) ?></span></div>
+                <div class="readonly-field"><label>Atualizado em</label><span><?= h(!empty($operationDeal['updated_at']) ? date('d/m/Y H:i', strtotime((string)$operationDeal['updated_at'])) : 'N/D') ?></span></div>
+              </div>
+
+              <?php if ($operationApprovalPending): ?>
+                <div class="alert ok" style="margin-top:12px">
+                  Sua aprovação está pendente nesta etapa. Valide a versão do site para seguirmos com a publicação.
+                  <?php if (!empty($operationApprovalPending['preview_url'])): ?>
+                    <a href="<?= h((string)$operationApprovalPending['preview_url']) ?>" target="_blank" rel="noreferrer">Abrir preview</a>
+                  <?php endif; ?>
+                </div>
+              <?php endif; ?>
+
+              <div class="operation-flow-list">
+                <?php foreach ($operationStagesBlueprint as $index => $stage): ?>
+                  <?php
+                    $stageOrder = $index + 1;
+                    $stageCode = $stage['code'];
+                    $record = $operationRecords[$stageCode] ?? null;
+                    $isActive = $operationActiveCode === $stageCode;
+                    $isDone = ($record && $record['status'] === 'COMPLETED') || (!$isActive && $stageOrder <= $operationCompletedMaxOrder);
+                    $statusClass = $isDone ? 'done' : ($isActive ? 'active' : 'pending');
+                    $statusText = $isDone ? 'Concluído' : ($isActive ? 'Em andamento' : 'Pendente');
+                    if ($isDone && !empty($record['completed_at'])) {
+                      $statusText .= ' em ' . date('d/m/Y H:i', strtotime((string)$record['completed_at']));
+                    } elseif ($isActive && !empty($record['started_at'])) {
+                      $statusText .= ' desde ' . date('d/m/Y H:i', strtotime((string)$record['started_at']));
+                    }
+                  ?>
+                  <article class="operation-step <?= h($statusClass) ?>">
+                    <div class="operation-step-head">
+                      <strong><?= h((string)$stage['name']) ?></strong>
+                      <span class="status-chip status-<?= h($statusClass) ?>"><?= h($statusText) ?></span>
+                    </div>
+                    <p><?= h((string)$stage['description']) ?></p>
+                  </article>
+                <?php endforeach; ?>
+              </div>
+            <?php endif; ?>
+          </section>
+        </section>
+
         <section class="portal-section" data-section="perfil">
           <section class="portal-card modern-card">
             <h3>Perfil e Conta</h3>
@@ -652,8 +923,8 @@ function renderDashboard(?string $notice = null): string {
   <nav class="mobile-bottom-nav" aria-label="Navegação mobile">
     <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><span class="icon"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i></span><span class="label">Início</span></a>
     <a data-nav-section="chamados" href="/portal/dashboard#chamados"><span class="icon"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i></span><span class="label">Chamados</span></a>
-    <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Pagamentos</span></a>
-    <a data-nav-section="planos" href="/portal/dashboard#planos"><span class="icon"><i class="bi bi-box-seam-fill" aria-hidden="true"></i></span><span class="label">Planos</span></a>
+    <a data-nav-section="operacao" href="/portal/dashboard#operacao"><span class="icon"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i></span><span class="label">Operação</span></a>
+    <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Financeiro</span></a>
     <a data-nav-section="perfil" href="/portal/dashboard#perfil"><span class="icon"><i class="bi bi-person-badge-fill" aria-hidden="true"></i></span><span class="label">Perfil</span></a>
   </nav>
 
@@ -915,7 +1186,7 @@ function onboardingPage(?string $output = null): string {
   <link rel="stylesheet" href="/assets/app.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 </head>
-<body>
+<body data-csrf-token="<?= h(csrfToken()) ?>">
   <div class="portal-wrap">
     <div class="portal-nav">
       <div><strong>Briefing Institucional</strong></div>
@@ -951,7 +1222,12 @@ function onboardingPage(?string $output = null): string {
     document.getElementById('briefForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target).entries());
-      const r = await fetch('/api/onboarding/site-brief', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)});
+      const csrfToken = document.body?.dataset?.csrfToken || '';
+      const r = await fetch('/api/onboarding/site-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify(body)
+      });
       const d = await r.json();
       if (!r.ok) { alert(d.error || 'Erro ao salvar briefing'); return; }
       window.location.href = '/onboarding/site-brief?ok=1';
@@ -987,6 +1263,18 @@ function queueWelcomeMessages(string $orgId, string $name, string $email, string
       ':ctx' => json_encode(['name' => $name], JSON_UNESCAPED_UNICODE)
     ]);
   }
+}
+
+function queueBillingEventEmail(string $orgId, string $email, string $subject, string $message): void {
+  if (!Validator::email($email)) {
+    return;
+  }
+  db()->exec("INSERT INTO crm.email_queue(organization_id,email_to,subject,body,status) VALUES(:oid,:to,:s,:b,'PENDING')", [
+    ':oid' => $orgId,
+    ':to' => $email,
+    ':s' => $subject,
+    ':b' => $message,
+  ]);
 }
 
 function normalizeUploadFiles(string $field): array {
@@ -1034,7 +1322,182 @@ function storeBriefUploads(string $orgId, string $briefId): array {
   return $stored;
 }
 
+function operationStageMeta(string $stageCode): array {
+  $map = [
+    'briefing_pendente' => ['name' => 'Briefing pendente', 'order' => 1],
+    'pre_prompt' => ['name' => 'Pré-prompt', 'order' => 2],
+    'template_v1' => ['name' => 'Template V1', 'order' => 3],
+    'ajustes' => ['name' => 'Ajustes', 'order' => 4],
+    'aprovacao_cliente' => ['name' => 'Aprovação do cliente', 'order' => 5],
+    'publicacao' => ['name' => 'Publicação', 'order' => 6],
+    'publicado' => ['name' => 'Publicado', 'order' => 7],
+  ];
+  return $map[$stageCode] ?? ['name' => $stageCode, 'order' => 99];
+}
+
+function moveDealOperationStage(string $dealId, string $stageCode): void {
+  $meta = operationStageMeta($stageCode);
+  $active = db()->one("
+    SELECT id
+    FROM crm.deal_operation
+    WHERE deal_id=:did AND status='ACTIVE'
+    ORDER BY stage_order DESC, started_at DESC
+    LIMIT 1
+  ", [':did' => $dealId]);
+
+  if ($active) {
+    db()->exec("UPDATE crm.deal_operation SET status='COMPLETED', completed_at=now(), updated_at=now() WHERE id=:id", [':id' => $active['id']]);
+  }
+
+  db()->exec("
+    INSERT INTO crm.deal_operation(deal_id, operation_type, stage_code, stage_name, stage_order, status, started_at, updated_at)
+    VALUES(:did, 'HOSPEDAGEM', :code, :name, :ord, 'ACTIVE', now(), now())
+  ", [
+    ':did' => $dealId,
+    ':code' => $stageCode,
+    ':name' => $meta['name'],
+    ':ord' => $meta['order'],
+  ]);
+}
+
+function approvalContextByToken(string $token): ?array {
+  $tokenHash = hash('sha256', $token);
+  $row = db()->one("
+    SELECT
+      a.id AS approval_id,
+      a.deal_id,
+      a.template_revision_id,
+      a.expires_at,
+      a.status AS approval_status,
+      a.client_note,
+      a.acted_at,
+      tr.preview_url,
+      tr.source_hash,
+      tr.status AS template_status,
+      tr.version AS template_version,
+      d.title AS deal_title,
+      d.organization_id,
+      d.lifecycle_status,
+      o.legal_name,
+      o.domain,
+      o.billing_email
+    FROM crm.deal_client_approval a
+    JOIN crm.deal d ON d.id = a.deal_id
+    JOIN crm.deal_template_revision tr ON tr.id = a.template_revision_id
+    LEFT JOIN client.organizations o ON o.id = d.organization_id
+    WHERE a.token_hash = :hash
+    ORDER BY a.created_at DESC
+    LIMIT 1
+  ", [':hash' => $tokenHash]);
+
+  return $row ?: null;
+}
+
+function renderApprovalPage(array $ctx, string $token): string {
+  $isPending = strtoupper((string)($ctx['approval_status'] ?? '')) === 'PENDING';
+  $isExpired = !empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time();
+  $statusText = $ctx['approval_status'] ?? 'N/D';
+  $preview = (string)($ctx['preview_url'] ?? '');
+  $title = (string)($ctx['deal_title'] ?? 'Projeto');
+  $orgName = (string)($ctx['legal_name'] ?? 'Cliente');
+  $note = (string)($ctx['client_note'] ?? '');
+  ob_start();
+  ?>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aprovação de Site - KoddaHub</title>
+  <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="shortcut icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body data-page="approval" data-csrf-token="<?= h(csrfToken()) ?>">
+  <div class="portal-wrap" style="max-width:900px;margin:24px auto;padding:0 12px;">
+    <div class="portal-card">
+      <h2 style="margin-top:0;">Aprovação do cliente</h2>
+      <p><strong>Projeto:</strong> <?= h($title) ?></p>
+      <p><strong>Empresa:</strong> <?= h($orgName) ?></p>
+      <p><strong>Status do link:</strong> <?= h((string)$statusText) ?><?= $isExpired ? ' (expirado)' : '' ?></p>
+      <p><strong>Expira em:</strong> <?= h(!empty($ctx['expires_at']) ? date('d/m/Y H:i', strtotime((string)$ctx['expires_at'])) : 'N/D') ?></p>
+      <?php if ($preview !== ''): ?>
+        <p><a class="btn btn-ghost" href="<?= h($preview) ?>" target="_blank" rel="noreferrer">Abrir prévia do site</a></p>
+      <?php endif; ?>
+      <?php if ($note !== ''): ?>
+        <div class="alert ok">Última observação enviada: <?= h($note) ?></div>
+      <?php endif; ?>
+      <div id="approvalNotice" class="alert hidden"></div>
+      <?php if ($isPending && !$isExpired): ?>
+        <div class="grid-2">
+          <div class="form-col full">
+            <label for="approvalNote">Observação (opcional)</label>
+            <textarea id="approvalNote" rows="4" placeholder="Ex: ajustar botão do WhatsApp e aumentar contraste do título."></textarea>
+          </div>
+          <div class="form-col" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="approveBtn" class="btn btn-primary" type="button">Aprovar versão</button>
+            <button id="changesBtn" class="btn btn-ghost" type="button">Solicitar micro ajustes</button>
+          </div>
+        </div>
+      <?php else: ?>
+        <p>Este link já foi utilizado ou expirou. Solicite um novo envio pelo atendimento KoddaHub.</p>
+      <?php endif; ?>
+      <p style="margin-top:14px;"><a href="/portal/dashboard#operacao">Voltar para o painel</a></p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const token = <?= json_encode($token, JSON_UNESCAPED_UNICODE) ?>;
+      const notice = document.getElementById('approvalNotice');
+      const noteEl = document.getElementById('approvalNote');
+      const approveBtn = document.getElementById('approveBtn');
+      const changesBtn = document.getElementById('changesBtn');
+      const csrfToken = document.body?.dataset?.csrfToken || '';
+
+      function show(msg, ok) {
+        if (!notice) return;
+        notice.textContent = msg || '';
+        notice.classList.remove('hidden', 'ok', 'err');
+        notice.classList.add(ok ? 'ok' : 'err');
+      }
+
+      async function send(kind) {
+        const endpoint = kind === 'approve'
+          ? `/api/portal/approval/${token}/approve`
+          : `/api/portal/approval/${token}/request-changes`;
+        const note = noteEl ? noteEl.value : '';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ note })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          show(data.error || 'Falha ao registrar resposta.', false);
+          return;
+        }
+        show(kind === 'approve' ? 'Aprovação registrada com sucesso.' : 'Solicitação de ajustes enviada com sucesso.', true);
+        setTimeout(() => { window.location.href = '/portal/dashboard#operacao'; }, 900);
+      }
+
+      if (approveBtn) approveBtn.addEventListener('click', () => send('approve'));
+      if (changesBtn) changesBtn.addEventListener('click', () => send('changes'));
+    })();
+  </script>
+</body>
+</html>
+<?php
+  return (string)ob_get_clean();
+}
+
 function registerContract(Request $request): void {
+  if (!rateLimitAllow('register-contract', 30, 300)) {
+    Response::json(['error' => 'Muitas tentativas. Aguarde alguns minutos e tente novamente.'], 429);
+    return;
+  }
+  requireCsrf($request);
+
   $d = $request->body;
   $required = ['name','email','password','phone','person_type','cpf_cnpj','legal_name','billing_email','plan_code','billing_zip','billing_street','billing_number','billing_district','billing_city','billing_state'];
   $errors = Validator::required($d, $required);
@@ -1052,19 +1515,9 @@ function registerContract(Request $request): void {
     $errors['password'] = 'Senha precisa de pelo menos 6 caracteres';
   }
 
-  $paymentMethod = strtoupper((string)($d['payment_method'] ?? 'CREDIT_CARD'));
+  $paymentMethod = strtoupper((string)($d['payment_method'] ?? 'PIX'));
   if (!in_array($paymentMethod, ['PIX','CREDIT_CARD'], true)) {
     $errors['payment_method'] = 'Método de pagamento inválido';
-  }
-
-  if ($paymentMethod === 'CREDIT_CARD') {
-    $cardNumber = (string)($d['card_number'] ?? '');
-    $cardExpiry = (string)($d['card_expiry'] ?? '');
-    $cardCvv = (string)($d['card_cvv'] ?? '');
-
-    if (!cardLuhnValid($cardNumber)) $errors['card_number'] = 'Cartão inválido';
-    if (!preg_match('/^\d{2}\/\d{2}$/', $cardExpiry)) $errors['card_expiry'] = 'Validade inválida';
-    if (!preg_match('/^\d{3,4}$/', $cardCvv)) $errors['card_cvv'] = 'CVV inválido';
   }
 
   if (!empty($errors)) {
@@ -1125,43 +1578,58 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
   }
 
   $asaas = new AsaasClient();
+  $usingAsaasApi = trim((string)(getenv('ASAAS_API_KEY') ?: '')) !== '';
+  $rawPhone = preg_replace('/\D+/', '', (string)$d['phone']) ?? '';
+  if (strlen($rawPhone) > 11 && str_starts_with($rawPhone, '55')) {
+    $rawPhone = substr($rawPhone, 2);
+  }
   $customer = $asaas->createCustomer([
     'name' => $d['legal_name'],
     'email' => $d['billing_email'],
-    'mobilePhone' => $d['phone'],
-    'cpfCnpj' => $d['cpf_cnpj'],
+    'mobilePhone' => $rawPhone,
+    'cpfCnpj' => preg_replace('/\D+/', '', (string)$d['cpf_cnpj']),
   ]);
+  if ($usingAsaasApi && empty($customer['id'])) {
+    db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
+    db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
+    db()->exec("UPDATE crm.signup_session SET status='CHECKOUT_ERROR', metadata = coalesce(metadata,'{}'::jsonb) || :meta::jsonb, updated_at=now() WHERE id=:id", [
+      ':id' => $signupSessionId,
+      ':meta' => json_encode(['asaas_error' => $customer], JSON_UNESCAPED_UNICODE),
+    ]);
+    $gatewayMsg = is_array($customer['errors'] ?? null) ? (($customer['errors'][0]['description'] ?? null) ?: null) : null;
+    Response::json([
+      'error' => 'Falha ao criar cliente no gateway de pagamento. Verifique os dados e credenciais do ASAAS sandbox.',
+      'gateway_message' => $gatewayMsg,
+    ], 502);
+    return;
+  }
 
   $subscriptionPayload = [
     'customer' => $customer['id'] ?? null,
     'billingType' => $paymentMethod,
     'value' => (float)$plan['monthly_price'],
-    'nextDueDate' => date('Y-m-d', strtotime('+1 day')),
+    'nextDueDate' => date('Y-m-d'),
     'cycle' => 'MONTHLY',
     'description' => 'Assinatura KoddaHub plano ' . $plan['code'],
   ];
 
-  if ($paymentMethod === 'CREDIT_CARD' && (getenv('ASAAS_API_KEY') ?: '') !== '') {
-    [$mm, $yy] = explode('/', (string)$d['card_expiry']);
-    $subscriptionPayload['creditCard'] = [
-      'holderName' => $d['card_holder'],
-      'number' => preg_replace('/\D+/', '', (string)$d['card_number']),
-      'expiryMonth' => $mm,
-      'expiryYear' => '20' . $yy,
-      'ccv' => preg_replace('/\D+/', '', (string)$d['card_cvv']),
-    ];
-    $subscriptionPayload['creditCardHolderInfo'] = [
-      'name' => $d['legal_name'],
-      'email' => $d['billing_email'],
-      'cpfCnpj' => $d['cpf_cnpj'],
-      'postalCode' => preg_replace('/\D+/', '', (string)$d['billing_zip']),
-      'addressNumber' => $d['billing_number'],
-      'phone' => $d['phone'],
-    ];
-  }
-
   $subscription = $asaas->createSubscription($subscriptionPayload);
-  $subStatus = ((getenv('ASAAS_API_KEY') ?: '') === '' && $paymentMethod === 'CREDIT_CARD') ? 'ACTIVE' : 'PENDING';
+  if ($usingAsaasApi && empty($subscription['id'])) {
+    db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
+    db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
+    db()->exec("UPDATE crm.signup_session SET status='CHECKOUT_ERROR', metadata = coalesce(metadata,'{}'::jsonb) || :meta::jsonb, updated_at=now() WHERE id=:id", [
+      ':id' => $signupSessionId,
+      ':meta' => json_encode(['asaas_error' => $subscription], JSON_UNESCAPED_UNICODE),
+    ]);
+    $gatewayMsg = is_array($subscription['errors'] ?? null) ? (($subscription['errors'][0]['description'] ?? null) ?: null) : null;
+    Response::json([
+      'error' => 'Falha ao iniciar assinatura no ASAAS. Revise wallet, webhook e credenciais sandbox.',
+      'gateway_message' => $gatewayMsg,
+    ], 502);
+    return;
+  }
+  $paymentRedirectUrl = $asaas->extractPaymentRedirectUrl($subscription) ?? null;
+  $subStatus = (!$usingAsaasApi && $paymentMethod === 'CREDIT_CARD') ? 'ACTIVE' : 'PENDING';
 
   $subId = db()->one("INSERT INTO client.subscriptions(organization_id,plan_id,asaas_customer_id,asaas_subscription_id,status,payment_method,next_due_date,grace_until) VALUES(:o,:p,:cid,:sid,:status,:pm,:due,:grace) RETURNING id", [
     ':o' => $orgId,
@@ -1184,6 +1652,7 @@ WHERE id=:id", [
       'subscription_id' => $subId,
       'asaas_subscription_id' => $subscription['id'] ?? ('mock_sub_' . substr((string)$orgId, 0, 8)),
       'payment_method' => $paymentMethod,
+      'payment_redirect_url' => $paymentRedirectUrl,
     ], JSON_UNESCAPED_UNICODE),
     ':id' => $signupSessionId,
   ]);
@@ -1194,38 +1663,30 @@ WHERE id=:id", [
     ]);
   }
 
-  if ($paymentMethod === 'CREDIT_CARD') {
-    $digits = preg_replace('/\D+/', '', (string)$d['card_number']);
-    $last4 = substr($digits, -4);
-    [$mm, $yy] = explode('/', (string)$d['card_expiry']);
-    db()->exec("INSERT INTO client.billing_profiles(subscription_id,card_holder,card_last4,card_brand,exp_month,exp_year,is_validated)
-VALUES(:sid,:holder,:last4,:brand,:m,:y,true)
-ON CONFLICT (subscription_id) DO UPDATE SET card_holder=excluded.card_holder,card_last4=excluded.card_last4,card_brand=excluded.card_brand,exp_month=excluded.exp_month,exp_year=excluded.exp_year,is_validated=true", [
+  if ((getenv('ASAAS_API_KEY') ?: '') === '') {
+    db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload)
+VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
       ':sid' => $subId,
-      ':holder' => $d['card_holder'],
-      ':last4' => $last4,
-      ':brand' => cardBrand((string)$d['card_number']),
-      ':m' => (int)$mm,
-      ':y' => (int)('20' . $yy),
+      ':pid' => 'mock_pay_' . substr((string)$subId, 0, 8),
+      ':amount' => (float)$plan['monthly_price'],
+      ':type' => $paymentMethod,
+      ':raw' => json_encode(['simulated' => true], JSON_UNESCAPED_UNICODE),
     ]);
-
-    if ((getenv('ASAAS_API_KEY') ?: '') === '') {
-      db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload)
-VALUES(:sid,:pid,:amount,'RECEIVED','CREDIT_CARD',CURRENT_DATE,now(),:raw)", [
-        ':sid' => $subId,
-        ':pid' => 'mock_pay_' . substr((string)$subId, 0, 8),
-        ':amount' => (float)$plan['monthly_price'],
-        ':raw' => json_encode(['simulated' => true], JSON_UNESCAPED_UNICODE),
-      ]);
-    }
   }
+
+  $safeLeadPayload = $d;
+  unset(
+    $safeLeadPayload['password'],
+    $safeLeadPayload['password_confirm'],
+    $safeLeadPayload['g-recaptcha-response']
+  );
 
   db()->exec("INSERT INTO crm.leads(source,source_ref,name,email,phone,interest,payload,stage) VALUES('assinatura','site',:name,:email,:phone,:interest,:payload,'NOVO')", [
     ':name' => $d['name'],
     ':email' => $d['email'],
     ':phone' => $d['phone'],
     ':interest' => 'Plano ' . $plan['code'],
-    ':payload' => json_encode($d, JSON_UNESCAPED_UNICODE),
+    ':payload' => json_encode($safeLeadPayload, JSON_UNESCAPED_UNICODE),
   ]);
 
   db()->exec("INSERT INTO crm.tasks(title,task_type,status,details,sla_deadline) VALUES(:t,'ONBOARDING','PENDING',:d, now() + interval '2 hour')", [
@@ -1247,7 +1708,14 @@ VALUES(:sid,:pid,:amount,'RECEIVED','CREDIT_CARD',CURRENT_DATE,now(),:raw)", [
     'email' => $d['email'],
   ]);
 
-  Response::json(['ok' => true, 'subscription_id' => $subId, 'status' => $subStatus], 201);
+  Response::json([
+    'ok' => true,
+    'subscription_id' => $subId,
+    'asaas_subscription_id' => ($subscription['id'] ?? null),
+    'status' => $subStatus,
+    'payment_redirect_url' => $paymentRedirectUrl,
+    'awaiting_payment' => $subStatus !== 'ACTIVE',
+  ], 201);
 }
 
 $router = new Router();
@@ -1257,20 +1725,86 @@ $router->get('/health', function() {
 });
 
 $router->get('/', function(Request $request) {
-  Response::html(renderAuthPage((string)$request->input('plan', 'basic')));
+  $alert = (string)$request->input('payment', '') === 'confirmed'
+    ? 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.'
+    : '';
+  Response::html(renderAuthPage((string)$request->input('plan', 'basic'), $alert));
 });
 
 $router->get('/login', function(Request $request) {
-  Response::html(renderAuthPage((string)$request->input('plan', 'basic')));
+  $alert = (string)$request->input('payment', '') === 'confirmed'
+    ? 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.'
+    : '';
+  Response::html(renderAuthPage((string)$request->input('plan', 'basic'), $alert));
 });
 
 $router->get('/signup', function(Request $request) {
   Response::html(renderAuthPage((string)$request->input('plan', 'basic')));
 });
 
+$router->get('/checkout/pending', function(Request $request) {
+  requireClientAuth();
+  $sid = trim((string)$request->input('sid', ''));
+  $pay = trim((string)$request->input('pay', ''));
+  if ($sid === '' || $pay === '') {
+    header('Location: /portal/dashboard');
+    return;
+  }
+  Response::html(renderCheckoutPendingPage($sid, $pay));
+});
+
+$router->get('/checkout/return', function() {
+  requireClientAuth();
+  $orgId = $_SESSION['client_user']['organization_id'] ?? null;
+  if (!$orgId) {
+    header('Location: /login');
+    return;
+  }
+  $sub = db()->one("SELECT status FROM client.subscriptions WHERE organization_id=:oid ORDER BY created_at DESC LIMIT 1", [':oid' => $orgId]);
+  $status = strtoupper((string)($sub['status'] ?? ''));
+  if ($status === 'ACTIVE') {
+    header('Location: /login?payment=confirmed');
+    return;
+  }
+  header('Location: /portal/dashboard#pagamentos');
+});
+
 $router->get('/portal/logout', function() {
   session_destroy();
   header('Location: /login');
+});
+
+$router->get('/portal/approval/{token}', function(Request $request) {
+  $token = (string)($request->query['token'] ?? '');
+  if ($token === '') {
+    Response::html('<h1>Link inválido</h1>', 404);
+    return;
+  }
+
+  if (!isset($_SESSION['client_user'])) {
+    $_SESSION['after_login_redirect'] = '/portal/approval/' . rawurlencode($token);
+    header('Location: /login');
+    return;
+  }
+
+  $ctx = approvalContextByToken($token);
+  if (!$ctx) {
+    Response::html('<h1>Link de aprovação inválido</h1>', 404);
+    return;
+  }
+
+  $orgId = $_SESSION['client_user']['organization_id'] ?? null;
+  if (empty($orgId) || (string)$ctx['organization_id'] !== (string)$orgId) {
+    Response::html('<h1>Acesso negado para este link de aprovação</h1>', 403);
+    return;
+  }
+
+  if (strtoupper((string)$ctx['approval_status']) === 'PENDING' && !empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time()) {
+    db()->exec("UPDATE crm.deal_client_approval SET status='EXPIRED', updated_at=now() WHERE id=:id", [':id' => $ctx['approval_id']]);
+    $ctx['approval_status'] = 'EXPIRED';
+  }
+
+  Response::html(renderApprovalPage($ctx, $token));
 });
 
 $router->get('/portal/dashboard', function(Request $request) {
@@ -1285,6 +1819,12 @@ $router->get('/onboarding/site-brief', function(Request $request) {
 });
 
 $router->post('/api/auth/login', function(Request $request) {
+  if (!rateLimitAllow('auth-login', 20, 300)) {
+    Response::json(['error' => 'Muitas tentativas de login. Aguarde alguns minutos.'], 429);
+    return;
+  }
+  requireCsrf($request);
+
   $d = $request->body;
   if (!verifyRecaptchaToken((string)($d['g-recaptcha-response'] ?? ''))) {
     Response::json(['error' => 'Validação reCAPTCHA inválida'], 422);
@@ -1300,10 +1840,16 @@ $router->post('/api/auth/login', function(Request $request) {
   }
 
   ensureClientSession($u);
-  Response::json(['ok' => true, 'redirect' => '/portal/dashboard']);
+  Response::json(['ok' => true, 'redirect' => resolveAfterLoginRedirect()]);
 });
 
 $router->post('/api/auth/google-demo', function(Request $request) {
+  if (!rateLimitAllow('auth-google-demo', 20, 300)) {
+    Response::json(['error' => 'Muitas tentativas. Aguarde alguns minutos.'], 429);
+    return;
+  }
+  requireCsrf($request);
+
   $name = trim((string)$request->input('name', 'Cliente Google'));
   $email = trim((string)$request->input('email', ''));
 
@@ -1332,7 +1878,7 @@ $router->post('/api/auth/google-demo', function(Request $request) {
   }
 
   ensureClientSession($u);
-  Response::json(['ok' => true, 'redirect' => '/portal/dashboard']);
+  Response::json(['ok' => true, 'redirect' => resolveAfterLoginRedirect()]);
 });
 
 $router->post('/api/auth/register', function(Request $request) {
@@ -1345,6 +1891,7 @@ $router->post('/api/auth/register-contract', function(Request $request) {
 
 $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $request) {
   requireClientAuth();
+  requireCsrf($request);
   $sid = (string)($request->query['id'] ?? '');
   $planCode = (string)$request->input('plan_code', '');
   if ($sid === '' || $planCode === '') {
@@ -1372,63 +1919,61 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
   Response::json(['ok' => true, 'asaas' => $result]);
 });
 
-$router->post('/api/billing/card/update', function(Request $request) {
+$router->get('/api/billing/subscriptions/{id}/status', function(Request $request) {
   requireClientAuth();
-  $uid = $_SESSION['client_user']['id'];
-  $orgId = $_SESSION['client_user']['organization_id'];
-  $d = $request->body;
-
-  $errors = Validator::required($d, ['card_holder', 'card_number', 'card_expiry', 'card_cvv', 'account_password']);
-  if (!empty($errors)) {
-    Response::json(['error' => 'Dados obrigatórios ausentes', 'details' => $errors], 422);
+  $sid = (string)($request->query['id'] ?? '');
+  if ($sid === '') {
+    Response::json(['error' => 'Assinatura inválida'], 422);
     return;
   }
-
-  $user = db()->one("SELECT password_hash FROM client.users WHERE id=:id", [':id' => $uid]);
-  if (!$user || !Auth::verifyPassword((string)$d['account_password'], (string)$user['password_hash'])) {
-    Response::json(['error' => 'Senha de confirmação inválida'], 401);
-    return;
-  }
-
-  if (!cardLuhnValid((string)$d['card_number'])) {
-    Response::json(['error' => 'Cartão inválido'], 422);
-    return;
-  }
-  if (!preg_match('/^\d{2}\/\d{2}$/', (string)$d['card_expiry']) || !preg_match('/^\d{3,4}$/', (string)$d['card_cvv'])) {
-    Response::json(['error' => 'Dados do cartão inválidos'], 422);
-    return;
-  }
-
-  $sub = db()->one("SELECT id FROM client.subscriptions WHERE organization_id=:oid ORDER BY created_at DESC LIMIT 1", [':oid' => $orgId]);
+  $sub = db()->one("
+    SELECT s.id, s.status, s.asaas_subscription_id, s.next_due_date, s.payment_method, p.name AS plan_name, p.monthly_price
+    FROM client.subscriptions s
+    JOIN client.plans p ON p.id=s.plan_id
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
   if (!$sub) {
     Response::json(['error' => 'Assinatura não encontrada'], 404);
     return;
   }
+  Response::json(['ok' => true, 'subscription' => $sub]);
+});
 
-  [$mm, $yy] = explode('/', (string)$d['card_expiry']);
-  $digits = preg_replace('/\D+/', '', (string)$d['card_number']);
-  $last4 = substr($digits, -4);
+$router->post('/api/billing/subscriptions/{id}/retry', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  $sid = (string)($request->query['id'] ?? '');
+  if ($sid === '') {
+    Response::json(['error' => 'Assinatura inválida'], 422);
+    return;
+  }
+  $sub = db()->one("SELECT asaas_subscription_id FROM client.subscriptions WHERE asaas_subscription_id=:sid LIMIT 1", [':sid' => $sid]);
+  if (!$sub) {
+    Response::json(['error' => 'Assinatura não encontrada'], 404);
+    return;
+  }
+  $asaas = new AsaasClient();
+  $payments = $asaas->getPaymentsBySubscription($sid, 1);
+  $payment = $payments['data'][0] ?? null;
+  $redirectUrl = null;
+  if (is_array($payment)) {
+    $redirectUrl = $payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? null;
+  }
+  Response::json(['ok' => true, 'payment_redirect_url' => $redirectUrl]);
+});
 
-  db()->exec("INSERT INTO client.billing_profiles(subscription_id,card_holder,card_last4,card_brand,exp_month,exp_year,is_validated)
-VALUES(:sid,:holder,:last4,:brand,:m,:y,true)
-ON CONFLICT (subscription_id) DO UPDATE SET card_holder=excluded.card_holder,card_last4=excluded.card_last4,card_brand=excluded.card_brand,exp_month=excluded.exp_month,exp_year=excluded.exp_year,is_validated=true", [
-    ':sid' => $sub['id'],
-    ':holder' => $d['card_holder'],
-    ':last4' => $last4,
-    ':brand' => cardBrand((string)$d['card_number']),
-    ':m' => (int)$mm,
-    ':y' => (int)('20' . $yy),
-  ]);
-
-  db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('CHANGE_CARD','Troca de cartão solicitada pelo cliente',:meta)", [
-    ':meta' => json_encode(['organization_id' => $orgId, 'last4' => $last4], JSON_UNESCAPED_UNICODE),
-  ]);
-
-  Response::json(['ok' => true]);
+$router->post('/api/billing/card/update', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  Response::json([
+    'error' => 'Atualização direta de cartão desativada. Utilize o checkout seguro do ASAAS para alterar o método de pagamento.',
+  ], 410);
 });
 
 $router->post('/api/profile/update', function(Request $request) {
   requireClientAuth();
+  requireCsrf($request);
   $uid = $_SESSION['client_user']['id'];
   $orgId = $_SESSION['client_user']['organization_id'] ?? null;
   $d = $request->body;
@@ -1506,6 +2051,7 @@ $router->post('/api/profile/update', function(Request $request) {
 
 $router->post('/api/onboarding/site-brief', function(Request $request) {
   requireClientAuth();
+  requireCsrf($request);
   $uid = $_SESSION['client_user']['id'];
   $org = db()->one("SELECT id, legal_name FROM client.organizations WHERE user_id=:uid", [':uid' => $uid]);
   if (!$org) {
@@ -1560,11 +2106,159 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     ':d' => json_encode(['brief_id' => $briefId, 'organization_id' => $org['id']], JSON_UNESCAPED_UNICODE),
   ]);
 
+  $deal = db()->one("
+    SELECT id, deal_type
+    FROM crm.deal
+    WHERE organization_id=:oid AND lifecycle_status='CLIENT'
+    ORDER BY updated_at DESC
+    LIMIT 1
+  ", [':oid' => $org['id']]);
+  if ($deal && strtoupper((string)$deal['deal_type']) === 'HOSPEDAGEM') {
+    moveDealOperationStage((string)$deal['id'], 'pre_prompt');
+
+    $maxPromptVersion = db()->one("SELECT COALESCE(MAX(version),0) AS version FROM crm.deal_prompt_revision WHERE deal_id=:did", [
+      ':did' => $deal['id'],
+    ]);
+    $nextVersion = ((int)($maxPromptVersion['version'] ?? 0)) + 1;
+    db()->exec("
+      INSERT INTO crm.deal_prompt_revision(deal_id, version, prompt_text, prompt_json, status, created_by, created_at, updated_at)
+      VALUES(:did, :version, :prompt_text, :prompt_json, 'DRAFT', 'CLIENT_PORTAL', now(), now())
+    ", [
+      ':did' => $deal['id'],
+      ':version' => $nextVersion,
+      ':prompt_text' => $prompt['text'],
+      ':prompt_json' => json_encode($prompt['json'], JSON_UNESCAPED_UNICODE),
+    ]);
+
+    db()->exec("INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by) VALUES(:did,'FLOW_UPDATE',:content,:metadata,'CLIENT_PORTAL')", [
+      ':did' => $deal['id'],
+      ':content' => 'Briefing enviado pelo cliente e operação movida para Pré-prompt.',
+      ':metadata' => json_encode(['brief_id' => $briefId, 'prompt_version' => $nextVersion], JSON_UNESCAPED_UNICODE),
+    ]);
+  }
+
   Response::json(['ok' => true, 'brief_id' => $briefId, 'prompt_json' => $prompt['json'], 'prompt_text' => $prompt['text']], 201);
+});
+
+$router->post('/api/portal/approval/{token}/approve', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  $token = (string)($request->query['token'] ?? '');
+  if ($token === '') {
+    Response::json(['error' => 'Token inválido'], 422);
+    return;
+  }
+
+  $ctx = approvalContextByToken($token);
+  if (!$ctx) {
+    Response::json(['error' => 'Link de aprovação inválido'], 404);
+    return;
+  }
+
+  $orgId = $_SESSION['client_user']['organization_id'] ?? null;
+  if (empty($orgId) || (string)$ctx['organization_id'] !== (string)$orgId) {
+    Response::json(['error' => 'Acesso negado'], 403);
+    return;
+  }
+
+  if (strtoupper((string)$ctx['approval_status']) !== 'PENDING') {
+    Response::json(['error' => 'Este link já foi utilizado ou expirou'], 409);
+    return;
+  }
+  if (!empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time()) {
+    db()->exec("UPDATE crm.deal_client_approval SET status='EXPIRED', updated_at=now() WHERE id=:id", [':id' => $ctx['approval_id']]);
+    Response::json(['error' => 'Link expirado'], 410);
+    return;
+  }
+
+  $note = trim((string)($request->input('note', '')));
+
+  db()->exec("UPDATE crm.deal_client_approval SET status='APPROVED', client_note=:note, acted_at=now(), updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['approval_id'],
+    ':note' => $note !== '' ? $note : null,
+  ]);
+  db()->exec("UPDATE crm.deal_template_revision SET status='APPROVED_CLIENT', updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['template_revision_id'],
+  ]);
+  moveDealOperationStage((string)$ctx['deal_id'], 'publicacao');
+
+  db()->exec("
+    INSERT INTO crm.deal_publish_check(deal_id, template_revision_id, target_domain, expected_hash, matches, checked_at)
+    VALUES(:deal_id, :template_revision_id, :target_domain, :expected_hash, false, now())
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':template_revision_id' => $ctx['template_revision_id'],
+    ':target_domain' => !empty($ctx['domain']) ? $ctx['domain'] : null,
+    ':expected_hash' => !empty($ctx['source_hash']) ? $ctx['source_hash'] : null,
+  ]);
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id,'CLIENT_APPROVED','Cliente aprovou o template para publicação.',:metadata,'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':metadata' => json_encode(['approval_id' => $ctx['approval_id'], 'note' => $note], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  Response::json(['ok' => true]);
+});
+
+$router->post('/api/portal/approval/{token}/request-changes', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  $token = (string)($request->query['token'] ?? '');
+  if ($token === '') {
+    Response::json(['error' => 'Token inválido'], 422);
+    return;
+  }
+
+  $ctx = approvalContextByToken($token);
+  if (!$ctx) {
+    Response::json(['error' => 'Link de aprovação inválido'], 404);
+    return;
+  }
+
+  $orgId = $_SESSION['client_user']['organization_id'] ?? null;
+  if (empty($orgId) || (string)$ctx['organization_id'] !== (string)$orgId) {
+    Response::json(['error' => 'Acesso negado'], 403);
+    return;
+  }
+
+  if (strtoupper((string)$ctx['approval_status']) !== 'PENDING') {
+    Response::json(['error' => 'Este link já foi utilizado ou expirou'], 409);
+    return;
+  }
+  if (!empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time()) {
+    db()->exec("UPDATE crm.deal_client_approval SET status='EXPIRED', updated_at=now() WHERE id=:id", [':id' => $ctx['approval_id']]);
+    Response::json(['error' => 'Link expirado'], 410);
+    return;
+  }
+
+  $note = trim((string)($request->input('note', '')));
+
+  db()->exec("UPDATE crm.deal_client_approval SET status='CHANGES_REQUESTED', client_note=:note, acted_at=now(), updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['approval_id'],
+    ':note' => $note !== '' ? $note : 'Cliente solicitou micro ajustes.',
+  ]);
+  db()->exec("UPDATE crm.deal_template_revision SET status='NEEDS_ADJUSTMENTS', updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['template_revision_id'],
+  ]);
+  moveDealOperationStage((string)$ctx['deal_id'], 'ajustes');
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id,'CLIENT_REQUESTED_CHANGES','Cliente solicitou micro ajustes no template.',:metadata,'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':metadata' => json_encode(['approval_id' => $ctx['approval_id'], 'note' => $note], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  Response::json(['ok' => true]);
 });
 
 $router->post('/api/tickets', function(Request $request) {
   requireClientAuth();
+  requireCsrf($request);
   $uid = $_SESSION['client_user']['id'];
   $org = db()->one("SELECT id FROM client.organizations WHERE user_id=:uid", [':uid' => $uid]);
   if (!$org) {
@@ -1603,10 +2297,16 @@ $router->post('/api/tickets', function(Request $request) {
 });
 
 $router->post('/api/webhooks/asaas', function(Request $request) {
-  $token = $request->headers['X-Webhook-Token'] ?? $request->headers['x-webhook-token'] ?? '';
+  if (!rateLimitAllow('asaas-webhook', 600, 300)) {
+    Response::json(['error' => 'Rate limit'], 429);
+    return;
+  }
+  $token = requestHeader($request, 'X-Webhook-Token')
+    ?? requestHeader($request, 'Asaas-Access-Token')
+    ?? '';
   $expected = getenv('ASAAS_WEBHOOK_TOKEN') ?: '';
 
-  if ($expected !== '' && $token !== $expected) {
+  if ($expected !== '' && !hash_equals($expected, (string)$token)) {
     Response::json(['error' => 'Unauthorized webhook'], 401);
     return;
   }
@@ -1621,14 +2321,25 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
     return;
   }
 
+  $safeEvent = $event;
+  if (isset($safeEvent['payment']['creditCard'])) {
+    unset($safeEvent['payment']['creditCard']);
+  }
+  if (isset($safeEvent['payment']['creditCardHolderInfo'])) {
+    unset($safeEvent['payment']['creditCardHolderInfo']);
+  }
+
   db()->exec("INSERT INTO client.webhook_events(provider,event_id,event_type,payload,processed) VALUES('ASAAS',:eid,:et,:p,false)", [
     ':eid' => $eventId,
     ':et' => $eventType,
-    ':p' => json_encode($event, JSON_UNESCAPED_UNICODE),
+    ':p' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
   ]);
 
-  $subCode = $event['payment']['subscription'] ?? null;
+  $subCode = $event['payment']['subscription'] ?? $event['subscription']['id'] ?? null;
   if ($subCode) {
+    if (str_contains($eventType, 'SUBSCRIPTION_CREATED') || str_contains($eventType, 'SUBSCRIPTION_UPDATED')) {
+      db()->exec("UPDATE client.subscriptions SET status='PENDING', updated_at=now() WHERE asaas_subscription_id=:sid AND status <> 'ACTIVE'", [':sid' => $subCode]);
+    }
     if (str_contains($eventType, 'PAYMENT_CONFIRMED') || str_contains($eventType, 'PAYMENT_RECEIVED')) {
       db()->exec("UPDATE client.subscriptions SET status='ACTIVE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
 
@@ -1639,12 +2350,18 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
           ':pay' => (string)($event['payment']['id'] ?? ('pay_' . substr($eventId, 0, 12))),
           ':amount' => (float)$sub['monthly_price'],
           ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
-          ':raw' => json_encode($event, JSON_UNESCAPED_UNICODE),
+          ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
         ]);
 
         $org = db()->one("SELECT legal_name,billing_email,whatsapp FROM client.organizations WHERE id=:oid", [':oid' => $sub['organization_id']]);
         if ($org) {
           queueWelcomeMessages((string)$sub['organization_id'], (string)$org['legal_name'], (string)$org['billing_email'], (string)$org['whatsapp']);
+          queueBillingEventEmail(
+            (string)$sub['organization_id'],
+            (string)$org['billing_email'],
+            'Pagamento confirmado - Assinatura KoddaHub',
+            "Recebemos a confirmação do seu pagamento.\n\nEntre agora em https://clientes.koddahub.com.br/login e preencha o briefing para publicar seu primeiro site em até 24h."
+          );
         }
 
         db()->exec("UPDATE crm.signup_session
@@ -1663,7 +2380,33 @@ WHERE id IN (
         ]);
       }
     }
+    if (str_contains($eventType, 'PAYMENT_OVERDUE') || str_contains($eventType, 'PAYMENT_FAILED')) {
+      db()->exec("UPDATE client.subscriptions SET status='OVERDUE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+      db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('PAYMENT_ISSUE','Pagamento pendente ou falhou no ASAAS',:meta)", [
+        ':meta' => json_encode(['asaas_subscription_id' => $subCode, 'event_type' => $eventType], JSON_UNESCAPED_UNICODE),
+      ]);
+      $org = db()->one("
+        SELECT o.id, o.billing_email
+        FROM client.organizations o
+        JOIN client.subscriptions s ON s.organization_id=o.id
+        WHERE s.asaas_subscription_id=:sid
+        LIMIT 1
+      ", [':sid' => $subCode]);
+      if ($org) {
+        queueBillingEventEmail(
+          (string)$org['id'],
+          (string)$org['billing_email'],
+          'Ação necessária - Pagamento pendente da assinatura KoddaHub',
+          'Identificamos uma pendência no pagamento da sua assinatura. Acesse sua área do cliente para regularizar a cobrança.'
+        );
+      }
+    }
+    if (str_contains($eventType, 'SUBSCRIPTION_DELETED') || str_contains($eventType, 'SUBSCRIPTION_CANCELED')) {
+      db()->exec("UPDATE client.subscriptions SET status='CANCELED', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+    }
   }
+
+  db()->exec("UPDATE client.webhook_events SET processed=true WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
 
   Response::json(['ok' => true]);
 });

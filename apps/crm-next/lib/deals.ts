@@ -12,12 +12,13 @@ export const WON_STAGE_CODES = new Set(['fechado_ganho', 'assinatura_ativa_ganho
 export const LOST_STAGE_CODES = new Set(['perdido', 'perdido_abandonado']);
 
 const HOSPEDAGEM_OPERATION_STAGES = [
-  { code: 'boas_vindas', name: 'Boas-vindas', order: 1 },
-  { code: 'briefing', name: 'Briefing', order: 2 },
-  { code: 'producao', name: 'Produção', order: 3 },
-  { code: 'revisao', name: 'Revisão', order: 4 },
-  { code: 'publicado', name: 'Publicado', order: 5 },
-  { code: 'pos_entrega', name: 'Pós-entrega', order: 6 },
+  { code: 'briefing_pendente', name: 'Briefing pendente', order: 1 },
+  { code: 'pre_prompt', name: 'Pré-prompt', order: 2 },
+  { code: 'template_v1', name: 'Template V1', order: 3 },
+  { code: 'ajustes', name: 'Ajustes', order: 4 },
+  { code: 'aprovacao_cliente', name: 'Aprovação do cliente', order: 5 },
+  { code: 'publicacao', name: 'Publicação', order: 6 },
+  { code: 'publicado', name: 'Publicado', order: 7 },
 ] as const;
 
 const AVULSO_OPERATION_STAGES = [

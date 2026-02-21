@@ -518,6 +518,59 @@ body[data-page='dashboard'] .plan-tile ul {
   padding-left: 18px;
   color: #334155;
 }
+body[data-page='dashboard'] .operation-flow-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+body[data-page='dashboard'] .operation-step {
+  border: 1px solid var(--dash-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--dash-surface) 94%, #000 6%);
+}
+body[data-page='dashboard'] .operation-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+body[data-page='dashboard'] .operation-step p {
+  margin: 8px 0 0;
+  color: var(--dash-muted);
+  font-size: .9rem;
+}
+body[data-page='dashboard'] .operation-step.active {
+  border-color: rgba(59, 130, 246, .55);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, .12);
+}
+body[data-page='dashboard'] .operation-step.done {
+  border-color: rgba(16, 185, 129, .4);
+}
+body[data-page='dashboard'] .status-chip.status-done {
+  background: rgba(16, 185, 129, .14);
+  border: 1px solid rgba(16, 185, 129, .35);
+  color: #0f8b62;
+}
+body[data-page='dashboard'] .status-chip.status-active {
+  background: rgba(59, 130, 246, .12);
+  border: 1px solid rgba(59, 130, 246, .35);
+  color: #1d4ed8;
+}
+body[data-page='dashboard'] .status-chip.status-pending {
+  background: rgba(148, 163, 184, .16);
+  border: 1px solid rgba(148, 163, 184, .4);
+  color: #475569;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-done {
+  color: #76f2c3;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-active {
+  color: #b8d6ff;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-pending {
+  color: #d2deea;
+}
 body[data-page='dashboard'] .portal-modal-dialog {
   background: #ffffff;
   border-color: #e2e8f0;

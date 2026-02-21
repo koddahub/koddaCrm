@@ -9,8 +9,22 @@ services:
     working_dir: /var/www
     volumes:
       - ./:/var/www
+      - ./storage:/storage
+      - /home/server/projects:/home/server/projects
     environment:
       APP_CONTEXT: cliente
+      DB_HOST: ac_postgres
+      DB_PORT: 5432
+      DB_NAME: ac_db
+      DB_USER: ac_user
+      DB_PASS: ac_pass
+      STORAGE_ROOT: /storage
+      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN:-}
+      ASAAS_WALLET_ID: ${ASAAS_WALLET_ID:-}
+      ASAAS_WEBHOOK_PUBLIC_URL: ${ASAAS_WEBHOOK_PUBLIC_URL:-https://clientes.koddahub.com.br/api/webhooks/asaas}
+      MAIL_TEST_COPY_TO: ${MAIL_TEST_COPY_TO:-arielrluz@gmail.com}
     depends_on:
       - ac_postgres
       - ac_redis
@@ -41,6 +55,15 @@ services:
       CRM_ADMIN_EMAIL: admin@koddahub.local
       CRM_ADMIN_PASSWORD: admin123
       CRM_ADMIN_SESSION_TOKEN: koddahub-crm-v2-session
+      CLIENT_PROJECTS_ROOT: /home/server/projects/clientes
+      PREVIEW_BASE_URL: https://preview.koddahub.com.br
+      PORTAL_BASE_URL: https://cliente.koddahub.com.br
+      VSCODE_SSH_HOST: ssh.koddahub.com.br
+      VSCODE_WEB_BASE_URL: ""
+      STORAGE_ROOT: /storage
+    volumes:
+      - ./storage:/storage
+      - /home/server/projects:/home/server/projects
     depends_on:
       - ac_postgres
     labels:
@@ -76,12 +99,49 @@ services:
     working_dir: /var/www
     volumes:
       - ./:/var/www
+      - ./storage:/storage
+      - /home/server/projects:/home/server/projects
+    environment:
+      DB_HOST: ac_postgres
+      DB_PORT: 5432
+      DB_NAME: ac_db
+      DB_USER: ac_user
+      DB_PASS: ac_pass
+      STORAGE_ROOT: /storage
+      MAIL_MODE: ${MAIL_MODE:-smtp}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@clientes.koddahub.com.br}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-KoddaHub}
+      MAIL_TEST_COPY_TO: ${MAIL_TEST_COPY_TO:-arielrluz@gmail.com}
+      SMTP_HOST: ${SMTP_HOST:-mail.koddahub.com.br}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-tls}
+      SMTP_USER: ${SMTP_USER:-clientes@koddahub.com.br}
+      SMTP_PASS: ${SMTP_PASS:-}
+      CRM_ADMIN_SESSION_TOKEN: ${CRM_ADMIN_SESSION_TOKEN:-koddahub-crm-v2-session}
+      CRM_RECONCILE_URL: ${CRM_RECONCILE_URL:-http://ac_crm_next:3000/api/automation/reconcile}
+      CRM_BACKFILL_INTERVAL_SECONDS: ${CRM_BACKFILL_INTERVAL_SECONDS:-1800}
+      CRM_RECONCILE_INTERVAL_SECONDS: ${CRM_RECONCILE_INTERVAL_SECONDS:-300}
+      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN:-}
+      ASAAS_WALLET_ID: ${ASAAS_WALLET_ID:-}
+      ASAAS_WEBHOOK_PUBLIC_URL: ${ASAAS_WEBHOOK_PUBLIC_URL:-https://clientes.koddahub.com.br/api/webhooks/asaas}
     command: ["php", "worker/worker.php"]
     depends_on:
       - ac_postgres
       - ac_redis
     labels:
       icon: https://koddahub.com.br/assets/logo/koddahub-logo-v2.png
+    restart: unless-stopped
+
+  ac_preview:
+    image: nginx:alpine
+    container_name: ac_preview
+    ports:
+      - "8085:80"
+    volumes:
+      - /home/server/projects/clientes:/usr/share/nginx/html:ro
+      - ./nginx/preview.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
 
 x-casaos:

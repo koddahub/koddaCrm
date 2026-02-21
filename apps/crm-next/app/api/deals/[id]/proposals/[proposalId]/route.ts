@@ -5,10 +5,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { buildProposalLines, buildProposalValueCents, renderSimpleProposalPdf } from '@/lib/proposals';
 import { prisma } from '@/lib/prisma';
+import { absoluteFromStoredPath, storageRelativePath, uploadsDir } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 
-const PROPOSALS_DIR = path.resolve(process.cwd(), '../../storage/uploads/proposals');
+const PROPOSALS_DIR = uploadsDir('proposals');
 
 async function getProposal(dealId: string, proposalId: string) {
   return prisma.dealProposal.findFirst({
@@ -82,7 +83,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   await fs.writeFile(fullPath, pdfBuffer);
 
   if (proposal.pdfPath) {
-    const previousFullPath = path.resolve(process.cwd(), '../../', proposal.pdfPath);
+    const previousFullPath = absoluteFromStoredPath(proposal.pdfPath);
     await fs.unlink(previousFullPath).catch(() => null);
   }
 
@@ -101,7 +102,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         notes,
         valueCents,
       },
-      pdfPath: `storage/uploads/proposals/${storedName}`,
+      pdfPath: storageRelativePath('proposals', storedName),
       status: 'GERADA',
       updatedAt: new Date(),
     },
@@ -122,10 +123,9 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   await prisma.dealProposal.delete({ where: { id: proposal.id } });
 
   if (proposal.pdfPath) {
-    const fullPath = path.resolve(process.cwd(), '../../', proposal.pdfPath);
+    const fullPath = absoluteFromStoredPath(proposal.pdfPath);
     await fs.unlink(fullPath).catch(() => null);
   }
 
   return NextResponse.json({ ok: true });
 }
-
