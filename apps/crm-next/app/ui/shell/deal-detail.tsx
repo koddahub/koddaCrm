@@ -117,6 +117,7 @@ type OperationFlowData = {
   };
   operation: {
     activeStageCode: string | null;
+    stageTabs: Array<{ code: string; name: string; order: number }>;
     history: {
       id: string;
       operationType: string;
@@ -139,6 +140,13 @@ type OperationFlowData = {
       createdAt: string;
       updatedAt: string;
     } | null;
+    revisions?: Array<{
+      id: string;
+      version: number;
+      promptText: string;
+      status: string;
+      updatedAt: string;
+    }>;
   };
   template: {
     latest: {
@@ -167,6 +175,16 @@ type OperationFlowData = {
       deepLink: string;
       webLink: string | null;
     } | null;
+    sshConfig?: string | null;
+    catalog?: Array<{
+      id: string;
+      code: string;
+      name: string;
+      rootPath: string;
+      entryFile: string;
+      isDefault: boolean;
+      isActive: boolean;
+    }>;
   };
   approval: {
     latest: {
@@ -177,6 +195,14 @@ type OperationFlowData = {
       actedAt: string | null;
       templateRevisionId: string;
     } | null;
+    history?: Array<{
+      id: string;
+      status: string;
+      expiresAt: string;
+      actedAt: string | null;
+      clientNote: string | null;
+      templateRevisionId: string;
+    }>;
   };
   publication: {
     checks: Array<{
@@ -188,8 +214,52 @@ type OperationFlowData = {
       matches: boolean;
       checkedAt: string;
     }>;
+    substeps: Array<{
+      id: string;
+      dealId: string;
+      stageCode: string;
+      substepCode: string;
+      substepName: string;
+      substepOrder: number;
+      status: string;
+      isRequired: boolean;
+      owner: string | null;
+      notes: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    summary: {
+      requiredTotal: number;
+      requiredCompleted: number;
+      pendingTotal: number;
+      ready: boolean;
+    };
+  };
+  operationLogsSummary?: {
+    totalActivities: number;
+    hint: string;
   };
 };
+
+const STAGE_LABEL: Record<string, string> = {
+  briefing_pendente: 'Briefing pendente',
+  pre_prompt: 'Pré-prompt',
+  template_v1: 'Template V1',
+  ajustes: 'Ajustes',
+  aprovacao_cliente: 'Aprovação do cliente',
+  publicacao: 'Publicação',
+  publicado: 'Publicado',
+};
+
+const PREPROMPT_SNIPPETS = [
+  { label: 'Objetivo', text: '## Objetivo\n- ' },
+  { label: 'Tom de voz', text: '## Tom de voz\n- Profissional e direto\n' },
+  { label: 'SEO local', text: '## SEO local\n- Cidade/região alvo: \n- Palavra-chave principal: \n' },
+  { label: 'Restrições', text: '## Restrições\n- Não alterar estrutura base de responsividade.\n' },
+  { label: 'CTA', text: '## CTA principal\n- ' },
+];
 
 function currency(cents: number | null | undefined) {
   if (cents === null || cents === undefined) return 'R$ 0,00';
@@ -208,9 +278,23 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
   const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
-  const [prePromptForm, setPrePromptForm] = useState({ promptText: '', notes: '' });
-  const [templateForm, setTemplateForm] = useState({ entryFile: 'index.html', sourceHash: '', status: 'GENERATED' });
+  const [operationStageTab, setOperationStageTab] = useState('briefing_pendente');
+  const [prePromptForm, setPrePromptForm] = useState({
+    promptText: '',
+    subject: 'Solicitação de informações adicionais do briefing',
+    requestItems: '',
+    message: '',
+    dueAt: '',
+  });
+  const [templateForm, setTemplateForm] = useState({
+    entryFile: 'index.html',
+    sourceHash: '',
+    status: 'GENERATED',
+    templateModelCode: 'template_v1_institucional_1pagina',
+    copyMode: 'if_empty_or_missing',
+  });
   const [approvalSending, setApprovalSending] = useState(false);
+  const [updatingSubstepId, setUpdatingSubstepId] = useState<string | null>(null);
 
   const [activityForm, setActivityForm] = useState({ activityType: 'NOTE', content: '' });
   const [agendaForm, setAgendaForm] = useState({ title: '', description: '', dueAt: '' });
@@ -261,8 +345,21 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setOperationFlow(body);
-    if (body.prompt?.latest?.promptText) {
-      setPrePromptForm((prev) => ({ ...prev, promptText: body.prompt.latest.promptText }));
+    setOperationStageTab(body.operation?.activeStageCode || body.operation?.stageTabs?.[0]?.code || 'briefing_pendente');
+    if (body.prompt?.latest?.promptText || body.prompt?.latest?.requestedNotes) {
+      setPrePromptForm((prev) => ({
+        ...prev,
+        promptText: body.prompt.latest?.promptText || prev.promptText,
+        message: body.prompt.latest?.requestedNotes || prev.message,
+      }));
+    }
+    if (body.template?.latest?.entryFile || body.template?.catalog?.[0]?.code) {
+      setTemplateForm((prev) => ({
+        ...prev,
+        entryFile: body.template?.latest?.entryFile || prev.entryFile,
+        templateModelCode: body.template?.catalog?.find((item: { isDefault: boolean }) => item.isDefault)?.code || prev.templateModelCode,
+        copyMode: prev.copyMode || 'if_empty_or_missing',
+      }));
     }
   }
 
@@ -291,11 +388,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     await loadDeal();
   }
 
-  async function advanceOperation(operationStageCode: string) {
-    const res = await fetch(`/api/deals/${dealId}`, {
-      method: 'PATCH',
+  async function moveOperationStage(operationStageCode: string) {
+    const res = await fetch(`/api/deals/${dealId}/operation/stage`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operationStageCode }),
+      body: JSON.stringify({ stageCode: operationStageCode }),
     });
     const body = await res.json();
     if (!res.ok) {
@@ -303,19 +400,48 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setNotice('Etapa operacional atualizada.');
+    setOperationStageTab(operationStageCode);
     await loadDeal();
   }
 
+  async function savePrePromptDraft() {
+    if (!prePromptForm.promptText.trim()) {
+      setNotice('Preencha o texto do pré-prompt para salvar rascunho.');
+      return;
+    }
+    const res = await fetch(`/api/deals/${dealId}/preprompt/draft`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ promptText: prePromptForm.promptText }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao salvar rascunho do pré-prompt');
+      return;
+    }
+    setNotice('Rascunho do pré-prompt salvo.');
+    await loadOperationFlow();
+  }
+
   async function requestPrePromptInfo() {
-    if (!prePromptForm.notes.trim()) {
-      setNotice('Descreva quais informações adicionais precisam ser enviadas pelo cliente.');
+    if (!prePromptForm.message.trim() && !prePromptForm.requestItems.trim()) {
+      setNotice('Descreva a mensagem e/ou itens de informação a solicitar ao cliente.');
       return;
     }
 
     const res = await fetch(`/api/deals/${dealId}/preprompt/request-info`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes: prePromptForm.notes }),
+      body: JSON.stringify({
+        subject: prePromptForm.subject,
+        message: prePromptForm.message,
+        requestItems: prePromptForm.requestItems
+          .split('\n')
+          .map((item) => item.trim())
+          .filter(Boolean),
+        dueAt: prePromptForm.dueAt || null,
+        promptText: prePromptForm.promptText,
+      }),
     });
     const body = await res.json();
     if (!res.ok) {
@@ -335,14 +461,22 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     const res = await fetch(`/api/deals/${dealId}/preprompt/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ promptText: prePromptForm.promptText }),
+      body: JSON.stringify({
+        promptText: prePromptForm.promptText,
+        templateModelCode: templateForm.templateModelCode || null,
+        copyMode: templateForm.copyMode || 'if_empty_or_missing',
+      }),
     });
     const body = await res.json();
     if (!res.ok) {
       setNotice(body.error || 'Falha ao aprovar pré-prompt');
       return;
     }
-    setNotice('Pré-prompt aprovado. Pasta do projeto preparada para gerar o Template V1.');
+    setNotice(
+      body.templateApplied
+        ? `Pré-prompt aprovado. Modelo aplicado: ${body?.templateModel?.name || body?.templateModel?.code || '-'}.`
+        : 'Pré-prompt aprovado. Projeto já possuía template e não foi sobrescrito.',
+    );
     await loadOperationFlow();
     await loadDeal();
   }
@@ -352,6 +486,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        templateModelCode: templateForm.templateModelCode || null,
         entryFile: templateForm.entryFile,
         sourceHash: templateForm.sourceHash || null,
         status: templateForm.status,
@@ -363,6 +498,24 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setNotice('Revisão de template registrada com preview.');
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
+  async function updatePublicationSubstep(substepId: string, payload: { status?: string; owner?: string; notes?: string }) {
+    setUpdatingSubstepId(substepId);
+    const res = await fetch(`/api/deals/${dealId}/operation/substeps/${substepId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    setUpdatingSubstepId(null);
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao atualizar sub-etapa');
+      return;
+    }
+    setNotice('Sub-etapa atualizada.');
     await loadOperationFlow();
     await loadDeal();
   }
@@ -526,24 +679,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     return <section className="crm-v2-panel"><p>Deal não encontrado.</p></section>;
   }
 
-  const operationOptions = data.deal.dealType === 'HOSPEDAGEM'
-    ? [
-        { code: 'briefing_pendente', label: 'Briefing pendente' },
-        { code: 'pre_prompt', label: 'Pré-prompt' },
-        { code: 'template_v1', label: 'Template V1' },
-        { code: 'ajustes', label: 'Ajustes' },
-        { code: 'aprovacao_cliente', label: 'Aprovação do cliente' },
-        { code: 'publicacao', label: 'Publicação' },
-        { code: 'publicado', label: 'Publicado' },
-      ]
-    : [
-        { code: 'kickoff', label: 'Kickoff' },
-        { code: 'requisitos', label: 'Requisitos' },
-        { code: 'desenvolvimento', label: 'Desenvolvimento' },
-        { code: 'validacao', label: 'Validação' },
-        { code: 'entrega', label: 'Entrega' },
-        { code: 'suporte_inicial', label: 'Suporte inicial' },
-      ];
+  const operationTabs = operationFlow?.operation?.stageTabs || [];
+  const currentStageCode = operationFlow?.operation?.activeStageCode || operationStageTab;
+  const publicationReady = operationFlow?.publication?.summary?.ready || false;
+
+  function appendPrePromptSnippet(text: string) {
+    setPrePromptForm((prev) => ({ ...prev, promptText: `${prev.promptText}${prev.promptText ? '\n' : ''}${text}` }));
+  }
 
   return (
     <section className="crm-v2-panel deal-detail-wrapper">
@@ -712,197 +854,386 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {tab === 'operacao' && canShowClientTabs ? (
         <div className="deal-tab-panel">
-          <div className="stack-form operation-inline-control">
-            <label>Etapa operacional</label>
-            <select onChange={(e) => e.target.value && advanceOperation(e.target.value)} defaultValue="">
-              <option value="" disabled>Mover operação para...</option>
-              {operationOptions.map((op) => (
-                <option key={op.code} value={op.code}>{op.label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Etapa</th>
-                  <th>Tipo</th>
-                  <th>Status</th>
-                  <th>Início</th>
-                  <th>Conclusão</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.operations.map((operation) => (
-                  <tr key={operation.id}>
-                    <td>{operation.stageName}</td>
-                    <td>{operation.operationType}</td>
-                    <td>{operation.status}</td>
-                    <td>{dateTime(operation.startedAt)}</td>
-                    <td>{dateTime(operation.completedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {data.deal.dealType === 'HOSPEDAGEM' ? (
-            <div className="operation-flow-blocks">
-              <section className="operation-card">
-                <h4>Pré-prompt</h4>
-                <p className="muted">Edite o prompt base, solicite informações adicionais por e-mail e aprove para gerar o Template V1.</p>
-                <label>Prompt</label>
-                <textarea
-                  rows={8}
-                  value={prePromptForm.promptText}
-                  onChange={(e) => setPrePromptForm((prev) => ({ ...prev, promptText: e.target.value }))}
-                  placeholder="Prompt para geração do site institucional..."
-                />
-                <label>Solicitação adicional ao cliente (e-mail)</label>
-                <textarea
-                  rows={3}
-                  value={prePromptForm.notes}
-                  onChange={(e) => setPrePromptForm((prev) => ({ ...prev, notes: e.target.value }))}
-                  placeholder="Descreva quais informações faltam para seguir..."
-                />
-                <div className="operation-actions">
-                  <button type="button" className="secondary-btn" onClick={requestPrePromptInfo}>Solicitar informações</button>
-                  <button type="button" className="primary-btn" onClick={approvePrePrompt}>Aprovar pré-prompt</button>
+          {data.deal.dealType !== 'HOSPEDAGEM' ? (
+            <p>Fluxo por sub-abas desta versão disponível somente para hospedagem.</p>
+          ) : (
+            <div className="operation-stage-layout">
+              <nav className="operation-stage-tabs">
+                {operationTabs.map((op) => (
                   <button
+                    key={op.code}
                     type="button"
-                    className="secondary-btn"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(prePromptForm.promptText || '');
-                        setNotice('Prompt copiado para a área de transferência.');
-                      } catch {
-                        setNotice('Não foi possível copiar automaticamente. Copie manualmente o texto.');
-                      }
-                    }}
+                    className={operationStageTab === op.code ? 'active' : ''}
+                    onClick={() => setOperationStageTab(op.code)}
+                    title={STAGE_LABEL[op.code] || op.name}
                   >
-                    Copiar prompt
+                    {STAGE_LABEL[op.code] || op.name}
                   </button>
+                ))}
+              </nav>
+
+              <div className="operation-card">
+                <div className="operation-card-head">
+                  <h4>{STAGE_LABEL[operationStageTab] || operationStageTab}</h4>
+                  <span className={`status-chip ${operationStageTab === currentStageCode ? 'ativo' : 'atrasado'}`}>
+                    {operationStageTab === currentStageCode ? 'Etapa ativa' : 'Etapa não ativa'}
+                  </span>
                 </div>
-                {operationFlow?.prompt?.latest ? (
-                  <small className="muted">
-                    Última revisão: v{operationFlow.prompt.latest.version} ({operationFlow.prompt.latest.status}) em {dateTime(operationFlow.prompt.latest.updatedAt)}
-                  </small>
+                {operationStageTab !== currentStageCode ? (
+                  <div className="operation-actions">
+                    <button type="button" className="primary-btn" onClick={() => moveOperationStage(operationStageTab)}>
+                      Mover operação para esta etapa
+                    </button>
+                  </div>
                 ) : null}
-              </section>
 
-              <section className="operation-card">
-                <h4>Template V1 / Ajustes</h4>
-                <p className="muted">Registre revisões, abra a pasta no VS Code e acompanhe o preview temporário.</p>
-                <div className="template-form-grid">
-                  <div>
-                    <label>Arquivo de entrada</label>
-                    <input value={templateForm.entryFile} onChange={(e) => setTemplateForm((prev) => ({ ...prev, entryFile: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label>Hash da revisão (opcional)</label>
-                    <input value={templateForm.sourceHash} onChange={(e) => setTemplateForm((prev) => ({ ...prev, sourceHash: e.target.value }))} placeholder="sha256..." />
-                  </div>
-                  <div>
-                    <label>Status da revisão</label>
-                    <select value={templateForm.status} onChange={(e) => setTemplateForm((prev) => ({ ...prev, status: e.target.value }))}>
-                      <option value="GENERATED">Gerado</option>
-                      <option value="IN_ADJUSTMENT">Em ajustes</option>
-                      <option value="APPROVED_INTERNAL">Aprovado internamente</option>
-                    </select>
-                  </div>
-                </div>
+                {operationStageTab === 'briefing_pendente' ? (
+                  <>
+                    <p className="muted">
+                      Aguardando envio do briefing no portal do cliente. Assim que enviado, avance para Pré-prompt.
+                    </p>
+                    <div className="operation-actions">
+                      <button type="button" className="secondary-btn" onClick={() => moveOperationStage('pre_prompt')}>
+                        Avançar para Pré-prompt
+                      </button>
+                    </div>
+                  </>
+                ) : null}
 
-                <div className="operation-actions">
-                  <button type="button" className="primary-btn" onClick={createTemplateRevision}>Registrar revisão</button>
-                  {operationFlow?.template?.vscode?.deepLink ? (
-                    <a className="secondary-btn link-btn" href={operationFlow.template.vscode.deepLink}>Abrir VS Code (SSH)</a>
-                  ) : null}
-                  {operationFlow?.template?.vscode?.webLink ? (
-                    <a className="secondary-btn link-btn" href={operationFlow.template.vscode.webLink} target="_blank" rel="noreferrer">Abrir VS Code Web</a>
-                  ) : null}
-                </div>
-
-                <div className="table-wrap" style={{ marginTop: 12 }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Versão</th>
-                        <th>Status</th>
-                        <th>Preview</th>
-                        <th>Hash</th>
-                        <th>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(operationFlow?.template?.revisions || []).map((revision) => (
-                        <tr key={revision.id}>
-                          <td>v{revision.version}</td>
-                          <td>{revision.status}</td>
-                          <td>
-                            {revision.previewUrl ? (
-                              <a href={revision.previewUrl} target="_blank" rel="noreferrer">Abrir preview</a>
-                            ) : '-'}
-                          </td>
-                          <td>{revision.sourceHash ? `${revision.sourceHash.slice(0, 12)}...` : '-'}</td>
-                          <td>
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={() => sendTemplateForApproval(revision.id)}
-                              disabled={approvalSending}
-                            >
-                              Enviar para aprovação
-                            </button>
-                          </td>
-                        </tr>
+                {operationStageTab === 'pre_prompt' ? (
+                  <>
+                    <p className="muted">
+                      Ambiente de edição do pré-prompt com snippets, solicitação estruturada de informações e aprovação da revisão.
+                    </p>
+                    <div className="preprompt-toolbar">
+                      {PREPROMPT_SNIPPETS.map((snippet) => (
+                        <button key={snippet.label} type="button" className="secondary-btn" onClick={() => appendPrePromptSnippet(snippet.text)}>
+                          + {snippet.label}
+                        </button>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                    </div>
+                    <label>Prompt (editor)</label>
+                    <textarea
+                      rows={12}
+                      value={prePromptForm.promptText}
+                      onChange={(e) => setPrePromptForm((prev) => ({ ...prev, promptText: e.target.value }))}
+                      placeholder="Descreva de forma estruturada objetivo, tom, restrições, SEO e CTA."
+                    />
+                    <div className="template-form-grid">
+                      <div>
+                        <label>Assunto da solicitação</label>
+                        <input
+                          value={prePromptForm.subject}
+                          onChange={(e) => setPrePromptForm((prev) => ({ ...prev, subject: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label>Prazo para resposta</label>
+                        <input
+                          type="datetime-local"
+                          value={prePromptForm.dueAt}
+                          onChange={(e) => setPrePromptForm((prev) => ({ ...prev, dueAt: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <label>Itens solicitados (um por linha)</label>
+                    <textarea
+                      rows={4}
+                      value={prePromptForm.requestItems}
+                      onChange={(e) => setPrePromptForm((prev) => ({ ...prev, requestItems: e.target.value }))}
+                      placeholder={'Ex:\nLogo em SVG\nTexto institucional validado\nLista de serviços prioritários'}
+                    />
+                    <label>Mensagem complementar</label>
+                    <textarea
+                      rows={4}
+                      value={prePromptForm.message}
+                      onChange={(e) => setPrePromptForm((prev) => ({ ...prev, message: e.target.value }))}
+                      placeholder="Detalhes adicionais para o cliente responder por e-mail."
+                    />
+                    <div className="template-form-grid">
+                      <div>
+                        <label>Modelo base para aprovar pré-prompt</label>
+                        <select
+                          value={templateForm.templateModelCode}
+                          onChange={(e) => setTemplateForm((prev) => ({ ...prev, templateModelCode: e.target.value }))}
+                        >
+                          {(operationFlow?.template?.catalog || []).map((model) => (
+                            <option key={model.code} value={model.code}>{model.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label>Modo de cópia para pasta do cliente</label>
+                        <select
+                          value={templateForm.copyMode}
+                          onChange={(e) => setTemplateForm((prev) => ({ ...prev, copyMode: e.target.value }))}
+                        >
+                          <option value="if_empty_or_missing">Copiar se vazio/incompleto</option>
+                          <option value="replace">Substituir conteúdo existente (com backup)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="operation-actions">
+                      <button type="button" className="secondary-btn" onClick={savePrePromptDraft}>Salvar rascunho</button>
+                      <button type="button" className="secondary-btn" onClick={requestPrePromptInfo}>Solicitar informações</button>
+                      <button type="button" className="primary-btn" onClick={approvePrePrompt}>Aprovar pré-prompt</button>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(prePromptForm.promptText || '');
+                            setNotice('Prompt copiado para a área de transferência.');
+                          } catch {
+                            setNotice('Não foi possível copiar automaticamente. Copie manualmente o texto.');
+                          }
+                        }}
+                      >
+                        Copiar prompt
+                      </button>
+                    </div>
+                    {operationFlow?.prompt?.latest ? (
+                      <small className="muted">
+                        Última revisão: v{operationFlow.prompt.latest.version} ({operationFlow.prompt.latest.status}) em {dateTime(operationFlow.prompt.latest.updatedAt)}
+                      </small>
+                    ) : null}
+                  </>
+                ) : null}
 
-              <section className="operation-card">
-                <h4>Aprovação do cliente e publicação</h4>
-                <div className="operation-meta-grid">
-                  <div>
-                    <label>Status aprovação</label>
-                    <strong>{operationFlow?.approval?.latest?.status || 'Sem envio'}</strong>
-                  </div>
-                  <div>
-                    <label>Expira em</label>
-                    <strong>{dateTime(operationFlow?.approval?.latest?.expiresAt || null)}</strong>
-                  </div>
-                  <div>
-                    <label>Resposta do cliente</label>
-                    <strong>{operationFlow?.approval?.latest?.clientNote || '-'}</strong>
-                  </div>
-                </div>
-                <div className="table-wrap" style={{ marginTop: 12 }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Domínio</th>
-                        <th>HTTP</th>
-                        <th>Match hash</th>
-                        <th>Check em</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(operationFlow?.publication?.checks || []).map((check) => (
-                        <tr key={check.id}>
-                          <td>{check.targetDomain || '-'}</td>
-                          <td>{check.lastHttpStatus ?? '-'}</td>
-                          <td>{check.matches ? 'Sim' : 'Não'}</td>
-                          <td>{dateTime(check.checkedAt)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                {(operationStageTab === 'template_v1' || operationStageTab === 'ajustes') ? (
+                  <>
+                    <p className="muted">
+                      Selecione o modelo base, registre a revisão e valide no preview. Abra o VS Code com SSH/Web para executar os ajustes no diretório do cliente.
+                    </p>
+                    <div className="template-form-grid">
+                      <div>
+                        <label>Modelo base</label>
+                        <select
+                          value={templateForm.templateModelCode}
+                          onChange={(e) => setTemplateForm((prev) => ({ ...prev, templateModelCode: e.target.value }))}
+                        >
+                          {(operationFlow?.template?.catalog || []).map((model) => (
+                            <option key={model.code} value={model.code}>{model.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label>Arquivo de entrada</label>
+                        <input value={templateForm.entryFile} onChange={(e) => setTemplateForm((prev) => ({ ...prev, entryFile: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label>Status da revisão</label>
+                        <select value={templateForm.status} onChange={(e) => setTemplateForm((prev) => ({ ...prev, status: e.target.value }))}>
+                          <option value="GENERATED">Gerado</option>
+                          <option value="IN_ADJUSTMENT">Em ajustes</option>
+                          <option value="APPROVED_INTERNAL">Aprovado internamente</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="template-form-grid">
+                      <div>
+                        <label>Hash da revisão (opcional)</label>
+                        <input value={templateForm.sourceHash} onChange={(e) => setTemplateForm((prev) => ({ ...prev, sourceHash: e.target.value }))} placeholder="sha256..." />
+                      </div>
+                      <div>
+                        <label>Caminho do projeto atual</label>
+                        <input value={operationFlow?.template?.latest?.projectPath || '-'} readOnly />
+                      </div>
+                      <div>
+                        <label>Entry atual</label>
+                        <input value={operationFlow?.template?.latest?.entryFile || '-'} readOnly />
+                      </div>
+                    </div>
+                    <label>Configuração SSH de referência</label>
+                    <pre className="operation-ssh-block">{operationFlow?.template?.sshConfig || ''}</pre>
+
+                    <div className="operation-actions">
+                      <button type="button" className="primary-btn" onClick={createTemplateRevision}>Registrar revisão</button>
+                      <button type="button" className="secondary-btn" onClick={() => moveOperationStage('ajustes')}>Marcar como ajustes</button>
+                      <button type="button" className="secondary-btn" onClick={() => moveOperationStage('aprovacao_cliente')}>Aprovar internamente</button>
+                      {operationFlow?.template?.vscode?.deepLink ? (
+                        <a className="secondary-btn link-btn" href={operationFlow.template.vscode.deepLink}>Abrir VS Code (SSH)</a>
+                      ) : null}
+                      {operationFlow?.template?.vscode?.webLink ? (
+                        <a className="secondary-btn link-btn" href={operationFlow.template.vscode.webLink} target="_blank" rel="noreferrer">Abrir VS Code Web</a>
+                      ) : null}
+                    </div>
+
+                    <div className="table-wrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Versão</th>
+                            <th>Status</th>
+                            <th>Preview</th>
+                            <th>Hash</th>
+                            <th>Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(operationFlow?.template?.revisions || []).map((revision) => (
+                            <tr key={revision.id}>
+                              <td>v{revision.version}</td>
+                              <td>{revision.status}</td>
+                              <td>
+                                {revision.previewUrl ? (
+                                  <a href={revision.previewUrl} target="_blank" rel="noreferrer">Abrir preview</a>
+                                ) : '-'}
+                              </td>
+                              <td>{revision.sourceHash ? `${revision.sourceHash.slice(0, 12)}...` : '-'}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => sendTemplateForApproval(revision.id)}
+                                  disabled={approvalSending}
+                                >
+                                  Enviar para aprovação
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : null}
+
+                {operationStageTab === 'aprovacao_cliente' ? (
+                  <>
+                    <p className="muted">Envie ou reenvie o link temporário para validação do cliente no portal.</p>
+                    <div className="operation-meta-grid">
+                      <div>
+                        <label>Status aprovação</label>
+                        <strong>{operationFlow?.approval?.latest?.status || 'Sem envio'}</strong>
+                      </div>
+                      <div>
+                        <label>Expira em</label>
+                        <strong>{dateTime(operationFlow?.approval?.latest?.expiresAt || null)}</strong>
+                      </div>
+                      <div>
+                        <label>Resposta do cliente</label>
+                        <strong>{operationFlow?.approval?.latest?.clientNote || '-'}</strong>
+                      </div>
+                    </div>
+                    <div className="operation-actions">
+                      <button type="button" className="primary-btn" onClick={() => sendTemplateForApproval()} disabled={approvalSending}>
+                        {approvalSending ? 'Enviando...' : 'Enviar/Reenviar para aprovação'}
+                      </button>
+                      <button type="button" className="secondary-btn" onClick={() => moveOperationStage('publicacao')}>
+                        Mover para publicação
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+
+                {operationStageTab === 'publicacao' ? (
+                  <>
+                    <p className="muted">Checklist de sub-etapas fixas para publicação. Após concluir obrigatórias, o monitor estrito valida e publica automaticamente.</p>
+                    <div className="operation-meta-grid">
+                      <div>
+                        <label>Obrigatórias concluídas</label>
+                        <strong>{operationFlow?.publication?.summary?.requiredCompleted || 0} / {operationFlow?.publication?.summary?.requiredTotal || 0}</strong>
+                      </div>
+                      <div>
+                        <label>Pendências</label>
+                        <strong>{operationFlow?.publication?.summary?.pendingTotal || 0}</strong>
+                      </div>
+                      <div>
+                        <label>Estado</label>
+                        <strong>{publicationReady ? 'Publicando (monitor ativo)' : 'Checklist em andamento'}</strong>
+                      </div>
+                    </div>
+                    <div className="table-wrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Sub-etapa</th>
+                            <th>Status</th>
+                            <th>Responsável</th>
+                            <th>Notas</th>
+                            <th>Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(operationFlow?.publication?.substeps || []).map((substep) => (
+                            <tr key={substep.id}>
+                              <td>{substep.substepName}</td>
+                              <td>{substep.status}</td>
+                              <td>{substep.owner || '-'}</td>
+                              <td>{substep.notes || '-'}</td>
+                              <td>
+                                <div className="row-actions proposal-row-actions">
+                                  <button
+                                    type="button"
+                                    className="secondary-btn"
+                                    onClick={() => updatePublicationSubstep(substep.id, { status: 'IN_PROGRESS' })}
+                                    disabled={updatingSubstepId === substep.id}
+                                  >
+                                    Iniciar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="primary-btn"
+                                    onClick={() => updatePublicationSubstep(substep.id, { status: 'COMPLETED' })}
+                                    disabled={updatingSubstepId === substep.id}
+                                  >
+                                    Concluir
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="table-wrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Domínio</th>
+                            <th>HTTP</th>
+                            <th>Match hash</th>
+                            <th>Check em</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(operationFlow?.publication?.checks || []).map((check) => (
+                            <tr key={check.id}>
+                              <td>{check.targetDomain || '-'}</td>
+                              <td>{check.lastHttpStatus ?? '-'}</td>
+                              <td>{check.matches ? 'Sim' : 'Não'}</td>
+                              <td>{dateTime(check.checkedAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : null}
+
+                {operationStageTab === 'publicado' ? (
+                  <>
+                    <p className="muted">Site publicado com monitoramento ativo e registro de auditoria no histórico.</p>
+                    <div className="operation-meta-grid">
+                      <div>
+                        <label>Domínio final</label>
+                        <strong>{operationFlow?.deal?.organizationDomain || '-'}</strong>
+                      </div>
+                      <div>
+                        <label>Último check</label>
+                        <strong>{dateTime(operationFlow?.publication?.checks?.[0]?.checkedAt || null)}</strong>
+                      </div>
+                      <div>
+                        <label>Status</label>
+                        <strong>Publicado</strong>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </div>
             </div>
-          ) : null}
+          )}
         </div>
       ) : null}
 

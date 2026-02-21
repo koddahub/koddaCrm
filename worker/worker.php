@@ -17,6 +17,521 @@ function envString(string $key, string $default = ''): string
     return trim((string)$value);
 }
 
+function ensureDealSuppressionTable(): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.deal_suppression (
+            organization_id uuid NOT NULL,
+            deal_type varchar(40) NOT NULL,
+            subscription_id uuid NULL,
+            reason text NULL,
+            created_by varchar(120) NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (organization_id, deal_type)
+        )
+    ");
+    db()->exec("
+        CREATE INDEX IF NOT EXISTS deal_suppression_subscription_idx
+          ON crm.deal_suppression(subscription_id)
+    ");
+    $ready = true;
+}
+
+function isSuppressedDeal(string $organizationId, string $dealType): bool
+{
+    $row = db()->one("
+        SELECT organization_id
+        FROM crm.deal_suppression
+        WHERE organization_id = :oid
+          AND deal_type = :dtype
+        LIMIT 1
+    ", [
+        ':oid' => $organizationId,
+        ':dtype' => $dealType,
+    ]);
+    return (bool)$row;
+}
+
+function ensureClientBillingTables(): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.client_billing_classification (
+            deal_id uuid PRIMARY KEY,
+            organization_id uuid NOT NULL,
+            class_status varchar(20) NOT NULL CHECK (class_status IN ('ATIVO','ATRASADO','INATIVO')),
+            days_late int NOT NULL DEFAULT 0,
+            reference_due_date date NULL,
+            last_payment_status varchar(40) NULL,
+            last_payment_id uuid NULL,
+            ticket_id uuid NULL,
+            ticket_created_at timestamptz NULL,
+            ghosted_at timestamptz NULL,
+            ghost_reason text NULL,
+            last_transition_at timestamptz NOT NULL DEFAULT now(),
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_client_billing_class_status ON crm.client_billing_classification(class_status)");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_client_billing_org ON crm.client_billing_classification(organization_id)");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_client_billing_ghosted ON crm.client_billing_classification(ghosted_at)");
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.holiday_calendar (
+            holiday_date date PRIMARY KEY,
+            name varchar(180) NOT NULL,
+            scope varchar(20) NOT NULL DEFAULT 'NACIONAL',
+            created_at timestamptz NOT NULL DEFAULT now()
+        )
+    ");
+
+    $ready = true;
+}
+
+function ensureSite24hOperationTables(): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.deal_operation_substep (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+            stage_code VARCHAR(80) NOT NULL,
+            substep_code VARCHAR(80) NOT NULL,
+            substep_name VARCHAR(140) NOT NULL,
+            substep_order INT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+            is_required BOOLEAN NOT NULL DEFAULT true,
+            owner VARCHAR(120),
+            notes TEXT,
+            started_at TIMESTAMPTZ,
+            completed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (deal_id, stage_code, substep_code)
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_order ON crm.deal_operation_substep(deal_id, stage_code, substep_order)");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_status ON crm.deal_operation_substep(deal_id, stage_code, status)");
+
+    $ready = true;
+}
+
+function cleanupPasswordResetTokens(string $logFile): void
+{
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS client.password_resets (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            email VARCHAR(255) NOT NULL,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            ip_address VARCHAR(45),
+            user_agent TEXT
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_password_resets_email_state ON client.password_resets(email, used_at, expires_at)");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON client.password_resets(expires_at)");
+    $deleted = db()->one("
+      WITH d AS (
+        DELETE FROM client.password_resets
+        WHERE expires_at < now()
+           OR (used_at IS NOT NULL AND used_at < now() - interval '7 day')
+        RETURNING 1
+      )
+      SELECT count(*)::int AS total FROM d
+    ");
+    $count = (int)($deleted['total'] ?? 0);
+    file_put_contents(
+        $logFile,
+        '[' . date('c') . '] password_reset_cleanup -> removed=' . $count . PHP_EOL,
+        FILE_APPEND
+    );
+}
+
+function easterDate(int $year): DateTimeImmutable
+{
+    $a = $year % 19;
+    $b = intdiv($year, 100);
+    $c = $year % 100;
+    $d = intdiv($b, 4);
+    $e = $b % 4;
+    $f = intdiv($b + 8, 25);
+    $g = intdiv($b - $f + 1, 3);
+    $h = (19 * $a + $b - $d - $g + 15) % 30;
+    $i = intdiv($c, 4);
+    $k = $c % 4;
+    $l = (32 + 2 * $e + 2 * $i - $h - $k) % 7;
+    $m = intdiv($a + 11 * $h + 22 * $l, 451);
+    $month = intdiv($h + $l - 7 * $m + 114, 31);
+    $day = (($h + $l - 7 * $m + 114) % 31) + 1;
+    return new DateTimeImmutable(sprintf('%04d-%02d-%02d', $year, $month, $day));
+}
+
+function addDays(DateTimeImmutable $date, int $days): DateTimeImmutable
+{
+    return $date->modify(($days >= 0 ? '+' : '') . $days . ' day');
+}
+
+function seedNationalHolidays(int $fromYear = 2026, int $toYear = 2030): void
+{
+    for ($year = $fromYear; $year <= $toYear; $year++) {
+        $easter = easterDate($year);
+        $carnivalMonday = addDays($easter, -48)->format('Y-m-d');
+        $carnivalTuesday = addDays($easter, -47)->format('Y-m-d');
+        $goodFriday = addDays($easter, -2)->format('Y-m-d');
+        $corpusChristi = addDays($easter, 60)->format('Y-m-d');
+
+        $fixed = [
+            ['date' => sprintf('%04d-01-01', $year), 'name' => 'Confraternização Universal'],
+            ['date' => $carnivalMonday, 'name' => 'Carnaval (segunda-feira)'],
+            ['date' => $carnivalTuesday, 'name' => 'Carnaval (terça-feira)'],
+            ['date' => $goodFriday, 'name' => 'Sexta-feira Santa'],
+            ['date' => sprintf('%04d-04-21', $year), 'name' => 'Tiradentes'],
+            ['date' => sprintf('%04d-05-01', $year), 'name' => 'Dia do Trabalho'],
+            ['date' => $corpusChristi, 'name' => 'Corpus Christi'],
+            ['date' => sprintf('%04d-09-07', $year), 'name' => 'Independência do Brasil'],
+            ['date' => sprintf('%04d-10-12', $year), 'name' => 'Nossa Senhora Aparecida'],
+            ['date' => sprintf('%04d-11-02', $year), 'name' => 'Finados'],
+            ['date' => sprintf('%04d-11-15', $year), 'name' => 'Proclamação da República'],
+            ['date' => sprintf('%04d-11-20', $year), 'name' => 'Dia da Consciência Negra'],
+            ['date' => sprintf('%04d-12-25', $year), 'name' => 'Natal'],
+        ];
+
+        foreach ($fixed as $holiday) {
+            db()->exec("
+                INSERT INTO crm.holiday_calendar(holiday_date, name, scope)
+                VALUES(:d::date, :n, 'NACIONAL')
+                ON CONFLICT (holiday_date) DO NOTHING
+            ", [
+                ':d' => $holiday['date'],
+                ':n' => $holiday['name'],
+            ]);
+        }
+    }
+}
+
+function loadHolidaySet(): array
+{
+    $rows = db()->all("SELECT holiday_date::text AS d FROM crm.holiday_calendar WHERE scope='NACIONAL'");
+    $set = [];
+    foreach ($rows as $row) {
+        $set[(string)$row['d']] = true;
+    }
+    return $set;
+}
+
+function addBusinessDays(DateTimeImmutable $start, int $days, array $holidaySet): DateTimeImmutable
+{
+    $cursor = $start;
+    $added = 0;
+    while ($added < $days) {
+        $cursor = $cursor->modify('+1 day');
+        $dow = (int)$cursor->format('N');
+        $dateKey = $cursor->format('Y-m-d');
+        if ($dow >= 6) {
+            continue;
+        }
+        if (isset($holidaySet[$dateKey])) {
+            continue;
+        }
+        $added++;
+    }
+    return $cursor;
+}
+
+function paidStatuses(): array
+{
+    return ['CONFIRMED', 'RECEIVED', 'PAID', 'RECEIVED_IN_CASH', 'SETTLED'];
+}
+
+function calculateDaysLate(?string $dueDate): int
+{
+    if (!$dueDate) {
+        return 0;
+    }
+    $today = new DateTimeImmutable('today');
+    $due = DateTimeImmutable::createFromFormat('Y-m-d', substr($dueDate, 0, 10)) ?: new DateTimeImmutable($dueDate);
+    $diffSeconds = $today->getTimestamp() - $due->setTime(0, 0)->getTimestamp();
+    if ($diffSeconds <= 0) {
+        return 0;
+    }
+    return (int)floor($diffSeconds / 86400);
+}
+
+function resolveClientClass(string $subscriptionStatus, int $daysLate): string
+{
+    $status = strtoupper(trim($subscriptionStatus));
+    if (in_array($status, ['CANCELED', 'CANCELLED', 'SUSPENDED'], true)) {
+        return 'INATIVO';
+    }
+    if ($daysLate > 15) {
+        return 'INATIVO';
+    }
+    if ($daysLate >= 3) {
+        return 'ATRASADO';
+    }
+    return 'ATIVO';
+}
+
+function ensureInativoTicket(string $dealId, string $organizationId, string $legalName, int $daysLate, array $holidaySet): string
+{
+    $existing = db()->one("
+        SELECT id
+        FROM client.tickets
+        WHERE organization_id=:oid
+          AND ticket_type='INADIMPLENCIA_DESATIVACAO'
+          AND status IN ('OPEN','NEW','PENDING')
+        ORDER BY created_at DESC
+        LIMIT 1
+    ", [':oid' => $organizationId]);
+
+    $ticketId = $existing ? (string)$existing['id'] : '';
+    if ($ticketId === '') {
+        $inserted = db()->one("
+            INSERT INTO client.tickets(
+                organization_id, ticket_type, priority, subject, description, status
+            )
+            VALUES(
+                :oid, 'INADIMPLENCIA_DESATIVACAO', 'ALTA', :subject, :description, 'OPEN'
+            )
+            RETURNING id
+        ", [
+            ':oid' => $organizationId,
+            ':subject' => 'Desativação programada por inadimplência',
+            ':description' => sprintf(
+                'Cliente %s está com %d dias de atraso. Avaliar desativação do site em até 5 dias úteis.',
+                $legalName !== '' ? $legalName : $organizationId,
+                $daysLate
+            ),
+        ]);
+        $ticketId = (string)($inserted['id'] ?? '');
+    }
+
+    $queue = db()->one("SELECT id FROM crm.ticket_queue WHERE ticket_id=:tid LIMIT 1", [':tid' => $ticketId]);
+    if (!$queue) {
+        $deadline = addBusinessDays(new DateTimeImmutable('now'), 5, $holidaySet)->format('Y-m-d H:i:s');
+        db()->exec("
+            INSERT INTO crm.ticket_queue(ticket_id, queue_name, sla_deadline, status)
+            VALUES(:tid, 'DESATIVACAO_SITE', :sla, 'NEW')
+        ", [
+            ':tid' => $ticketId,
+            ':sla' => $deadline,
+        ]);
+    }
+
+    db()->exec("
+        INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+        VALUES(:did, 'INADIMPLENCIA_INATIVO', :content, :meta::jsonb, 'WORKER')
+    ", [
+        ':did' => $dealId,
+        ':content' => 'Cliente entrou em INATIVO por inadimplência. Ticket de desativação criado/atualizado.',
+        ':meta' => json_encode(['ticket_id' => $ticketId, 'days_late' => $daysLate], JSON_UNESCAPED_UNICODE),
+    ]);
+
+    return $ticketId;
+}
+
+function syncClientBillingClassification(string $logFile): void
+{
+    ensureClientBillingTables();
+    seedNationalHolidays();
+    $holidaySet = loadHolidaySet();
+
+    $deals = db()->all("
+        SELECT
+            d.id AS deal_id,
+            d.organization_id,
+            d.subscription_id,
+            coalesce(d.contact_name, d.title, '') AS contact_name
+        FROM crm.deal d
+        WHERE d.deal_type='HOSPEDAGEM'
+          AND d.lifecycle_status='CLIENT'
+        ORDER BY d.updated_at DESC
+        LIMIT 2000
+    ");
+
+    $paid = paidStatuses();
+    $paidSql = "'" . implode("','", array_map(static fn($s) => strtoupper($s), $paid)) . "'";
+    $updated = 0;
+    $transitioned = 0;
+
+    foreach ($deals as $deal) {
+        $dealId = (string)$deal['deal_id'];
+        $organizationId = (string)$deal['organization_id'];
+        if ($organizationId === '') {
+            continue;
+        }
+
+        $subscription = db()->one("
+            SELECT id, status, next_due_date
+            FROM client.subscriptions
+            WHERE organization_id=:oid
+            ORDER BY created_at DESC
+            LIMIT 1
+        ", [':oid' => $organizationId]);
+
+        $subscriptionId = (string)($subscription['id'] ?? $deal['subscription_id'] ?? '');
+        $subscriptionStatus = strtoupper((string)($subscription['status'] ?? 'PENDING'));
+        $nextDueDate = (string)($subscription['next_due_date'] ?? '');
+
+        $refPayment = null;
+        if ($subscriptionId !== '') {
+            $refPayment = db()->one("
+                SELECT id, status, due_date
+                FROM client.payments
+                WHERE subscription_id=:sid
+                  AND due_date <= CURRENT_DATE
+                  AND upper(status) NOT IN ({$paidSql})
+                ORDER BY due_date DESC, created_at DESC
+                LIMIT 1
+            ", [':sid' => $subscriptionId]);
+
+            if (!$refPayment) {
+                $refPayment = db()->one("
+                    SELECT id, status, due_date
+                    FROM client.payments
+                    WHERE subscription_id=:sid
+                    ORDER BY coalesce(paid_at, due_date::timestamp, created_at) DESC
+                    LIMIT 1
+                ", [':sid' => $subscriptionId]);
+            }
+        }
+
+        $referenceDue = (string)($refPayment['due_date'] ?? '');
+        if ($referenceDue === '' && $nextDueDate !== '' && $nextDueDate <= date('Y-m-d')) {
+            $referenceDue = $nextDueDate;
+        }
+        $daysLate = calculateDaysLate($referenceDue);
+        $classStatus = resolveClientClass($subscriptionStatus, $daysLate);
+        $lastPaymentStatus = strtoupper((string)($refPayment['status'] ?? $subscriptionStatus));
+        $lastPaymentId = (string)($refPayment['id'] ?? '');
+
+        $existing = db()->one("
+            SELECT class_status, ghosted_at, ticket_id
+            FROM crm.client_billing_classification
+            WHERE deal_id=:did
+            LIMIT 1
+        ", [':did' => $dealId]);
+
+        $prevClass = $existing ? (string)$existing['class_status'] : '';
+        $ghostedAt = $existing ? (string)($existing['ghosted_at'] ?? '') : '';
+        $ticketId = $existing ? (string)($existing['ticket_id'] ?? '') : '';
+        $classChanged = ($prevClass !== '' && $prevClass !== $classStatus);
+
+        if ($classStatus === 'INATIVO' && ($prevClass !== 'INATIVO' || $ticketId === '')) {
+            $ticketId = ensureInativoTicket($dealId, $organizationId, (string)$deal['contact_name'], $daysLate, $holidaySet);
+        }
+
+        if (!$existing) {
+            db()->exec("
+                INSERT INTO crm.client_billing_classification(
+                    deal_id, organization_id, class_status, days_late, reference_due_date,
+                    last_payment_status, last_payment_id, ticket_id, ticket_created_at,
+                    ghosted_at, ghost_reason, last_transition_at, created_at, updated_at
+                )
+                VALUES(
+                    :did, :oid, :class_status, :days_late, :reference_due_date,
+                    :last_payment_status, :last_payment_id, :ticket_id, :ticket_created_at,
+                    NULL, NULL, now(), now(), now()
+                )
+            ", [
+                ':did' => $dealId,
+                ':oid' => $organizationId,
+                ':class_status' => $classStatus,
+                ':days_late' => $daysLate,
+                ':reference_due_date' => $referenceDue !== '' ? $referenceDue : null,
+                ':last_payment_status' => $lastPaymentStatus !== '' ? $lastPaymentStatus : null,
+                ':last_payment_id' => $lastPaymentId !== '' ? $lastPaymentId : null,
+                ':ticket_id' => $ticketId !== '' ? $ticketId : null,
+                ':ticket_created_at' => $ticketId !== '' ? date('Y-m-d H:i:s') : null,
+            ]);
+            db()->exec("
+                INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+                VALUES(:did, 'CLIENT_CLASSIFICATION', :content, :meta::jsonb, 'WORKER')
+            ", [
+                ':did' => $dealId,
+                ':content' => 'Classificação financeira inicial: ' . $classStatus,
+                ':meta' => json_encode(['class_status' => $classStatus, 'days_late' => $daysLate], JSON_UNESCAPED_UNICODE),
+            ]);
+            $updated++;
+            continue;
+        }
+
+        $clearGhost = ($ghostedAt !== '' && $classStatus !== 'INATIVO');
+        db()->exec("
+            UPDATE crm.client_billing_classification
+            SET
+                class_status=:class_status,
+                days_late=:days_late,
+                reference_due_date=:reference_due_date,
+                last_payment_status=:last_payment_status,
+                last_payment_id=:last_payment_id,
+                ticket_id=:ticket_id::uuid,
+                ticket_created_at=CASE WHEN :ticket_id::uuid IS NOT NULL AND ticket_created_at IS NULL THEN now() ELSE ticket_created_at END,
+                ghosted_at=CASE WHEN :clear_ghost::boolean THEN NULL ELSE ghosted_at END,
+                ghost_reason=CASE WHEN :clear_ghost::boolean THEN NULL ELSE ghost_reason END,
+                last_transition_at=CASE WHEN :changed::boolean THEN now() ELSE last_transition_at END,
+                updated_at=now()
+            WHERE deal_id=:did
+        ", [
+            ':class_status' => $classStatus,
+            ':days_late' => $daysLate,
+            ':reference_due_date' => $referenceDue !== '' ? $referenceDue : null,
+            ':last_payment_status' => $lastPaymentStatus !== '' ? $lastPaymentStatus : null,
+            ':last_payment_id' => $lastPaymentId !== '' ? $lastPaymentId : null,
+            ':ticket_id' => $ticketId !== '' ? $ticketId : null,
+            ':clear_ghost' => $clearGhost ? 'true' : 'false',
+            ':changed' => $classChanged ? 'true' : 'false',
+            ':did' => $dealId,
+        ]);
+
+        if ($classChanged || $clearGhost) {
+            db()->exec("
+                INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+                VALUES(:did, 'CLIENT_CLASSIFICATION', :content, :meta::jsonb, 'WORKER')
+            ", [
+                ':did' => $dealId,
+                ':content' => sprintf(
+                    'Classificação financeira alterada de %s para %s.',
+                    $prevClass !== '' ? $prevClass : 'N/D',
+                    $classStatus
+                ),
+                ':meta' => json_encode([
+                    'from' => $prevClass,
+                    'to' => $classStatus,
+                    'days_late' => $daysLate,
+                    'ghost_cleared' => $clearGhost,
+                ], JSON_UNESCAPED_UNICODE),
+            ]);
+            $transitioned++;
+        }
+
+        $updated++;
+    }
+
+    file_put_contents(
+        $logFile,
+        '[' . date('c') . '] billing_classification_sync -> updated=' . $updated . ' transitioned=' . $transitioned . PHP_EOL,
+        FILE_APPEND
+    );
+}
+
 function decodeAttachmentList(mixed $raw): array
 {
     if (is_array($raw)) {
@@ -59,43 +574,143 @@ function resolveAttachmentAbsolute(string $storedPath): ?string
     return is_file($candidate) ? $candidate : null;
 }
 
+function encodeMimeHeader(string $value): string
+{
+    return preg_match('/^[\x20-\x7E]+$/', $value) ? $value : '=?UTF-8?B?' . base64_encode($value) . '?=';
+}
+
+function normalizeMailBody(string $body): string
+{
+    return preg_replace("/(?<!\r)\n/", "\r\n", (string)$body) ?? (string)$body;
+}
+
+function containsHtmlBody(string $body): bool
+{
+    return preg_match('/<[^>]+>/', $body) === 1;
+}
+
+function htmlToPlainText(string $html): string
+{
+    $text = preg_replace('/<(br|\/p|\/div|\/li)>/i', "\n", $html) ?? $html;
+    $text = strip_tags($text);
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $text = preg_replace("/\n{3,}/", "\n\n", $text) ?? $text;
+    return trim((string)$text);
+}
+
+function dotStuffSmtpData(string $data): string
+{
+    return preg_replace('/(?m)^\./', '..', $data) ?? $data;
+}
+
+function attachmentMimeType(string $path): string
+{
+    if (function_exists('finfo_open')) {
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo !== false) {
+            $mime = finfo_file($finfo, $path);
+            finfo_close($finfo);
+            if (is_string($mime) && $mime !== '') {
+                return $mime;
+            }
+        }
+    }
+    return 'application/octet-stream';
+}
+
 function buildMimeMessage(string $fromEmail, string $fromName, string $toEmail, string $subject, string $body, array $attachmentPaths = []): string
 {
-    $encodedSubject = '=?UTF-8?B?' . base64_encode($subject) . '?=';
-    $boundary = 'koddahub_' . bin2hex(random_bytes(8));
+    $hasHtml = containsHtmlBody($body);
+    $plainBody = $hasHtml ? htmlToPlainText($body) : $body;
+    $htmlBody = $hasHtml ? $body : nl2br(htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    $plainBody = normalizeMailBody($plainBody);
+    $htmlBody = normalizeMailBody($htmlBody);
+
+    $fromDomain = strstr($fromEmail, '@');
+    $fromDomain = $fromDomain !== false ? ltrim($fromDomain, '@') : 'koddahub.com.br';
+    $messageId = '<' . bin2hex(random_bytes(16)) . '@' . preg_replace('/[^a-z0-9\.\-]/i', '', $fromDomain) . '>';
+    $replyTo = envString('MAIL_REPLY_TO', $fromEmail);
+
     $headers = [
-        'From: ' . ($fromName !== '' ? '"' . addslashes($fromName) . '" ' : '') . '<' . $fromEmail . '>',
+        'Date: ' . gmdate('D, d M Y H:i:s O'),
+        'Message-ID: ' . $messageId,
+        'From: ' . ($fromName !== '' ? '"' . str_replace('"', '\"', encodeMimeHeader($fromName)) . '" ' : '') . '<' . $fromEmail . '>',
         'To: <' . $toEmail . '>',
+        'Reply-To: <' . $replyTo . '>',
         'MIME-Version: 1.0',
-        'Content-Type: multipart/mixed; boundary="' . $boundary . '"',
+        'Subject: ' . encodeMimeHeader($subject),
     ];
 
+    if (count($attachmentPaths) === 0) {
+        if ($hasHtml) {
+            $altBoundary = 'koddahub_alt_' . bin2hex(random_bytes(8));
+            $headers[] = 'Content-Type: multipart/alternative; boundary="' . $altBoundary . '"';
+            $parts = [
+                '--' . $altBoundary,
+                'Content-Type: text/plain; charset=UTF-8',
+                'Content-Transfer-Encoding: quoted-printable',
+                '',
+                quoted_printable_encode($plainBody),
+                '--' . $altBoundary,
+                'Content-Type: text/html; charset=UTF-8',
+                'Content-Transfer-Encoding: quoted-printable',
+                '',
+                quoted_printable_encode($htmlBody),
+                '--' . $altBoundary . '--',
+                '',
+            ];
+            return dotStuffSmtpData(implode("\r\n", $headers) . "\r\n\r\n" . implode("\r\n", $parts));
+        }
+
+        $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+        $headers[] = 'Content-Transfer-Encoding: quoted-printable';
+        return dotStuffSmtpData(implode("\r\n", $headers) . "\r\n\r\n" . quoted_printable_encode($plainBody) . "\r\n");
+    }
+
+    $mixedBoundary = 'koddahub_mix_' . bin2hex(random_bytes(8));
+    $headers[] = 'Content-Type: multipart/mixed; boundary="' . $mixedBoundary . '"';
+
     $parts = [];
-    $parts[] = '--' . $boundary;
-    $parts[] = 'Content-Type: text/plain; charset=UTF-8';
-    $parts[] = 'Content-Transfer-Encoding: 8bit';
-    $parts[] = '';
-    $parts[] = $body;
+    if ($hasHtml) {
+        $altBoundary = 'koddahub_alt_' . bin2hex(random_bytes(8));
+        $parts[] = '--' . $mixedBoundary;
+        $parts[] = 'Content-Type: multipart/alternative; boundary="' . $altBoundary . '"';
+        $parts[] = '';
+        $parts[] = '--' . $altBoundary;
+        $parts[] = 'Content-Type: text/plain; charset=UTF-8';
+        $parts[] = 'Content-Transfer-Encoding: quoted-printable';
+        $parts[] = '';
+        $parts[] = quoted_printable_encode($plainBody);
+        $parts[] = '--' . $altBoundary;
+        $parts[] = 'Content-Type: text/html; charset=UTF-8';
+        $parts[] = 'Content-Transfer-Encoding: quoted-printable';
+        $parts[] = '';
+        $parts[] = quoted_printable_encode($htmlBody);
+        $parts[] = '--' . $altBoundary . '--';
+    } else {
+        $parts[] = '--' . $mixedBoundary;
+        $parts[] = 'Content-Type: text/plain; charset=UTF-8';
+        $parts[] = 'Content-Transfer-Encoding: quoted-printable';
+        $parts[] = '';
+        $parts[] = quoted_printable_encode($plainBody);
+    }
 
     foreach ($attachmentPaths as $path) {
         if (!is_file($path)) {
             continue;
         }
         $filename = basename($path);
-        $content = chunk_split(base64_encode((string)file_get_contents($path)));
-        $parts[] = '--' . $boundary;
-        $parts[] = 'Content-Type: application/octet-stream; name="' . $filename . '"';
+        $parts[] = '--' . $mixedBoundary;
+        $parts[] = 'Content-Type: ' . attachmentMimeType($path) . '; name="' . $filename . '"';
         $parts[] = 'Content-Transfer-Encoding: base64';
         $parts[] = 'Content-Disposition: attachment; filename="' . $filename . '"';
         $parts[] = '';
-        $parts[] = $content;
+        $parts[] = chunk_split(base64_encode((string)file_get_contents($path)));
     }
 
-    $parts[] = '--' . $boundary . '--';
+    $parts[] = '--' . $mixedBoundary . '--';
     $parts[] = '';
-
-    $data = 'Subject: ' . $encodedSubject . "\r\n" . implode("\r\n", $headers) . "\r\n\r\n" . implode("\r\n", $parts);
-    return preg_replace("/(?<!\r)\n/", "\r\n", $data) ?? $data;
+    return dotStuffSmtpData(implode("\r\n", $headers) . "\r\n\r\n" . implode("\r\n", $parts));
 }
 
 function smtpRead($socket): string
@@ -110,24 +725,27 @@ function smtpRead($socket): string
     return $response;
 }
 
-function smtpCommand($socket, string $command, int $expectCode): string
+function smtpCommand($socket, string $command, int|array $expectCode): string
 {
     fwrite($socket, $command . "\r\n");
     $response = smtpRead($socket);
     $code = (int)substr($response, 0, 3);
-    if ($code !== $expectCode) {
+    $expectCodes = is_array($expectCode) ? $expectCode : [$expectCode];
+    if (!in_array($code, $expectCodes, true)) {
         throw new RuntimeException('SMTP command failed [' . $command . '] response=' . trim($response));
     }
     return $response;
 }
 
-function sendEmailSmtp(string $toEmail, string $subject, string $body, array $attachmentPaths = []): void
+function sendEmailSmtp(string $toEmail, string $subject, string $body, array $attachmentPaths = []): string
 {
     $host = envString('SMTP_HOST', '');
     $port = (int)(envString('SMTP_PORT', '587'));
     $user = envString('SMTP_USER', '');
     $pass = envString('SMTP_PASS', '');
     $encryption = strtolower(envString('SMTP_ENCRYPTION', 'tls'));
+    $heloDomain = envString('SMTP_HELO', $host !== '' ? $host : 'mail.koddahub.com.br');
+    $allowSelfSigned = in_array(strtolower(envString('SMTP_ALLOW_SELF_SIGNED', 'false')), ['1', 'true', 'yes'], true);
     $fromEmail = envString('MAIL_FROM', 'no-reply@clientes.koddahub.com.br');
     $fromName = envString('MAIL_FROM_NAME', 'KoddaHub');
 
@@ -144,9 +762,9 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
         STREAM_CLIENT_CONNECT,
         stream_context_create([
             'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true,
+                'verify_peer' => !$allowSelfSigned,
+                'verify_peer_name' => !$allowSelfSigned,
+                'allow_self_signed' => $allowSelfSigned,
             ],
         ])
     );
@@ -161,7 +779,7 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
         throw new RuntimeException('SMTP greeting inválido: ' . trim($greeting));
     }
 
-    smtpCommand($socket, 'EHLO clientes.koddahub.com.br', 250);
+    smtpCommand($socket, 'EHLO ' . $heloDomain, 250);
 
     if ($encryption === 'tls') {
         smtpCommand($socket, 'STARTTLS', 220);
@@ -169,7 +787,7 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
             fclose($socket);
             throw new RuntimeException('Falha ao habilitar STARTTLS.');
         }
-        smtpCommand($socket, 'EHLO clientes.koddahub.com.br', 250);
+        smtpCommand($socket, 'EHLO ' . $heloDomain, 250);
     }
 
     if ($user !== '' && $pass !== '') {
@@ -178,8 +796,8 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
         smtpCommand($socket, base64_encode($pass), 235);
     }
 
-    smtpCommand($socket, 'MAIL FROM:<' . $fromEmail . '>', 250);
-    smtpCommand($socket, 'RCPT TO:<' . $toEmail . '>', 250);
+    smtpCommand($socket, 'MAIL FROM:<' . $fromEmail . '>', [250, 251]);
+    smtpCommand($socket, 'RCPT TO:<' . $toEmail . '>', [250, 251]);
     smtpCommand($socket, 'DATA', 354);
     fwrite($socket, buildMimeMessage($fromEmail, $fromName, $toEmail, $subject, $body, $attachmentPaths) . "\r\n.\r\n");
     $dataResponse = smtpRead($socket);
@@ -189,6 +807,7 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
     }
     smtpCommand($socket, 'QUIT', 221);
     fclose($socket);
+    return trim($dataResponse);
 }
 
 function queueDailyBriefingReminders(string $logFile): void
@@ -353,6 +972,79 @@ function moveDealOperationToPublished(string $dealId): void
         ':did' => $dealId,
         ':meta' => json_encode(['strict_check' => true], JSON_UNESCAPED_UNICODE),
     ]);
+
+    $alreadyNotified = db()->one("
+        SELECT id
+        FROM crm.deal_activity
+        WHERE deal_id = :did
+          AND activity_type = 'PUBLICATION_NOTIFIED'
+        LIMIT 1
+    ", [':did' => $dealId]);
+    if ($alreadyNotified) {
+        return;
+    }
+
+    $ctx = db()->one("
+        SELECT
+            d.organization_id,
+            d.title,
+            o.billing_email,
+            o.domain
+        FROM crm.deal d
+        LEFT JOIN client.organizations o ON o.id = d.organization_id
+        WHERE d.id = :did
+        LIMIT 1
+    ", [':did' => $dealId]);
+
+    if (!$ctx) {
+        return;
+    }
+
+    $domain = trim((string)($ctx['domain'] ?? ''));
+    $domainUrl = $domain !== '' ? (preg_match('/^https?:\/\//i', $domain) ? $domain : 'https://' . $domain) : '';
+    $clientEmail = trim((string)($ctx['billing_email'] ?? ''));
+    $internalEmail = trim(envString('INTERNAL_NOTIFY_EMAIL', envString('MAIL_TEST_COPY_TO', '')));
+    $subject = '[KoddaHub] Site publicado com sucesso';
+    $body = "Olá!\n\nSeu site foi publicado com sucesso.\n" .
+        ($domainUrl !== '' ? ("Acesse aqui: {$domainUrl}\n") : '') .
+        "\nPróximos passos:\n- Acompanhar performance\n- Solicitar ajustes finos se necessário\n\nEquipe KoddaHub.";
+
+    if ($clientEmail !== '') {
+        db()->exec("
+            INSERT INTO crm.email_queue (organization_id, email_to, subject, body, status)
+            VALUES (:oid, :email, :subject, :body, 'PENDING')
+        ", [
+            ':oid' => $ctx['organization_id'] ?: null,
+            ':email' => $clientEmail,
+            ':subject' => $subject,
+            ':body' => $body,
+        ]);
+    }
+
+    if ($internalEmail !== '') {
+        db()->exec("
+            INSERT INTO crm.email_queue (organization_id, email_to, subject, body, status)
+            VALUES (:oid, :email, :subject, :body, 'PENDING')
+        ", [
+            ':oid' => $ctx['organization_id'] ?: null,
+            ':email' => $internalEmail,
+            ':subject' => '[Interno] Publicação concluída - ' . ($ctx['title'] ?: $dealId),
+            ':body' => "Publicação concluída para o deal {$dealId}.\n" .
+              ($domainUrl !== '' ? ("Domínio: {$domainUrl}\n") : "Domínio não informado.\n"),
+        ]);
+    }
+
+    db()->exec("
+        INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+        VALUES(:did, 'PUBLICATION_NOTIFIED', 'Notificações de publicação enfileiradas para cliente e interno.', :meta, 'WORKER')
+    ", [
+        ':did' => $dealId,
+        ':meta' => json_encode([
+            'client_email' => $clientEmail !== '' ? $clientEmail : null,
+            'internal_email' => $internalEmail !== '' ? $internalEmail : null,
+            'domain' => $domainUrl !== '' ? $domainUrl : null,
+        ], JSON_UNESCAPED_UNICODE),
+    ]);
 }
 
 function ensureInitialOperationForClientDeal(string $dealId, string $dealType): void
@@ -428,6 +1120,7 @@ function deriveHospedagemStageAndLifecycle(?string $subscriptionStatus): array
 
 function backfillDealsFromClientOrganizations(string $logFile): void
 {
+    ensureDealSuppressionTable();
     $pipeline = resolveHospedagemPipeline();
     if (!$pipeline) {
         file_put_contents($logFile, '[' . date('c') . '] backfill_skip -> pipeline_hospedagem_not_found' . PHP_EOL, FILE_APPEND);
@@ -462,6 +1155,9 @@ function backfillDealsFromClientOrganizations(string $logFile): void
 
     foreach ($orgs as $org) {
         $organizationId = (string)$org['organization_id'];
+        if (isSuppressedDeal($organizationId, 'HOSPEDAGEM')) {
+            continue;
+        }
         $derivation = deriveHospedagemStageAndLifecycle((string)($org['subscription_status'] ?? ''));
         $stageCode = $derivation['stageCode'];
         $stage = $pipeline['stages'][$stageCode] ?? null;
@@ -682,6 +1378,46 @@ function expireClientApprovalTokens(string $logFile): void
 
 function runPublicationStrictCheck(string $logFile, int $publishConsecutiveChecks, int $publishIntervalMinutes, int $publicationChecksWindow): void
 {
+    ensureSite24hOperationTables();
+    $rowsPublicacao = db()->all("
+        SELECT d.id AS deal_id
+        FROM crm.deal d
+        JOIN crm.deal_operation op
+          ON op.deal_id = d.id
+         AND op.status = 'ACTIVE'
+         AND op.stage_code = 'publicacao'
+        WHERE d.deal_type = 'HOSPEDAGEM'
+          AND d.lifecycle_status = 'CLIENT'
+        LIMIT 300
+    ");
+    $substeps = [
+        ['code' => 'dominio_decisao', 'name' => 'Domínio já existe / precisa contratar', 'order' => 1],
+        ['code' => 'dominio_registro', 'name' => 'Registro/transferência de domínio', 'order' => 2],
+        ['code' => 'dns_config', 'name' => 'Configuração de DNS e apontamentos', 'order' => 3],
+        ['code' => 'hostgator_account', 'name' => 'Cadastro/ajuste na Hostgator', 'order' => 4],
+        ['code' => 'deploy_ssl', 'name' => 'Deploy + SSL + validação técnica', 'order' => 5],
+        ['code' => 'go_live_monitor', 'name' => 'Monitoramento de entrada no ar', 'order' => 6],
+    ];
+    foreach ($rowsPublicacao as $dealRow) {
+        $dealId = (string)$dealRow['deal_id'];
+        foreach ($substeps as $substep) {
+            db()->exec("
+                INSERT INTO crm.deal_operation_substep (
+                  deal_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
+                )
+                VALUES(
+                  :deal_id, 'publicacao', :substep_code, :substep_name, :substep_order, 'PENDING', true, now(), now()
+                )
+                ON CONFLICT (deal_id, stage_code, substep_code) DO NOTHING
+            ", [
+                ':deal_id' => $dealId,
+                ':substep_code' => $substep['code'],
+                ':substep_name' => $substep['name'],
+                ':substep_order' => $substep['order'],
+            ]);
+        }
+    }
+
     $candidates = db()->all("
         SELECT
             d.id AS deal_id,
@@ -709,6 +1445,20 @@ function runPublicationStrictCheck(string $logFile, int $publishConsecutiveCheck
         LEFT JOIN client.organizations o ON o.id = d.organization_id
         WHERE d.deal_type = 'HOSPEDAGEM'
           AND d.lifecycle_status = 'CLIENT'
+          AND EXISTS (
+            SELECT 1
+            FROM crm.deal_operation_substep s
+            WHERE s.deal_id = d.id
+              AND s.stage_code = 'publicacao'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM crm.deal_operation_substep s
+            WHERE s.deal_id = d.id
+              AND s.stage_code = 'publicacao'
+              AND s.is_required = true
+              AND s.status NOT IN ('COMPLETED', 'SKIPPED')
+          )
         LIMIT 200
     ");
 
@@ -823,9 +1573,13 @@ while (true) {
     try {
         static $lastBackfillRun = 0;
         static $lastReconcileRun = 0;
+        static $lastBillingClassRun = 0;
+        static $lastPasswordResetCleanupRun = 0;
         $nowTs = time();
         $backfillInterval = (int)(envString('CRM_BACKFILL_INTERVAL_SECONDS', '1800'));
         $reconcileInterval = (int)(envString('CRM_RECONCILE_INTERVAL_SECONDS', '300'));
+        $billingClassInterval = (int)(envString('CRM_BILLING_CLASS_INTERVAL_SECONDS', '600'));
+        $passwordResetCleanupInterval = 86400;
 
         if ($lastBackfillRun === 0 || ($nowTs - $lastBackfillRun) >= max(60, $backfillInterval)) {
             backfillDealsFromClientOrganizations($logFile);
@@ -835,6 +1589,16 @@ while (true) {
         if ($lastReconcileRun === 0 || ($nowTs - $lastReconcileRun) >= max(60, $reconcileInterval)) {
             runCrmReconcileViaApi($logFile);
             $lastReconcileRun = $nowTs;
+        }
+
+        if ($lastBillingClassRun === 0 || ($nowTs - $lastBillingClassRun) >= max(60, $billingClassInterval)) {
+            syncClientBillingClassification($logFile);
+            $lastBillingClassRun = $nowTs;
+        }
+
+        if ($lastPasswordResetCleanupRun === 0 || ($nowTs - $lastPasswordResetCleanupRun) >= $passwordResetCleanupInterval) {
+            cleanupPasswordResetTokens($logFile);
+            $lastPasswordResetCleanupRun = $nowTs;
         }
 
         queueDailyBriefingReminders($logFile);
@@ -866,15 +1630,21 @@ while (true) {
 
             try {
                 if ($mailMode === 'smtp') {
-                    sendEmailSmtp($targetEmail, (string)$mail['subject'], (string)$mail['body'], $attachmentPaths);
+                    $primaryResponse = sendEmailSmtp($targetEmail, (string)$mail['subject'], (string)$mail['body'], $attachmentPaths);
+                    $copyResponse = null;
                     if ($testCopyTo !== '' && strcasecmp($testCopyTo, $targetEmail) !== 0) {
-                        sendEmailSmtp($testCopyTo, '[COPIA TESTE] ' . (string)$mail['subject'], (string)$mail['body'], $attachmentPaths);
+                        $copyResponse = sendEmailSmtp($testCopyTo, '[COPIA TESTE] ' . (string)$mail['subject'], (string)$mail['body'], $attachmentPaths);
                     }
 
                     db()->exec("UPDATE crm.email_queue SET status='SENT', processed_at=now() WHERE id=:id", [':id' => $mail['id']]);
                     file_put_contents(
                         $logFile,
-                        '[' . date('c') . '] email_enviado_smtp -> ' . $targetEmail . ' | ' . $mail['subject'] . ' | copy=' . ($testCopyTo ?: 'none') . PHP_EOL,
+                        '[' . date('c') . '] email_enviado_smtp -> ' . $targetEmail
+                          . ' | ' . $mail['subject']
+                          . ' | resp=' . $primaryResponse
+                          . ' | copy=' . ($testCopyTo ?: 'none')
+                          . ($copyResponse !== null ? ' | copy_resp=' . $copyResponse : '')
+                          . PHP_EOL,
                         FILE_APPEND
                     );
                 } else {

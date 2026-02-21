@@ -18,6 +18,16 @@ final class AsaasClient {
         return $this->request('POST', '/customers', $payload);
     }
 
+    public function findCustomerByCpfCnpj(string $cpfCnpj): ?array {
+        $normalized = preg_replace('/\D+/', '', $cpfCnpj);
+        if ($normalized === '') {
+            return null;
+        }
+        $response = $this->request('GET', '/customers?cpfCnpj=' . rawurlencode($normalized) . '&limit=1');
+        $first = $response['data'][0] ?? null;
+        return is_array($first) ? $first : null;
+    }
+
     public function createSubscription(array $payload): array {
         if ($this->walletId !== '' && !isset($payload['walletId'])) {
             $payload['walletId'] = $this->walletId;

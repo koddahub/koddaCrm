@@ -24,6 +24,7 @@ services:
       ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN:-}
       ASAAS_WALLET_ID: ${ASAAS_WALLET_ID:-}
       ASAAS_WEBHOOK_PUBLIC_URL: ${ASAAS_WEBHOOK_PUBLIC_URL:-https://clientes.koddahub.com.br/api/webhooks/asaas}
+      ASAAS_CHECKOUT_CALLBACK_ENABLED: ${ASAAS_CHECKOUT_CALLBACK_ENABLED:-false}
       MAIL_TEST_COPY_TO: ${MAIL_TEST_COPY_TO:-arielrluz@gmail.com}
     depends_on:
       - ac_postgres
@@ -60,6 +61,7 @@ services:
       PORTAL_BASE_URL: https://cliente.koddahub.com.br
       VSCODE_SSH_HOST: ssh.koddahub.com.br
       VSCODE_WEB_BASE_URL: ""
+      CRM_PUBLIC_BASE_URL: https://koddacrm.koddahub.com.br
       STORAGE_ROOT: /storage
     volumes:
       - ./storage:/storage
@@ -109,12 +111,15 @@ services:
       DB_PASS: ac_pass
       STORAGE_ROOT: /storage
       MAIL_MODE: ${MAIL_MODE:-smtp}
-      MAIL_FROM: ${MAIL_FROM:-no-reply@clientes.koddahub.com.br}
+      MAIL_FROM: ${MAIL_FROM:-clientes@koddahub.com.br}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-KoddaHub}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-clientes@koddahub.com.br}
       MAIL_TEST_COPY_TO: ${MAIL_TEST_COPY_TO:-arielrluz@gmail.com}
       SMTP_HOST: ${SMTP_HOST:-mail.koddahub.com.br}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-tls}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-ssl}
+      SMTP_HELO: ${SMTP_HELO:-mail.koddahub.com.br}
+      SMTP_ALLOW_SELF_SIGNED: ${SMTP_ALLOW_SELF_SIGNED:-false}
       SMTP_USER: ${SMTP_USER:-clientes@koddahub.com.br}
       SMTP_PASS: ${SMTP_PASS:-}
       CRM_ADMIN_SESSION_TOKEN: ${CRM_ADMIN_SESSION_TOKEN:-koddahub-crm-v2-session}

@@ -62,6 +62,9 @@ type DashboardData = {
   };
   operacao: {
     clientesAtivos: number;
+    clientesAtrasados: number;
+    clientesInativos: number;
+    clientesFantasma: number;
     operacoesEmCurso: number;
     slaRisco: number;
     ticketsAbertos: number;
@@ -84,6 +87,29 @@ type ClienteItem = {
   productCode: string | null;
   valueCents: number | null;
   updatedAt: string;
+  classStatus: 'ATIVO' | 'ATRASADO' | 'INATIVO';
+  daysLate: number;
+  lastPaymentStatus: string | null;
+  referenceDueDate: string | null;
+  nextDueDate: string | null;
+  ghostedAt: string | null;
+  ticketId: string | null;
+  ticketSlaDeadline: string | null;
+};
+
+type ClientesApiResponse = {
+  status: 'ATIVO' | 'ATRASADO' | 'INATIVO' | 'FANTASMA';
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  counts: {
+    ATIVO: number;
+    ATRASADO: number;
+    INATIVO: number;
+    FANTASMA: number;
+  };
+  items: ClienteItem[];
 };
 
 type EditDealForm = {
@@ -211,7 +237,27 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [pipelineData, setPipelineData] = useState<PipelineTableData | null>(null);
-  const [clientes, setClientes] = useState<ClienteItem[]>([]);
+  const [clientesAtivos, setClientesAtivos] = useState<ClienteItem[]>([]);
+  const [clientesAtrasados, setClientesAtrasados] = useState<ClienteItem[]>([]);
+  const [clientesInativos, setClientesInativos] = useState<ClienteItem[]>([]);
+  const [clientesFantasma, setClientesFantasma] = useState<ClienteItem[]>([]);
+  const [clientesCounts, setClientesCounts] = useState({ ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
+  const [showGhostModal, setShowGhostModal] = useState(false);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [ghostTarget, setGhostTarget] = useState<DeleteTarget>(null);
+  const [restoreTarget, setRestoreTarget] = useState<DeleteTarget>(null);
+  const [purgeTarget, setPurgeTarget] = useState<DeleteTarget>(null);
+  const [purgeConfirm, setPurgeConfirm] = useState('');
+  const [searchAtivos, setSearchAtivos] = useState('');
+  const [searchAtrasados, setSearchAtrasados] = useState('');
+  const [searchInativos, setSearchInativos] = useState('');
+  const [searchFantasma, setSearchFantasma] = useState('');
+  const [pageAtivos, setPageAtivos] = useState(1);
+  const [pageAtrasados, setPageAtrasados] = useState(1);
+  const [pageInativos, setPageInativos] = useState(1);
+  const [pageFantasma, setPageFantasma] = useState(1);
+  const [totals, setTotals] = useState({ ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
+  const [totalPages, setTotalPages] = useState({ ATIVO: 1, ATRASADO: 1, INATIVO: 1, FANTASMA: 1 });
   const [financeOverview, setFinanceOverview] = useState<FinanceOverview | null>(null);
   const [recebimentos, setRecebimentos] = useState<RecebimentoItem[]>([]);
   const [inadimplencia, setInadimplencia] = useState<InadimplenciaItem[]>([]);
@@ -301,10 +347,38 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setNotice(data.error || 'Falha ao carregar pipeline');
   }
 
+  async function loadClientesByStatus(
+    status: 'ATIVO' | 'ATRASADO' | 'INATIVO' | 'FANTASMA',
+    search: string,
+    page: number,
+    setter: (items: ClienteItem[]) => void
+  ) {
+    const qs = new URLSearchParams({
+      status,
+      search,
+      page: String(page),
+      pageSize: '10',
+    });
+    const res = await fetch(`/api/clientes?${qs.toString()}`);
+    const data = (await res.json()) as ClientesApiResponse & { error?: string };
+    if (!res.ok) {
+      setNotice(data.error || `Falha ao carregar clientes ${status.toLowerCase()}`);
+      return;
+    }
+
+    setter(data.items || []);
+    setClientesCounts(data.counts || { ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
+    setTotals((prev) => ({ ...prev, [status]: data.total ?? 0 }));
+    setTotalPages((prev) => ({ ...prev, [status]: Math.max(1, data.totalPages ?? 1) }));
+  }
+
   async function loadClientes() {
-    const res = await fetch('/api/clientes');
-    const data = await res.json();
-    if (res.ok) setClientes(data.items || []);
+    await Promise.all([
+      loadClientesByStatus('ATIVO', searchAtivos, pageAtivos, setClientesAtivos),
+      loadClientesByStatus('ATRASADO', searchAtrasados, pageAtrasados, setClientesAtrasados),
+      loadClientesByStatus('INATIVO', searchInativos, pageInativos, setClientesInativos),
+      loadClientesByStatus('FANTASMA', searchFantasma, pageFantasma, setClientesFantasma),
+    ]);
   }
 
   async function loadFinanceiro() {
@@ -356,6 +430,22 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   useEffect(() => {
     reloadSection();
   }, [section, pipelineType]);
+
+  useEffect(() => {
+    if (section === 'clientes') {
+      loadClientes();
+    }
+  }, [
+    section,
+    searchAtivos,
+    searchAtrasados,
+    searchInativos,
+    searchFantasma,
+    pageAtivos,
+    pageAtrasados,
+    pageInativos,
+    pageFantasma,
+  ]);
 
   async function updateStage(dealIdValue: string, stageId: string) {
     const res = await fetch(`/api/deals/${dealIdValue}/stage`, {
@@ -537,7 +627,8 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   async function confirmDeleteDeal() {
     if (!deleteTarget?.id) return;
     setLoading(true);
-    const res = await fetch(`/api/deals/${deleteTarget.id}`, { method: 'DELETE' });
+    const deleteUrl = `/api/deals/${deleteTarget.id}`;
+    const res = await fetch(deleteUrl, { method: 'DELETE' });
     const data = await res.json().catch(() => ({}));
     setLoading(false);
 
@@ -550,6 +641,61 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setDeleteTarget(null);
     setNotice('Registro excluído com sucesso.');
     await reloadSection();
+  }
+
+  async function moveToGhost() {
+    if (!ghostTarget?.id) return;
+    setLoading(true);
+    const res = await fetch(`/api/clientes/${ghostTarget.id}/ghost`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Movido manualmente para lista fantasma' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao mover cliente para fantasma');
+      return;
+    }
+    setGhostTarget(null);
+    setNotice('Cliente movido para lista fantasma.');
+    await loadClientes();
+  }
+
+  async function restoreFromGhost() {
+    if (!restoreTarget?.id) return;
+    setLoading(true);
+    const res = await fetch(`/api/clientes/${restoreTarget.id}/restore`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao restaurar cliente');
+      return;
+    }
+    setRestoreTarget(null);
+    setNotice('Cliente restaurado para lista principal.');
+    await loadClientes();
+  }
+
+  async function purgeGhostClient() {
+    if (!purgeTarget?.id) return;
+    if (purgeConfirm.trim().toUpperCase() !== 'EXCLUIR PERMANENTEMENTE') {
+      setNotice('Digite "EXCLUIR PERMANENTEMENTE" para confirmar.');
+      return;
+    }
+    setLoading(true);
+    const res = await fetch(`/api/clientes/${purgeTarget.id}/purge`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao excluir permanentemente');
+      return;
+    }
+    setPurgeTarget(null);
+    setPurgeConfirm('');
+    setShowPurgeModal(false);
+    setNotice('Cliente removido permanentemente com sucesso.');
+    await loadClientes();
   }
 
   const activeMenu = MENU_ITEMS.find((item) => pathname.startsWith(item.href))?.key || (section === 'deal' ? 'clientes' : section);
@@ -624,6 +770,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               <h3>Operação</h3>
               <div className="metric-grid">
                 <div><span>Clientes ativos</span><strong>{dashboardData?.operacao.clientesAtivos ?? 0}</strong></div>
+                <div><span>Clientes atrasados</span><strong>{dashboardData?.operacao.clientesAtrasados ?? 0}</strong></div>
+                <div><span>Clientes inativos</span><strong>{dashboardData?.operacao.clientesInativos ?? 0}</strong></div>
+                <div><span>Lista fantasma</span><strong>{dashboardData?.operacao.clientesFantasma ?? 0}</strong></div>
                 <div><span>Operações em curso</span><strong>{dashboardData?.operacao.operacoesEmCurso ?? 0}</strong></div>
                 <div><span>SLA em risco</span><strong>{dashboardData?.operacao.slaRisco ?? 0}</strong></div>
                 <div><span>Tickets abertos</span><strong>{dashboardData?.operacao.ticketsAbertos ?? 0}</strong></div>
@@ -760,64 +909,234 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         ) : null}
 
         {section === 'clientes' ? (
-          <section className="crm-v2-panel">
-            <h3>Clientes Fechados</h3>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Cliente</th>
-                    <th>Contato</th>
-                    <th>Tipo</th>
-                    <th>Plano/Produto</th>
-                    <th>Valor</th>
-                    <th>Atualizado</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {clientes.map((item) => (
-                    <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
-                      <td>{item.contactName || item.title}</td>
-                      <td>{item.contactEmail || '-'}</td>
-                      <td>{item.dealType}</td>
-                      <td>{item.planCode || item.productCode || '-'}</td>
-                      <td>{currency(item.valueCents)}</td>
-                      <td>{dateTime(item.updatedAt)}</td>
-                      <td>
-                        <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            aria-label="Editar cliente"
-                            title="Editar"
-                            onClick={() =>
-                              openEditDeal({
-                                id: item.id,
-                                title: item.title,
-                                contactName: item.contactName,
-                                contactEmail: item.contactEmail,
-                                valueCents: item.valueCents,
-                              })
-                            }
-                          >
-                            <i className="bi bi-pencil-square" aria-hidden="true" />
-                          </button>
-                          <button
-                            type="button"
-                            className="danger-inline-btn"
-                            aria-label="Excluir cliente"
-                            title="Excluir"
-                            onClick={() => openDeleteDealModal(item.id, item.contactName || item.title)}
-                          >
-                            <i className="bi bi-trash3" aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
+          <section className="clientes-v2-grid">
+            <section className="crm-v2-panel clientes-table-panel ativos">
+              <div className="table-header-actions">
+                <div>
+                  <h3>Ativos</h3>
+                  <p>Pagamento confirmado ou até 2 dias de tolerância.</p>
+                </div>
+                <span className="status-chip ativo">{clientesCounts.ATIVO}</span>
+              </div>
+              <div className="clientes-table-toolbar">
+                <input
+                  placeholder="Buscar cliente ativo..."
+                  value={searchAtivos}
+                  onChange={(e) => {
+                    setSearchAtivos(e.target.value);
+                    setPageAtivos(1);
+                  }}
+                />
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Contato</th>
+                      <th>Plano</th>
+                      <th>Valor</th>
+                      <th>Vencimento</th>
+                      <th>Status</th>
+                      <th>Ações</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {clientesAtivos.map((item) => (
+                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
+                        <td>{item.contactName || item.title}</td>
+                        <td>{item.contactEmail || '-'}</td>
+                        <td>{item.planCode || '-'}</td>
+                        <td>{currency(item.valueCents)}</td>
+                        <td>{dateOnly(item.nextDueDate || item.referenceDueDate)}</td>
+                        <td><span className="status-chip ativo">{item.classStatus}</span></td>
+                        <td>
+                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              aria-label="Editar cliente"
+                              title="Editar"
+                              onClick={() =>
+                                openEditDeal({
+                                  id: item.id,
+                                  title: item.title,
+                                  contactName: item.contactName,
+                                  contactEmail: item.contactEmail,
+                                  valueCents: item.valueCents,
+                                })
+                              }
+                            >
+                              <i className="bi bi-pencil-square" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="clientes-pagination">
+                <button type="button" onClick={() => setPageAtivos((p) => Math.max(1, p - 1))} disabled={pageAtivos <= 1}>Anterior</button>
+                <span>Página {pageAtivos} de {totalPages.ATIVO} ({totals.ATIVO} registros)</span>
+                <button type="button" onClick={() => setPageAtivos((p) => Math.min(totalPages.ATIVO, p + 1))} disabled={pageAtivos >= totalPages.ATIVO}>Próxima</button>
+              </div>
+            </section>
+
+            <section className="crm-v2-panel clientes-table-panel atrasados">
+              <div className="table-header-actions">
+                <div>
+                  <h3>Atrasados</h3>
+                  <p>Pagamentos com atraso entre 3 e 15 dias.</p>
+                </div>
+                <span className="status-chip atrasado">{clientesCounts.ATRASADO}</span>
+              </div>
+              <div className="clientes-table-toolbar">
+                <input
+                  placeholder="Buscar cliente atrasado..."
+                  value={searchAtrasados}
+                  onChange={(e) => {
+                    setSearchAtrasados(e.target.value);
+                    setPageAtrasados(1);
+                  }}
+                />
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Contato</th>
+                      <th>Plano</th>
+                      <th>Dias atraso</th>
+                      <th>Status pagamento</th>
+                      <th>Atualizado</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clientesAtrasados.map((item) => (
+                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
+                        <td>{item.contactName || item.title}</td>
+                        <td>{item.contactEmail || '-'}</td>
+                        <td>{item.planCode || '-'}</td>
+                        <td>{item.daysLate}</td>
+                        <td>{item.lastPaymentStatus || '-'}</td>
+                        <td>{dateTime(item.updatedAt)}</td>
+                        <td>
+                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              aria-label="Editar cliente"
+                              title="Editar"
+                              onClick={() =>
+                                openEditDeal({
+                                  id: item.id,
+                                  title: item.title,
+                                  contactName: item.contactName,
+                                  contactEmail: item.contactEmail,
+                                  valueCents: item.valueCents,
+                                })
+                              }
+                            >
+                              <i className="bi bi-pencil-square" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="clientes-pagination">
+                <button type="button" onClick={() => setPageAtrasados((p) => Math.max(1, p - 1))} disabled={pageAtrasados <= 1}>Anterior</button>
+                <span>Página {pageAtrasados} de {totalPages.ATRASADO} ({totals.ATRASADO} registros)</span>
+                <button type="button" onClick={() => setPageAtrasados((p) => Math.min(totalPages.ATRASADO, p + 1))} disabled={pageAtrasados >= totalPages.ATRASADO}>Próxima</button>
+              </div>
+            </section>
+
+            <section className="crm-v2-panel clientes-table-panel inativos">
+              <div className="table-header-actions">
+                <div>
+                  <h3>Inativos</h3>
+                  <p>Atraso superior a 15 dias. Elegíveis para lista fantasma.</p>
+                </div>
+                <div className="clientes-actions-group">
+                  <span className="status-chip inativo">{clientesCounts.INATIVO}</span>
+                  <button type="button" className="secondary-btn" onClick={() => setShowGhostModal(true)}>
+                    <i className="bi bi-archive" aria-hidden="true" /> Lista Fantasma
+                  </button>
+                </div>
+              </div>
+              <div className="clientes-table-toolbar">
+                <input
+                  placeholder="Buscar cliente inativo..."
+                  value={searchInativos}
+                  onChange={(e) => {
+                    setSearchInativos(e.target.value);
+                    setPageInativos(1);
+                  }}
+                />
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Contato</th>
+                      <th>Dias atraso</th>
+                      <th>Ticket</th>
+                      <th>SLA ticket</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clientesInativos.map((item) => (
+                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
+                        <td>{item.contactName || item.title}</td>
+                        <td>{item.contactEmail || '-'}</td>
+                        <td>{item.daysLate}</td>
+                        <td>{item.ticketId ? item.ticketId.slice(0, 8) : '-'}</td>
+                        <td>{dateTime(item.ticketSlaDeadline)}</td>
+                        <td>
+                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              aria-label="Editar cliente"
+                              title="Editar"
+                              onClick={() =>
+                                openEditDeal({
+                                  id: item.id,
+                                  title: item.title,
+                                  contactName: item.contactName,
+                                  contactEmail: item.contactEmail,
+                                  valueCents: item.valueCents,
+                                })
+                              }
+                            >
+                              <i className="bi bi-pencil-square" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              className="danger-inline-btn"
+                              aria-label="Mover para fantasma"
+                              title="Mover para fantasma"
+                              onClick={() => setGhostTarget({ id: item.id, label: item.contactName || item.title })}
+                            >
+                              <i className="bi bi-archive-fill" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="clientes-pagination">
+                <button type="button" onClick={() => setPageInativos((p) => Math.max(1, p - 1))} disabled={pageInativos <= 1}>Anterior</button>
+                <span>Página {pageInativos} de {totalPages.INATIVO} ({totals.INATIVO} registros)</span>
+                <button type="button" onClick={() => setPageInativos((p) => Math.min(totalPages.INATIVO, p + 1))} disabled={pageInativos >= totalPages.INATIVO}>Próxima</button>
+              </div>
+            </section>
           </section>
         ) : null}
 
@@ -1094,6 +1413,156 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         </div>
       ) : null}
 
+      {showGhostModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Lista fantasma">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowGhostModal(false)} />
+          <div className="crm-v2-modal-content ghost-modal-content">
+            <header>
+              <h3>Lista Fantasma</h3>
+              <button type="button" onClick={() => setShowGhostModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p className="ghost-modal-note">
+              Clientes removidos da operação principal. Você pode restaurar ou excluir permanentemente.
+            </p>
+            <div className="clientes-table-toolbar">
+              <input
+                placeholder="Buscar na lista fantasma..."
+                value={searchFantasma}
+                onChange={(e) => {
+                  setSearchFantasma(e.target.value);
+                  setPageFantasma(1);
+                }}
+              />
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Cliente</th>
+                    <th>Contato</th>
+                    <th>Atraso</th>
+                    <th>Movido em</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clientesFantasma.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.contactName || item.title}</td>
+                      <td>{item.contactEmail || '-'}</td>
+                      <td>{item.daysLate} dias</td>
+                      <td>{dateTime(item.ghostedAt)}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            title="Restaurar"
+                            onClick={() => setRestoreTarget({ id: item.id, label: item.contactName || item.title })}
+                          >
+                            <i className="bi bi-arrow-counterclockwise" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-inline-btn"
+                            title="Excluir permanentemente"
+                            onClick={() => {
+                              setPurgeTarget({ id: item.id, label: item.contactName || item.title });
+                              setShowPurgeModal(true);
+                            }}
+                          >
+                            <i className="bi bi-trash3-fill" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="clientes-pagination">
+              <button type="button" onClick={() => setPageFantasma((p) => Math.max(1, p - 1))} disabled={pageFantasma <= 1}>Anterior</button>
+              <span>Página {pageFantasma} de {totalPages.FANTASMA} ({totals.FANTASMA} registros)</span>
+              <button type="button" onClick={() => setPageFantasma((p) => Math.min(totalPages.FANTASMA, p + 1))} disabled={pageFantasma >= totalPages.FANTASMA}>Próxima</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {ghostTarget ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Mover para lista fantasma">
+          <div className="crm-v2-modal-backdrop" onClick={() => setGhostTarget(null)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Mover para Lista Fantasma</h3>
+              <button type="button" onClick={() => setGhostTarget(null)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p>Deseja mover <strong>{ghostTarget.label}</strong> para a lista fantasma?</p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setGhostTarget(null)}>Cancelar</button>
+              <button type="button" className="danger-btn" onClick={moveToGhost} disabled={loading}>
+                {loading ? 'Movendo...' : 'Mover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {restoreTarget ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Restaurar cliente">
+          <div className="crm-v2-modal-backdrop" onClick={() => setRestoreTarget(null)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Restaurar Cliente</h3>
+              <button type="button" onClick={() => setRestoreTarget(null)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p>Deseja restaurar <strong>{restoreTarget.label}</strong> para a lista principal?</p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setRestoreTarget(null)}>Cancelar</button>
+              <button type="button" className="primary-btn" onClick={restoreFromGhost} disabled={loading}>
+                {loading ? 'Restaurando...' : 'Restaurar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showPurgeModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Exclusão permanente">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowPurgeModal(false)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Exclusão Permanente</h3>
+              <button type="button" onClick={() => setShowPurgeModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p>
+              Isso removerá permanentemente todos os dados de <strong>{purgeTarget?.label || 'este cliente'}</strong>.
+            </p>
+            <p style={{ color: '#b91c1c', marginTop: 0 }}>
+              Digite <strong>EXCLUIR PERMANENTEMENTE</strong> para confirmar.
+            </p>
+            <input
+              value={purgeConfirm}
+              onChange={(e) => setPurgeConfirm(e.target.value)}
+              placeholder="EXCLUIR PERMANENTEMENTE"
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setShowPurgeModal(false)}>Cancelar</button>
+              <button type="button" className="danger-btn" onClick={purgeGhostClient} disabled={loading}>
+                {loading ? 'Excluindo...' : 'Excluir permanentemente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showDeleteModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar exclusão">
           <div className="crm-v2-modal-backdrop" onClick={() => setShowDeleteModal(false)} />
@@ -1108,7 +1577,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               Deseja excluir <strong>{deleteTarget?.label || 'este registro'}</strong>?
             </p>
             <p style={{ marginTop: 0, color: '#64748b', fontSize: '0.92rem' }}>
-              Esta ação não pode ser desfeita.
+              Esta ação remove apenas o registro do CRM atual.
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
               <button type="button" className="secondary-btn" onClick={() => setShowDeleteModal(false)}>

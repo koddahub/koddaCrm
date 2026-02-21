@@ -36,9 +36,20 @@ function applySecurityHeaders(): void {
   header('X-Content-Type-Options: nosniff');
   header('Referrer-Policy: strict-origin-when-cross-origin');
   header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-  header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://www.google.com https://www.gstatic.com https://accounts.google.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self'; frame-src 'self' https://www.google.com;");
+  header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://viacep.com.br https://challenges.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com;");
 }
 applySecurityHeaders();
+
+function apiError(string $message, int $status, string $code, ?string $actionHint = null, array $extra = []): void {
+  $payload = array_merge([
+    'error' => $message,
+    'error_code' => $code,
+  ], $extra);
+  if ($actionHint !== null && $actionHint !== '') {
+    $payload['action_hint'] = $actionHint;
+  }
+  Response::json($payload, $status);
+}
 
 function boolInput(mixed $v): bool {
   return in_array((string)$v, ['1','true','on','yes','sim'], true);
@@ -111,6 +122,48 @@ function rateLimitAllow(string $scope, int $limit, int $windowSeconds): bool {
   return (int)$payload['count'] <= $limit;
 }
 
+function rateLimitAllowKeyed(string $scope, string $identity, int $limit, int $windowSeconds): bool {
+  $identity = trim(strtolower($identity));
+  if ($identity === '') {
+    return true;
+  }
+  $key = sha1($scope . '|' . $identity);
+  $file = sys_get_temp_dir() . '/koddahub_rl_' . $key . '.json';
+  $now = time();
+  $payload = ['start' => $now, 'count' => 0];
+
+  $fh = @fopen($file, 'c+');
+  if (!$fh) {
+    return true;
+  }
+  if (!flock($fh, LOCK_EX)) {
+    fclose($fh);
+    return true;
+  }
+
+  $raw = stream_get_contents($fh);
+  if (is_string($raw) && trim($raw) !== '') {
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) {
+      $payload = array_merge($payload, $decoded);
+    }
+  }
+
+  if (($now - (int)$payload['start']) > $windowSeconds) {
+    $payload = ['start' => $now, 'count' => 0];
+  }
+  $payload['count'] = (int)$payload['count'] + 1;
+
+  ftruncate($fh, 0);
+  rewind($fh);
+  fwrite($fh, json_encode($payload, JSON_UNESCAPED_UNICODE));
+  fflush($fh);
+  flock($fh, LOCK_UN);
+  fclose($fh);
+
+  return (int)$payload['count'] <= $limit;
+}
+
 function requireClientAuth(?string $nextPath = null): void {
   if (!isset($_SESSION['client_user'])) {
     if ($nextPath !== null && $nextPath !== '') {
@@ -133,29 +186,29 @@ function resolveAfterLoginRedirect(): string {
   return $redirect;
 }
 
-function recaptchaSiteKey(): string {
-  return getenv('RECAPTCHA_SITE_KEY') ?: '6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI';
+function turnstileSiteKey(): string {
+  return getenv('CLOUDFLARE_TURNSTILE_SITE_KEY') ?: '0x4AAAAAACgQsahzjXTKYe2z';
 }
 
-function recaptchaSecretKey(): string {
-  return getenv('RECAPTCHA_SECRET_KEY') ?: '6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe';
+function turnstileSecretKey(): string {
+  return getenv('CLOUDFLARE_TURNSTILE_SECRET_KEY') ?: '0x4AAAAAACgQsQHZZ6v6BC_svstWvkxHi5A';
 }
 
-function verifyRecaptchaToken(?string $token): bool {
+function verifyTurnstileToken(?string $token): bool {
   $token = trim((string)$token);
   if ($token === '') {
     return false;
   }
 
   $payload = http_build_query([
-    'secret' => recaptchaSecretKey(),
+    'secret' => turnstileSecretKey(),
     'response' => $token,
     'remoteip' => $_SERVER['REMOTE_ADDR'] ?? '',
   ]);
 
   $raw = '';
   if (function_exists('curl_init')) {
-    $ch = curl_init('https://www.google.com/recaptcha/api/siteverify');
+    $ch = curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
     curl_setopt_array($ch, [
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_POST => true,
@@ -177,7 +230,7 @@ function verifyRecaptchaToken(?string $token): bool {
         'timeout' => 10,
       ],
     ]);
-    $raw = (string)@file_get_contents('https://www.google.com/recaptcha/api/siteverify', false, $context);
+    $raw = (string)@file_get_contents('https://challenges.cloudflare.com/turnstile/v0/siteverify', false, $context);
   }
 
   $decoded = json_decode($raw, true);
@@ -186,7 +239,9 @@ function verifyRecaptchaToken(?string $token): bool {
 
 function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   $plan = in_array($plan, ['basic','profissional','pro'], true) ? $plan : 'basic';
-  $recaptchaKey = recaptchaSiteKey();
+  $turnstileKey = turnstileSiteKey();
+  $assetCssVersion = (string)@filemtime(__DIR__ . '/assets/app.css');
+  $assetJsVersion = (string)@filemtime(__DIR__ . '/assets/app.js');
 
   ob_start();
   ?>
@@ -198,15 +253,14 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   <title>Área do Cliente KoddaHub</title>
   <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
   <link rel="shortcut icon" type="image/png" href="/assets/koddahub-logo-v2.png">
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/app.css?v=<?= h($assetCssVersion) ?>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
-<body data-page="auth" data-recaptcha-sitekey="<?= h($recaptchaKey) ?>" data-csrf-token="<?= h(csrfToken()) ?>">
+<body data-page="auth" data-turnstile-sitekey="<?= h($turnstileKey) ?>" data-csrf-token="<?= h(csrfToken()) ?>">
   <div class="auth-shell">
     <aside class="auth-left">
       <div>
@@ -296,28 +350,14 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
 
               <div class="captcha-wrap" style="margin-top:12px">
                 <div style="margin-top:10px">
-                  <div class="g-recaptcha" data-sitekey="<?= h($recaptchaKey) ?>"></div>
+                  <div class="cf-turnstile" data-sitekey="<?= h($turnstileKey) ?>" data-theme="auto"></div>
                 </div>
               </div>
+              <p class="auth-help-link"><a href="/esqueci-senha">Esqueceu a senha?</a></p>
 
               <div class="action-row">
                 <button class="btn btn-primary" type="submit">Entrar na área do cliente</button>
-                <button class="btn btn-google" id="googleLoginBtn" type="button" title="Google Login (demo local)">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M23 12.2c0-.8-.1-1.6-.2-2.3H12v4.4h6.2a5.3 5.3 0 0 1-2.3 3.5v2.9h3.7c2.1-1.9 3.4-4.8 3.4-8.5Z" fill="#4285F4"/><path d="M12 23c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.3 1.2-3.9 1.2-3 0-5.5-2-6.4-4.7H1.8V17A11 11 0 0 0 12 23Z" fill="#34A853"/><path d="M5.6 13.8A6.6 6.6 0 0 1 5.3 12c0-.6.1-1.3.3-1.8V7H1.8A11 11 0 0 0 1 12c0 1.8.4 3.5 1.2 5l3.4-3.2Z" fill="#FBBC05"/><path d="M12 5.2c1.7 0 3.1.6 4.3 1.7l3.2-3.2A11 11 0 0 0 12 1 11 11 0 0 0 1.8 7l3.8 3.2c.9-2.7 3.4-4.9 6.4-4.9Z" fill="#EA4335"/></svg>
-                  Entrar com Google
-                </button>
-              </div>
-              <p class="note" style="margin-top:10px">Google login em modo demo/local (sem credenciais OAuth em produção neste ambiente).</p>
-
-              <div id="googleDemoPanel" class="google-demo-panel hidden" style="margin-top:12px">
-                <div class="form-grid">
-                  <div class="form-col"><label for="google_demo_name">Nome</label><input id="google_demo_name" type="text" value="Cliente Google"></div>
-                  <div class="form-col"><label for="google_demo_email">E-mail Google</label><input id="google_demo_email" type="email" value="google.teste@koddahub.local"></div>
-                </div>
-                <div class="action-row">
-                  <button class="btn btn-google" id="googleDemoSubmit" type="button">Continuar com Google</button>
-                  <button class="btn btn-ghost" id="googleDemoCancel" type="button">Cancelar</button>
-                </div>
+                <a class="btn btn-ghost" href="/esqueci-senha">Recuperar senha</a>
               </div>
             </form>
           </div>
@@ -330,7 +370,7 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
               <div class="wizard-step" data-step="1">
                 <div class="form-grid">
                   <div class="form-col"><label for="person_type">Tipo</label>
-                    <select id="person_type" name="person_type" data-required="true"><option value="PF">Pessoa Física</option><option value="PJ">Pessoa Jurídica</option></select>
+                    <select id="person_type" name="person_type" data-required="true"><option value="PJ">Pessoa Jurídica</option><option value="PF">Pessoa Física</option></select>
                   </div>
                   <div class="form-col"><label for="name">Nome responsável</label><input id="name" name="name" data-required="true"></div>
                   <div class="form-col"><label for="phone">Telefone / WhatsApp</label><input id="phone" name="phone" data-required="true" placeholder="41999999999"></div>
@@ -343,13 +383,13 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
               <div class="wizard-step hidden" data-step="2">
                 <div class="form-grid">
                   <div class="form-col"><label for="billing_email">E-mail de cobrança</label><input id="billing_email" name="billing_email" type="email" data-required="true"></div>
-                  <div class="form-col"><label for="billing_zip">CEP</label><input id="billing_zip" name="billing_zip" data-required="true"></div>
-                  <div class="form-col full"><label for="billing_street">Endereço</label><input id="billing_street" name="billing_street" data-required="true"></div>
+                  <div class="form-col"><label for="billing_zip">CEP (digite para buscar endereço automaticamente)</label><input id="billing_zip" name="billing_zip" data-required="true"></div>
+                  <div class="form-col full"><label for="billing_street">Endereço</label><input id="billing_street" name="billing_street" data-required="true" readonly></div>
                   <div class="form-col"><label for="billing_number">Número</label><input id="billing_number" name="billing_number" data-required="true"></div>
                   <div class="form-col"><label for="billing_complement">Complemento</label><input id="billing_complement" name="billing_complement"></div>
-                  <div class="form-col"><label for="billing_district">Bairro</label><input id="billing_district" name="billing_district" data-required="true"></div>
-                  <div class="form-col"><label for="billing_city">Cidade</label><input id="billing_city" name="billing_city" data-required="true"></div>
-                  <div class="form-col"><label for="billing_state">UF</label><input id="billing_state" name="billing_state" maxlength="2" data-required="true"></div>
+                  <div class="form-col"><label for="billing_district">Bairro</label><input id="billing_district" name="billing_district" data-required="true" readonly></div>
+                  <div class="form-col"><label for="billing_city">Cidade</label><input id="billing_city" name="billing_city" data-required="true" readonly></div>
+                  <div class="form-col"><label for="billing_state">UF</label><input id="billing_state" name="billing_state" maxlength="2" data-required="true" readonly></div>
                 </div>
               </div>
 
@@ -360,7 +400,7 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
                   <div class="form-col"><label for="signup_password_confirm">Confirmar senha</label><input id="signup_password_confirm" name="password_confirm" type="password" data-required="true"></div>
                   <div class="form-col full">
                     <label>Não sou um robô</label>
-                    <div class="g-recaptcha" data-sitekey="<?= h($recaptchaKey) ?>"></div>
+                    <div class="cf-turnstile" data-sitekey="<?= h($turnstileKey) ?>" data-theme="auto"></div>
                   </div>
                   <div class="form-col full">
                     <label class="switch"><input type="checkbox" name="lgpd" data-required="true"> Li e aceito os termos de contratação e LGPD.</label>
@@ -379,8 +419,10 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
                   </div>
                   <div class="form-col full">
                     <label>Método de pagamento recorrente</label>
-                    <label class="switch"><input class="payment-method" type="radio" name="payment_method" value="CREDIT_CARD" checked> Cartão de crédito (checkout seguro ASAAS)</label>
-                    <label class="switch"><input class="payment-method" type="radio" name="payment_method" value="PIX"> PIX</label>
+                    <input type="hidden" name="payment_method" value="CREDIT_CARD">
+                    <div class="status-note">
+                      Cartão de crédito (checkout seguro ASAAS).
+                    </div>
                   </div>
                   <div class="form-col full">
                     <div class="status-note">
@@ -402,7 +444,436 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
       </section>
     </main>
   </div>
-  <script src="/assets/app.js"></script>
+
+  <div id="authFlowOverlay" class="auth-flow-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authFlowTitle">
+    <div class="auth-flow-card">
+      <div class="auth-flow-spinner" aria-hidden="true"></div>
+      <h3 id="authFlowTitle">Redirecionando para pagamento seguro...</h3>
+      <p id="authFlowMessage">Aguarde alguns segundos enquanto abrimos sua cobrança em nova aba.</p>
+    </div>
+  </div>
+
+  <div id="authStateModal" class="auth-state-modal hidden" role="dialog" aria-modal="true" aria-labelledby="authStateTitle" aria-live="polite">
+    <div class="auth-state-backdrop"></div>
+    <div class="auth-state-card">
+      <div id="authStateSpinner" class="auth-state-spinner hidden" aria-hidden="true"></div>
+      <h3 id="authStateTitle">Aguardando pagamento</h3>
+      <p id="authStateText">Estamos aguardando a confirmação do ASAAS para liberar seu acesso.</p>
+      <div id="authStateRich" class="auth-state-rich hidden"></div>
+      <p id="authStateCountdown" class="auth-state-countdown hidden"></p>
+      <div class="auth-state-actions">
+        <button type="button" id="authStateRetryBtn" class="btn btn-primary hidden">Acessar link de pagamento</button>
+        <button type="button" id="authStateCheckBtn" class="btn btn-ghost hidden">Já paguei, verificar agora</button>
+        <button type="button" id="authStatePrimaryBtn" class="btn btn-primary hidden">Seguir para login</button>
+        <button type="button" id="authStateCloseBtn" class="btn btn-ghost hidden">Fechar</button>
+      </div>
+    </div>
+  </div>
+  <script src="/assets/app.js?v=<?= h($assetJsVersion) ?>"></script>
+</body>
+</html>
+<?php
+  return (string)ob_get_clean();
+}
+
+function renderForgotPasswordPage(string $alert = ''): string {
+  $assetCssVersion = (string)@filemtime(__DIR__ . '/assets/app.css');
+  $turnstileKey = turnstileSiteKey();
+  ob_start();
+  ?>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Esqueci minha senha - KoddaHub</title>
+  <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="shortcut icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="stylesheet" href="/assets/app.css?v=<?= h($assetCssVersion) ?>">
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body data-page="forgot-password" data-csrf-token="<?= h(csrfToken()) ?>">
+  <div class="auth-shell">
+    <aside class="auth-left">
+      <div>
+        <div class="brand-row">
+          <img src="https://koddahub.com.br/assets/logo/koddahub-logo-v2.png" alt="Logo KoddaHub">
+          <div class="brand-text"><span class="kodda">Kodda</span><span class="hub">Hub</span></div>
+        </div>
+        <h1>Recuperar senha</h1>
+        <p>Informe seu e-mail de acesso. Se ele existir, enviaremos um link seguro para redefinição.</p>
+      </div>
+      <div class="note">Lembrete: o link expira em 15 minutos e pode ser usado uma única vez.</div>
+    </aside>
+    <main class="auth-right">
+      <section class="auth-panel">
+        <div class="panel-body">
+          <div id="forgotNotice" class="alert <?= $alert !== '' ? 'ok' : 'hidden' ?>" aria-live="polite"><?= h($alert) ?></div>
+          <form id="forgotPasswordForm">
+            <div class="form-grid">
+              <div class="form-col full">
+                <label for="forgot_email">E-mail de acesso</label>
+                <input id="forgot_email" name="email" type="email" required placeholder="voce@empresa.com">
+              </div>
+              <div class="form-col full">
+                <label>Validação de segurança</label>
+                <div class="cf-turnstile" data-sitekey="<?= h($turnstileKey) ?>" data-theme="auto"></div>
+              </div>
+            </div>
+            <div class="action-row">
+              <button type="submit" class="btn btn-primary" id="forgotSubmitBtn">Enviar instruções</button>
+              <a href="/login" class="btn btn-ghost">Voltar para login</a>
+            </div>
+            <p id="forgotCooldownHint" class="note hidden" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const form = document.getElementById('forgotPasswordForm');
+      const notice = document.getElementById('forgotNotice');
+      const submitBtn = document.getElementById('forgotSubmitBtn');
+      const cooldownHint = document.getElementById('forgotCooldownHint');
+      const csrfToken = document.body?.dataset?.csrfToken || '';
+      const cooldownStorageKey = 'koddahub_forgot_cooldown_until';
+      const cooldownSeconds = 60;
+      let cooldownTimer = null;
+      if (!form) return;
+
+      const turnstileEl = form.querySelector('.cf-turnstile');
+      const resetCaptcha = () => {
+        try {
+          if (window.turnstile && turnstileEl) {
+            window.turnstile.reset(turnstileEl);
+          } else if (window.turnstile) {
+            window.turnstile.reset();
+          }
+        } catch (_) {}
+      };
+
+      const formatCooldown = (seconds) => {
+        const s = Math.max(0, Number(seconds) || 0);
+        const mm = String(Math.floor(s / 60)).padStart(2, '0');
+        const ss = String(s % 60).padStart(2, '0');
+        return `${mm}:${ss}`;
+      };
+
+      const setCooldown = (untilEpochMs = 0) => {
+        if (cooldownTimer) {
+          clearInterval(cooldownTimer);
+          cooldownTimer = null;
+        }
+
+        const tick = () => {
+          const remaining = Math.ceil((untilEpochMs - Date.now()) / 1000);
+          if (remaining <= 0) {
+            submitBtn?.removeAttribute('disabled');
+            if (cooldownHint) {
+              cooldownHint.classList.add('hidden');
+              cooldownHint.textContent = '';
+            }
+            localStorage.removeItem(cooldownStorageKey);
+            if (cooldownTimer) {
+              clearInterval(cooldownTimer);
+              cooldownTimer = null;
+            }
+            return;
+          }
+          submitBtn?.setAttribute('disabled', 'disabled');
+          if (cooldownHint) {
+            cooldownHint.classList.remove('hidden');
+            cooldownHint.textContent = `Aguarde ${formatCooldown(remaining)} para reenviar o link.`;
+          }
+        };
+
+        if (untilEpochMs > Date.now()) {
+          localStorage.setItem(cooldownStorageKey, String(untilEpochMs));
+          tick();
+          cooldownTimer = window.setInterval(tick, 1000);
+        } else {
+          localStorage.removeItem(cooldownStorageKey);
+          tick();
+        }
+      };
+
+      const savedUntil = Number(localStorage.getItem(cooldownStorageKey) || '0');
+      if (savedUntil > Date.now()) {
+        setCooldown(savedUntil);
+      }
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const currentCooldown = Number(localStorage.getItem(cooldownStorageKey) || '0');
+        if (currentCooldown > Date.now()) {
+          setCooldown(currentCooldown);
+          return;
+        }
+        const token = (form.querySelector('[name="cf-turnstile-response"]')?.value || '').trim();
+        if (!token) {
+          notice.classList.remove('hidden', 'ok');
+          notice.classList.add('err');
+          notice.textContent = 'CAPTCHA inválido, tente novamente.';
+          return;
+        }
+        submitBtn?.setAttribute('disabled', 'disabled');
+        notice.classList.remove('hidden', 'err');
+        notice.classList.add('ok');
+        notice.textContent = 'Enviando instruções...';
+        const body = Object.fromEntries(new FormData(form).entries());
+        try {
+          const res = await fetch('/api/auth/forgot-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            notice.classList.remove('ok');
+            notice.classList.add('err');
+            notice.textContent = data?.error || 'Falha ao enviar instruções.';
+            resetCaptcha();
+            return;
+          }
+          notice.classList.remove('err');
+          notice.classList.add('ok');
+          notice.textContent = data?.message || 'Se o e-mail existir, enviaremos as instruções.';
+          setCooldown(Date.now() + cooldownSeconds * 1000);
+          resetCaptcha();
+        } catch (_) {
+          notice.classList.remove('ok');
+          notice.classList.add('err');
+          notice.textContent = 'Falha de comunicação. Tente novamente em instantes.';
+          resetCaptcha();
+        } finally {
+          const current = Number(localStorage.getItem(cooldownStorageKey) || '0');
+          if (!(current > Date.now())) {
+            submitBtn?.removeAttribute('disabled');
+          }
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
+<?php
+  return (string)ob_get_clean();
+}
+
+function renderResetPasswordPage(string $token, string $alert = '', bool $tokenValid = true): string {
+  $assetCssVersion = (string)@filemtime(__DIR__ . '/assets/app.css');
+  $turnstileKey = turnstileSiteKey();
+  ob_start();
+  ?>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redefinir senha - KoddaHub</title>
+  <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="shortcut icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="stylesheet" href="/assets/app.css?v=<?= h($assetCssVersion) ?>">
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body data-page="reset-password" data-csrf-token="<?= h(csrfToken()) ?>">
+  <div class="auth-shell">
+    <aside class="auth-left">
+      <div>
+        <div class="brand-row">
+          <img src="https://koddahub.com.br/assets/logo/koddahub-logo-v2.png" alt="Logo KoddaHub">
+          <div class="brand-text"><span class="kodda">Kodda</span><span class="hub">Hub</span></div>
+        </div>
+        <h1>Nova senha</h1>
+        <p>Defina uma nova senha forte para acessar sua área do cliente.</p>
+      </div>
+      <div class="note">A senha precisa ter no mínimo 8 caracteres, com letras e números.</div>
+    </aside>
+    <main class="auth-right">
+      <section class="auth-panel">
+        <div class="panel-body">
+          <div id="resetNotice" class="alert <?= $alert !== '' ? 'err' : 'hidden' ?>" aria-live="polite"><?= h($alert) ?></div>
+          <form id="resetPasswordForm">
+            <input type="hidden" name="token" value="<?= h($token) ?>">
+            <div class="form-grid">
+              <div class="form-col full">
+                <label for="reset_password">Nova senha</label>
+                <input id="reset_password" name="password" type="password" required minlength="8">
+                <div class="password-strength" id="resetPasswordStrength">
+                  <div class="password-strength-head">
+                    <span>Força da senha</span>
+                    <strong id="resetStrengthLabel" class="strength-label weak">Muito fraca</strong>
+                  </div>
+                  <div class="password-strength-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <span id="resetStrengthFill"></span>
+                  </div>
+                </div>
+                <ul class="password-rules" id="resetPasswordRules">
+                  <li data-rule="len">Mínimo de 8 caracteres</li>
+                  <li data-rule="letter">Pelo menos 1 letra</li>
+                  <li data-rule="number">Pelo menos 1 número</li>
+                  <li data-rule="match">A confirmação deve ser igual</li>
+                </ul>
+              </div>
+              <div class="form-col full">
+                <label for="reset_password_confirm">Confirmar nova senha</label>
+                <input id="reset_password_confirm" name="password_confirm" type="password" required minlength="8">
+              </div>
+              <div class="form-col full">
+                <label>Validação de segurança</label>
+                <div class="cf-turnstile" data-sitekey="<?= h($turnstileKey) ?>" data-theme="auto"></div>
+              </div>
+            </div>
+            <div class="action-row">
+              <button type="submit" class="btn btn-primary" id="resetSubmitBtn" <?= $tokenValid ? '' : 'disabled' ?>>Redefinir senha</button>
+              <a href="/login" class="btn btn-ghost">Voltar para login</a>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const form = document.getElementById('resetPasswordForm');
+      const notice = document.getElementById('resetNotice');
+      const submitBtn = document.getElementById('resetSubmitBtn');
+      const csrfToken = document.body?.dataset?.csrfToken || '';
+      const passEl = document.getElementById('reset_password');
+      const confirmEl = document.getElementById('reset_password_confirm');
+      const strengthFill = document.getElementById('resetStrengthFill');
+      const strengthLabel = document.getElementById('resetStrengthLabel');
+      const rules = {
+        len: document.querySelector('#resetPasswordRules [data-rule="len"]'),
+        letter: document.querySelector('#resetPasswordRules [data-rule="letter"]'),
+        number: document.querySelector('#resetPasswordRules [data-rule="number"]'),
+        match: document.querySelector('#resetPasswordRules [data-rule="match"]'),
+      };
+      if (!form) return;
+
+      const turnstileEl = form.querySelector('.cf-turnstile');
+      const resetCaptcha = () => {
+        try {
+          if (window.turnstile && turnstileEl) {
+            window.turnstile.reset(turnstileEl);
+          } else if (window.turnstile) {
+            window.turnstile.reset();
+          }
+        } catch (_) {}
+      };
+
+      const setRuleState = (el, ok) => {
+        if (!el) return;
+        el.classList.toggle('ok', !!ok);
+      };
+
+      const evaluatePassword = () => {
+        const password = passEl?.value || '';
+        const confirm = confirmEl?.value || '';
+        const hasLen = password.length >= 8;
+        const hasLetter = /[A-Za-z]/.test(password);
+        const hasNumber = /\d/.test(password);
+        const matches = confirm.length > 0 && password === confirm;
+
+        setRuleState(rules.len, hasLen);
+        setRuleState(rules.letter, hasLetter);
+        setRuleState(rules.number, hasNumber);
+        setRuleState(rules.match, matches);
+
+        const strongFactors = [
+          hasLen,
+          /[A-Z]/.test(password),
+          /[a-z]/.test(password),
+          hasNumber,
+          /[^A-Za-z0-9]/.test(password),
+          password.length >= 12,
+        ].filter(Boolean).length;
+        const score = Math.min(100, Math.round((strongFactors / 6) * 100));
+        if (strengthFill) strengthFill.style.width = `${score}%`;
+        const strengthBar = strengthFill?.parentElement;
+        if (strengthBar) strengthBar.setAttribute('aria-valuenow', String(score));
+
+        if (strengthLabel) {
+          let label = 'Muito fraca';
+          let klass = 'weak';
+          if (score >= 80) { label = 'Muito forte'; klass = 'great'; }
+          else if (score >= 60) { label = 'Forte'; klass = 'strong'; }
+          else if (score >= 40) { label = 'Média'; klass = 'medium'; }
+          else if (score >= 20) { label = 'Fraca'; klass = 'weak'; }
+          strengthLabel.textContent = label;
+          strengthLabel.classList.remove('weak', 'medium', 'strong', 'great');
+          strengthLabel.classList.add(klass);
+          if (strengthFill) {
+            strengthFill.classList.remove('weak', 'medium', 'strong', 'great');
+            strengthFill.classList.add(klass);
+          }
+        }
+
+        return {
+          valid: hasLen && hasLetter && hasNumber && matches,
+          hasLen,
+          hasLetter,
+          hasNumber,
+          matches,
+        };
+      };
+
+      passEl?.addEventListener('input', evaluatePassword);
+      confirmEl?.addEventListener('input', evaluatePassword);
+      evaluatePassword();
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const password = form.querySelector('[name="password"]')?.value || '';
+        const confirm = form.querySelector('[name="password_confirm"]')?.value || '';
+        const checks = evaluatePassword();
+        if (!checks.valid) {
+          notice.classList.remove('hidden', 'ok');
+          notice.classList.add('err');
+          notice.textContent = 'Revise os requisitos da senha para continuar.';
+          return;
+        }
+        const captcha = (form.querySelector('[name="cf-turnstile-response"]')?.value || '').trim();
+        if (!captcha) {
+          notice.classList.remove('hidden', 'ok');
+          notice.classList.add('err');
+          notice.textContent = 'CAPTCHA inválido, tente novamente.';
+          return;
+        }
+        submitBtn?.setAttribute('disabled', 'disabled');
+        notice.classList.remove('hidden', 'err');
+        notice.classList.add('ok');
+        notice.textContent = 'Atualizando sua senha...';
+        const body = Object.fromEntries(new FormData(form).entries());
+        try {
+          const res = await fetch('/api/auth/reset-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            notice.classList.remove('ok');
+            notice.classList.add('err');
+            notice.textContent = data?.error || 'Token inválido ou expirado.';
+            resetCaptcha();
+            return;
+          }
+          window.location.href = '/login?reset=success';
+        } catch (_) {
+          notice.classList.remove('ok');
+          notice.classList.add('err');
+          notice.textContent = 'Falha de comunicação. Tente novamente em instantes.';
+          resetCaptcha();
+        } finally {
+          submitBtn?.removeAttribute('disabled');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
 <?php
@@ -470,6 +941,166 @@ function renderCheckoutPendingPage(string $asaasSubscriptionId, string $paymentU
       };
       setInterval(tick, 8000);
       tick();
+    })();
+  </script>
+</body>
+</html>
+<?php
+  return (string)ob_get_clean();
+}
+
+function currentClientPendingContext(): ?array {
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  if ($orgId === '') {
+    return null;
+  }
+  $pending = pendingPaymentByOrganization($orgId);
+  if (!$pending) {
+    return null;
+  }
+  $sid = trim((string)($pending['asaas_subscription_id'] ?? ''));
+  $signupSessionId = trim((string)($pending['signup_session_id'] ?? ''));
+  $pendingUntil = trim((string)($pending['payment_pending_until'] ?? ''));
+  if ($pendingUntil === '') {
+    $pendingUntil = date('c', strtotime((string)$pending['updated_at'] . ' +15 minutes'));
+  }
+  $redirectUrl = trim((string)($pending['payment_redirect_url'] ?? ''));
+  return [
+    'sid' => $sid,
+    'signup_session_id' => $signupSessionId,
+    'pending_until' => $pendingUntil,
+    'payment_redirect_url' => $redirectUrl,
+  ];
+}
+
+function renderPortalPaymentPendingPage(array $ctx): string {
+  $sid = (string)($ctx['sid'] ?? '');
+  $signupSessionId = (string)($ctx['signup_session_id'] ?? '');
+  $pendingUntil = (string)($ctx['pending_until'] ?? date('c', time() + 900));
+  $paymentUrl = (string)($ctx['payment_redirect_url'] ?? '');
+  ob_start();
+  ?>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Processando pagamento - KoddaHub</title>
+  <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
+  <link rel="stylesheet" href="/assets/app.css?v=<?= h((string)@filemtime(__DIR__ . '/assets/app.css')) ?>">
+</head>
+<body data-page="auth" data-csrf-token="<?= h(csrfToken()) ?>">
+  <div class="auth-shell">
+    <aside class="auth-left">
+      <div>
+        <div class="brand-row">
+          <img src="https://koddahub.com.br/assets/logo/koddahub-logo-v2.png" alt="Logo KoddaHub">
+          <div class="brand-text"><span class="kodda">Kodda</span><span class="hub">Hub</span></div>
+        </div>
+        <h1>Processando pagamento</h1>
+        <p>Estamos aguardando a confirmação da cobrança no ASAAS para liberar sua área completa.</p>
+        <p class="note">Assim que confirmar, seu acesso será liberado automaticamente para cadastrar o briefing do site.</p>
+      </div>
+    </aside>
+    <main class="auth-right">
+      <section class="auth-panel">
+        <div class="panel-body">
+          <div id="portalPendingStatus" class="alert ok">Aguardando confirmação de pagamento...</div>
+          <p id="portalPendingCountdown" class="note" style="margin-top:8px"></p>
+          <div class="action-row" style="margin-top:12px">
+            <button class="btn btn-primary" type="button" id="portalPendingOpenBtn">Acessar link de pagamento</button>
+            <button class="btn btn-ghost" type="button" id="portalPendingCheckBtn">Já paguei, verificar agora</button>
+            <a class="btn btn-ghost" href="/portal/logout">Sair</a>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const sid = <?= json_encode($sid, JSON_UNESCAPED_UNICODE) ?>;
+      const ssid = <?= json_encode($signupSessionId, JSON_UNESCAPED_UNICODE) ?>;
+      const initialUrl = <?= json_encode($paymentUrl, JSON_UNESCAPED_UNICODE) ?>;
+      const pendingUntilRaw = <?= json_encode($pendingUntil, JSON_UNESCAPED_UNICODE) ?>;
+      const csrfToken = document.body?.dataset?.csrfToken || '';
+      const statusEl = document.getElementById('portalPendingStatus');
+      const countdownEl = document.getElementById('portalPendingCountdown');
+      const openBtn = document.getElementById('portalPendingOpenBtn');
+      const checkBtn = document.getElementById('portalPendingCheckBtn');
+
+      let paymentUrl = initialUrl || '';
+      const deadline = pendingUntilRaw ? Date.parse(pendingUntilRaw) : (Date.now() + 15 * 60 * 1000);
+
+      const setStatus = (msg, ok = true) => {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.classList.remove('ok', 'err');
+        statusEl.classList.add(ok ? 'ok' : 'err');
+      };
+
+      const setCountdown = () => {
+        if (!countdownEl) return;
+        const remainMs = Math.max(0, deadline - Date.now());
+        const mins = String(Math.floor(remainMs / 60000)).padStart(2, '0');
+        const secs = String(Math.floor((remainMs % 60000) / 1000)).padStart(2, '0');
+        countdownEl.textContent = `Tempo restante: ${mins}:${secs}`;
+        if (remainMs <= 0) {
+          setStatus('Falha no pagamento: tempo de confirmação expirado. Tente novamente.', false);
+        }
+      };
+
+      const openPayment = async () => {
+        if (!paymentUrl && sid) {
+          try {
+            const retry = await fetch('/api/billing/subscriptions/' + encodeURIComponent(sid) + '/retry', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+              credentials: 'same-origin',
+              body: JSON.stringify({}),
+            });
+            const retryData = await retry.json();
+            if (retry.ok && retryData?.payment_redirect_url) {
+              paymentUrl = String(retryData.payment_redirect_url);
+            }
+          } catch (_) {}
+        }
+        if (paymentUrl) {
+          window.open(paymentUrl, '_blank', 'noopener,noreferrer');
+          setStatus('Link de pagamento aberto em nova aba. Aguardando confirmação...', true);
+          return;
+        }
+        setStatus('Não foi possível obter o link de pagamento agora. Tente novamente em instantes.', false);
+      };
+
+      const checkStatus = async () => {
+        try {
+          const resp = await fetch('/api/portal/pagamento-pendente/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+            credentials: 'same-origin',
+            body: JSON.stringify({}),
+          });
+          const data = await resp.json();
+          if (!resp.ok) return;
+          if (data?.payment_redirect_url) paymentUrl = String(data.payment_redirect_url);
+          if (data?.ready) {
+            setStatus('Pagamento confirmado. Acesso liberado, redirecionando...', true);
+            setTimeout(() => { window.location.href = '/portal/dashboard?new=1'; }, 700);
+            return;
+          }
+          setStatus(data?.payment_confirmed
+            ? 'Pagamento confirmado no ASAAS. Finalizando sincronização no CRM...'
+            : 'Aguardando confirmação do pagamento no ASAAS...', true);
+        } catch (_) {}
+      };
+
+      if (openBtn) openBtn.addEventListener('click', openPayment);
+      if (checkBtn) checkBtn.addEventListener('click', checkStatus);
+
+      setCountdown();
+      checkStatus();
+      setInterval(setCountdown, 1000);
+      setInterval(checkStatus, 10000);
     })();
   </script>
 </body>
@@ -676,7 +1307,7 @@ function renderDashboard(?string $notice = null): string {
           <section class="briefing-banner">
             <div class="briefing-banner-copy">
               <strong><i class="bi bi-rocket-takeoff-fill" aria-hidden="true"></i> Comece seu projeto agora!</strong>
-              <span>Preencha o briefing do seu site e ganhe 15% de desconto no primeiro mês.</span>
+              <span>Preencha o briefing do seu primeiro site e garanta publicação em 24 horas.</span>
             </div>
             <button type="button" class="btn btn-briefing-banner sidebar-open-briefing">Preencher Briefing</button>
           </section>
@@ -841,7 +1472,12 @@ function renderDashboard(?string $notice = null): string {
                   <?php if (!empty($operationApprovalPending['preview_url'])): ?>
                     <a href="<?= h((string)$operationApprovalPending['preview_url']) ?>" target="_blank" rel="noreferrer">Abrir preview</a>
                   <?php endif; ?>
+                  <div style="margin-top:10px">
+                    <button type="button" class="btn btn-primary" id="portalApprovalLinkBtn">Validar versão do site</button>
+                  </div>
                 </div>
+              <?php else: ?>
+                <div class="alert hidden" id="portalApprovalNotice"></div>
               <?php endif; ?>
 
               <div class="operation-flow-list">
@@ -1277,6 +1913,45 @@ function queueBillingEventEmail(string $orgId, string $email, string $subject, s
   ]);
 }
 
+function normalizeEmail(string $email): string {
+  return strtolower(trim($email));
+}
+
+function generatePasswordResetToken(): string {
+  return bin2hex(random_bytes(32));
+}
+
+function hashPasswordResetToken(string $token): string {
+  return hash('sha256', $token);
+}
+
+function queuePasswordResetEmail(?string $organizationId, string $email, string $token): void {
+  if (!Validator::email($email)) {
+    return;
+  }
+  $baseUrl = rtrim((string)(getenv('APP_URL_CLIENTE') ?: 'https://clientes.koddahub.com.br'), '/');
+  $link = $baseUrl . '/redefinir-senha?token=' . rawurlencode($token);
+  $subject = 'Redefinição de senha - KoddaHub';
+  $body = implode("\n", [
+    'Olá,',
+    '',
+    'Recebemos uma solicitação para redefinir sua senha na área do cliente KoddaHub.',
+    'Use o link abaixo para criar uma nova senha (válido por 15 minutos):',
+    $link,
+    '',
+    'Se você não solicitou esta alteração, ignore este e-mail.',
+  ]);
+  db()->exec("
+    INSERT INTO crm.email_queue(organization_id,email_to,subject,body,status)
+    VALUES(:oid,:to,:s,:b,'PENDING')
+  ", [
+    ':oid' => $organizationId,
+    ':to' => $email,
+    ':s' => $subject,
+    ':b' => $body,
+  ]);
+}
+
 function normalizeUploadFiles(string $field): array {
   if (!isset($_FILES[$field])) return [];
   $f = $_FILES[$field];
@@ -1335,6 +2010,83 @@ function operationStageMeta(string $stageCode): array {
   return $map[$stageCode] ?? ['name' => $stageCode, 'order' => 99];
 }
 
+function ensureDealOperationSubstepTable(): void {
+  static $ready = false;
+  if ($ready) {
+    return;
+  }
+  db()->exec("
+    CREATE TABLE IF NOT EXISTS crm.deal_operation_substep (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      stage_code VARCHAR(80) NOT NULL,
+      substep_code VARCHAR(80) NOT NULL,
+      substep_name VARCHAR(140) NOT NULL,
+      substep_order INT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+      is_required BOOLEAN NOT NULL DEFAULT true,
+      owner VARCHAR(120),
+      notes TEXT,
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (deal_id, stage_code, substep_code)
+    )
+  ");
+  $ready = true;
+}
+
+function ensurePasswordResetTable(): void {
+  static $ready = false;
+  if ($ready) {
+    return;
+  }
+  db()->exec("
+    CREATE TABLE IF NOT EXISTS client.password_resets (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email VARCHAR(255) NOT NULL,
+      token_hash CHAR(64) NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ip_address VARCHAR(45),
+      user_agent TEXT
+    )
+  ");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_password_resets_email_state ON client.password_resets(email, used_at, expires_at)");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON client.password_resets(expires_at)");
+  $ready = true;
+}
+
+function initializePublicationSubstepsForDeal(string $dealId): void {
+  ensureDealOperationSubstepTable();
+  $substeps = [
+    ['code' => 'dominio_decisao', 'name' => 'Domínio já existe / precisa contratar', 'order' => 1],
+    ['code' => 'dominio_registro', 'name' => 'Registro/transferência de domínio', 'order' => 2],
+    ['code' => 'dns_config', 'name' => 'Configuração de DNS e apontamentos', 'order' => 3],
+    ['code' => 'hostgator_account', 'name' => 'Cadastro/ajuste na Hostgator', 'order' => 4],
+    ['code' => 'deploy_ssl', 'name' => 'Deploy + SSL + validação técnica', 'order' => 5],
+    ['code' => 'go_live_monitor', 'name' => 'Monitoramento de entrada no ar', 'order' => 6],
+  ];
+  foreach ($substeps as $substep) {
+    db()->exec("
+      INSERT INTO crm.deal_operation_substep (
+        deal_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
+      )
+      VALUES (
+        :deal_id, 'publicacao', :substep_code, :substep_name, :substep_order, 'PENDING', true, now(), now()
+      )
+      ON CONFLICT (deal_id, stage_code, substep_code) DO NOTHING
+    ", [
+      ':deal_id' => $dealId,
+      ':substep_code' => $substep['code'],
+      ':substep_name' => $substep['name'],
+      ':substep_order' => $substep['order'],
+    ]);
+  }
+}
+
 function moveDealOperationStage(string $dealId, string $stageCode): void {
   $meta = operationStageMeta($stageCode);
   $active = db()->one("
@@ -1358,6 +2110,275 @@ function moveDealOperationStage(string $dealId, string $stageCode): void {
     ':name' => $meta['name'],
     ':ord' => $meta['order'],
   ]);
+
+  if ($stageCode === 'publicacao') {
+    initializePublicationSubstepsForDeal($dealId);
+  }
+}
+
+function resolveHospedagemPipelineMeta(): ?array {
+  static $cache = null;
+  if (is_array($cache)) {
+    return $cache;
+  }
+
+  $pipeline = db()->one("SELECT id FROM crm.pipeline WHERE code='comercial_hospedagem' LIMIT 1");
+  if (!$pipeline) {
+    return null;
+  }
+  $stages = db()->all("
+    SELECT id, code, stage_order
+    FROM crm.pipeline_stage
+    WHERE pipeline_id=:pid
+    ORDER BY stage_order ASC
+  ", [':pid' => $pipeline['id']]);
+
+  $map = [];
+  foreach ($stages as $stage) {
+    $map[(string)$stage['code']] = $stage;
+  }
+  $cache = ['id' => (string)$pipeline['id'], 'stages' => $map];
+  return $cache;
+}
+
+function deriveHospedagemStageAndLifecycle(?string $subscriptionStatus): array {
+  $status = strtoupper(trim((string)$subscriptionStatus));
+  if ($status === 'ACTIVE') {
+    return ['stage_code' => 'fechado_ganho', 'lifecycle' => 'CLIENT', 'closed' => true];
+  }
+  if (in_array($status, ['PENDING', 'TRIALING', 'INCOMPLETE', 'PAST_DUE', 'OVERDUE'], true)) {
+    return ['stage_code' => 'pagamento_pendente', 'lifecycle' => 'OPEN', 'closed' => false];
+  }
+  if (in_array($status, ['CANCELED', 'SUSPENDED', 'CANCELLED'], true)) {
+    return ['stage_code' => 'perdido', 'lifecycle' => 'LOST', 'closed' => true];
+  }
+  return ['stage_code' => 'cadastro_iniciado', 'lifecycle' => 'OPEN', 'closed' => false];
+}
+
+function ensureInitialHospedagemOperationForDeal(string $dealId): void {
+  $active = db()->one("
+    SELECT id
+    FROM crm.deal_operation
+    WHERE deal_id=:did AND status='ACTIVE'
+    ORDER BY stage_order DESC, started_at DESC
+    LIMIT 1
+  ", [':did' => $dealId]);
+  if (!$active) {
+    moveDealOperationStage($dealId, 'briefing_pendente');
+  }
+}
+
+function syncHospedagemDealByOrganization(string $organizationId, ?string $subscriptionId = null, string $reason = 'webhook_payment_confirmed'): ?string {
+  $pipeline = resolveHospedagemPipelineMeta();
+  if (!$pipeline) {
+    return null;
+  }
+
+  $subscriptionId = trim((string)$subscriptionId);
+  $org = db()->one("
+    SELECT
+      o.id AS organization_id,
+      o.legal_name,
+      o.billing_email,
+      o.whatsapp,
+      s.id AS subscription_row_id,
+      s.asaas_subscription_id,
+      s.status AS subscription_status,
+      p.code AS plan_code,
+      p.monthly_price
+    FROM client.organizations o
+    LEFT JOIN LATERAL (
+      SELECT s1.*
+      FROM client.subscriptions s1
+      WHERE s1.organization_id = o.id
+      ORDER BY
+        CASE WHEN :sid <> '' AND s1.asaas_subscription_id = :sid THEN 0 ELSE 1 END,
+        s1.created_at DESC
+      LIMIT 1
+    ) s ON true
+    LEFT JOIN client.plans p ON p.id = s.plan_id
+    WHERE o.id=:oid
+    LIMIT 1
+  ", [
+    ':oid' => $organizationId,
+    ':sid' => $subscriptionId,
+  ]);
+  if (!$org) {
+    return null;
+  }
+
+  $derivation = deriveHospedagemStageAndLifecycle((string)($org['subscription_status'] ?? ''));
+  $stage = $pipeline['stages'][$derivation['stage_code']] ?? null;
+  if (!$stage) {
+    return null;
+  }
+
+  $title = trim((string)($org['legal_name'] ?? ''));
+  if ($title === '') {
+    $title = trim((string)($org['billing_email'] ?? ''));
+  }
+  if ($title === '') {
+    $title = 'Cliente ' . substr($organizationId, 0, 8);
+  }
+
+  $planCode = !empty($org['plan_code']) ? strtolower((string)$org['plan_code']) : null;
+  $valueCents = isset($org['monthly_price']) ? (int)round((float)$org['monthly_price'] * 100) : null;
+  $closedAt = !empty($derivation['closed']) ? date('Y-m-d H:i:s') : null;
+
+  $existing = db()->one("
+    SELECT id, stage_id, lifecycle_status
+    FROM crm.deal
+    WHERE pipeline_id=:pid
+      AND deal_type='HOSPEDAGEM'
+      AND organization_id=:oid
+    ORDER BY updated_at DESC
+    LIMIT 1
+  ", [
+    ':pid' => $pipeline['id'],
+    ':oid' => $organizationId,
+  ]);
+
+  if ($existing) {
+    db()->exec("
+      UPDATE crm.deal
+      SET
+        stage_id=:stage_id,
+        subscription_id=:subscription_id,
+        title=:title,
+        contact_name=:contact_name,
+        contact_email=:contact_email,
+        contact_phone=:contact_phone,
+        plan_code=:plan_code,
+        value_cents=:value_cents,
+        lifecycle_status=:lifecycle_status,
+        is_closed=:is_closed,
+        closed_at=:closed_at,
+        updated_at=now()
+      WHERE id=:id
+    ", [
+      ':id' => $existing['id'],
+      ':stage_id' => $stage['id'],
+      ':subscription_id' => $org['subscription_row_id'] ?? null,
+      ':title' => $title,
+      ':contact_name' => $title,
+      ':contact_email' => $org['billing_email'] ?? null,
+      ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
+      ':plan_code' => $planCode,
+      ':value_cents' => $valueCents,
+      ':lifecycle_status' => $derivation['lifecycle'],
+      ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
+      ':closed_at' => $closedAt,
+    ]);
+
+    if ((string)$existing['stage_id'] !== (string)$stage['id']) {
+      db()->exec("
+        INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
+        VALUES(:deal_id, :from_stage_id, :to_stage_id, 'SYSTEM', :reason, now())
+      ", [
+        ':deal_id' => $existing['id'],
+        ':from_stage_id' => $existing['stage_id'],
+        ':to_stage_id' => $stage['id'],
+        ':reason' => 'Webhook pagamento confirmado',
+      ]);
+    }
+
+    db()->exec("
+      INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+      VALUES(:deal_id, 'FLOW_UPDATE', :content, :metadata::jsonb, 'WEBHOOK')
+    ", [
+      ':deal_id' => $existing['id'],
+      ':content' => 'Sincronização imediata do CRM via webhook ASAAS.',
+      ':metadata' => json_encode([
+        'reason' => $reason,
+        'organization_id' => $organizationId,
+        'asaas_subscription_id' => $subscriptionId,
+      ], JSON_UNESCAPED_UNICODE),
+    ]);
+
+    if ($derivation['lifecycle'] === 'CLIENT') {
+      ensureInitialHospedagemOperationForDeal((string)$existing['id']);
+    }
+    return (string)$existing['id'];
+  }
+
+  $position = db()->one("
+    SELECT COUNT(*)::int AS c
+    FROM crm.deal
+    WHERE pipeline_id=:pid
+      AND stage_id=:sid
+      AND lifecycle_status <> 'CLIENT'
+  ", [
+    ':pid' => $pipeline['id'],
+    ':sid' => $stage['id'],
+  ]);
+  $positionIndex = (int)($position['c'] ?? 0);
+
+  $created = db()->one("
+    INSERT INTO crm.deal(
+      pipeline_id, stage_id, organization_id, subscription_id, title, contact_name, contact_email, contact_phone,
+      deal_type, category, intent, origin, plan_code, product_code, value_cents, position_index,
+      lifecycle_status, is_closed, closed_at, metadata, created_at, updated_at
+    )
+    VALUES(
+      :pipeline_id, :stage_id, :organization_id, :subscription_id, :title, :contact_name, :contact_email, :contact_phone,
+      'HOSPEDAGEM', 'RECORRENTE', :intent, 'PAYMENT_WEBHOOK', :plan_code, NULL, :value_cents, :position_index,
+      :lifecycle_status, :is_closed, :closed_at, :metadata::jsonb, now(), now()
+    )
+    RETURNING id
+  ", [
+    ':pipeline_id' => $pipeline['id'],
+    ':stage_id' => $stage['id'],
+    ':organization_id' => $organizationId,
+    ':subscription_id' => $org['subscription_row_id'] ?? null,
+    ':title' => $title,
+    ':contact_name' => $title,
+    ':contact_email' => $org['billing_email'] ?? null,
+    ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
+    ':intent' => $planCode ? ('hospedagem_' . $planCode) : 'hospedagem_basico',
+    ':plan_code' => $planCode,
+    ':value_cents' => $valueCents,
+    ':position_index' => $positionIndex,
+    ':lifecycle_status' => $derivation['lifecycle'],
+    ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
+    ':closed_at' => $closedAt,
+    ':metadata' => json_encode([
+      'source' => 'webhook_sync_hospedagem',
+      'reason' => $reason,
+      'asaas_subscription_id' => $subscriptionId,
+    ], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  if (!$created || empty($created['id'])) {
+    return null;
+  }
+
+  db()->exec("
+    INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
+    VALUES(:deal_id, NULL, :to_stage_id, 'SYSTEM', :reason, now())
+  ", [
+    ':deal_id' => $created['id'],
+    ':to_stage_id' => $stage['id'],
+    ':reason' => 'Webhook pagamento confirmado',
+  ]);
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id, 'FLOW_UPDATE', :content, :metadata::jsonb, 'WEBHOOK')
+  ", [
+    ':deal_id' => $created['id'],
+    ':content' => 'Deal criado por sincronização imediata do webhook ASAAS.',
+    ':metadata' => json_encode([
+      'reason' => $reason,
+      'organization_id' => $organizationId,
+      'asaas_subscription_id' => $subscriptionId,
+    ], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  if ($derivation['lifecycle'] === 'CLIENT') {
+    ensureInitialHospedagemOperationForDeal((string)$created['id']);
+  }
+
+  return (string)$created['id'];
 }
 
 function approvalContextByToken(string $token): ?array {
@@ -1491,9 +2512,205 @@ function renderApprovalPage(array $ctx, string $token): string {
   return (string)ob_get_clean();
 }
 
+function normalizeDigits(?string $value): string {
+  return preg_replace('/\D+/', '', (string)$value) ?? '';
+}
+
+function normalizeState(?string $value): string {
+  return strtoupper(substr(trim((string)$value), 0, 2));
+}
+
+function isValidCpf(string $cpf): bool {
+  if (!preg_match('/^\d{11}$/', $cpf)) {
+    return false;
+  }
+  if (preg_match('/^(\d)\1{10}$/', $cpf)) {
+    return false;
+  }
+  for ($t = 9; $t < 11; $t++) {
+    $sum = 0;
+    for ($c = 0; $c < $t; $c++) {
+      $sum += (int)$cpf[$c] * (($t + 1) - $c);
+    }
+    $digit = ((10 * $sum) % 11) % 10;
+    if ((int)$cpf[$c] !== $digit) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isValidCnpj(string $cnpj): bool {
+  if (!preg_match('/^\d{14}$/', $cnpj)) {
+    return false;
+  }
+  if (preg_match('/^(\d)\1{13}$/', $cnpj)) {
+    return false;
+  }
+  $weights1 = [5,4,3,2,9,8,7,6,5,4,3,2];
+  $weights2 = [6,5,4,3,2,9,8,7,6,5,4,3,2];
+  $sum1 = 0;
+  for ($i = 0; $i < 12; $i++) {
+    $sum1 += (int)$cnpj[$i] * $weights1[$i];
+  }
+  $rest1 = $sum1 % 11;
+  $digit1 = $rest1 < 2 ? 0 : 11 - $rest1;
+  if ((int)$cnpj[12] !== $digit1) {
+    return false;
+  }
+  $sum2 = 0;
+  for ($i = 0; $i < 13; $i++) {
+    $sum2 += (int)$cnpj[$i] * $weights2[$i];
+  }
+  $rest2 = $sum2 % 11;
+  $digit2 = $rest2 < 2 ? 0 : 11 - $rest2;
+  return (int)$cnpj[13] === $digit2;
+}
+
+function isValidCpfCnpj(string $doc): bool {
+  if (strlen($doc) === 11) {
+    return isValidCpf($doc);
+  }
+  if (strlen($doc) === 14) {
+    return isValidCnpj($doc);
+  }
+  return false;
+}
+
+function hasActiveSubscriptionByEmail(string $email): bool {
+  $email = strtolower(trim($email));
+  if ($email === '') {
+    return false;
+  }
+  $row = db()->one("
+    SELECT 1
+    FROM client.users u
+    JOIN client.organizations o ON o.user_id=u.id
+    JOIN client.subscriptions s ON s.organization_id=o.id
+    WHERE lower(u.email)=:email
+      AND upper(s.status)='ACTIVE'
+    LIMIT 1
+  ", [':email' => $email]);
+  return $row !== null;
+}
+
+function hasActiveSubscriptionByDocument(string $cpfCnpj): bool {
+  $doc = normalizeDigits($cpfCnpj);
+  if ($doc === '') {
+    return false;
+  }
+  $row = db()->one("
+    SELECT 1
+    FROM client.organizations o
+    JOIN client.subscriptions s ON s.organization_id=o.id
+    WHERE regexp_replace(coalesce(o.cpf_cnpj,''),'\\D','','g')=:doc
+      AND upper(s.status)='ACTIVE'
+    LIMIT 1
+  ", [':doc' => $doc]);
+  return $row !== null;
+}
+
+function pendingPaymentByEmail(string $email): ?array {
+  $email = strtolower(trim($email));
+  if ($email === '') {
+    return null;
+  }
+  if (hasActiveSubscriptionByEmail($email)) {
+    return null;
+  }
+  return db()->one("
+    SELECT s.asaas_subscription_id, s.status, ss.updated_at, ss.id AS signup_session_id,
+           coalesce(ss.metadata->>'payment_pending_until','') AS payment_pending_until,
+           coalesce(ss.metadata->>'payment_redirect_url','') AS payment_redirect_url
+    FROM client.users u
+    JOIN client.organizations o ON o.user_id=u.id
+    JOIN client.subscriptions s ON s.organization_id=o.id
+    LEFT JOIN crm.signup_session ss ON ss.organization_id=o.id
+    WHERE lower(u.email)=:email
+      AND upper(s.status) IN ('PENDING','OVERDUE')
+    ORDER BY s.created_at DESC, ss.updated_at DESC NULLS LAST
+    LIMIT 1
+  ", [':email' => $email]);
+}
+
+function pendingPaymentByDocument(string $cpfCnpj): ?array {
+  $doc = normalizeDigits($cpfCnpj);
+  if ($doc === '') {
+    return null;
+  }
+  if (hasActiveSubscriptionByDocument($doc)) {
+    return null;
+  }
+  return db()->one("
+    SELECT s.asaas_subscription_id, s.status, ss.updated_at, ss.id AS signup_session_id,
+           coalesce(ss.metadata->>'payment_pending_until','') AS payment_pending_until,
+           coalesce(ss.metadata->>'payment_redirect_url','') AS payment_redirect_url
+    FROM client.organizations o
+    JOIN client.subscriptions s ON s.organization_id=o.id
+    LEFT JOIN crm.signup_session ss ON ss.organization_id=o.id
+    WHERE regexp_replace(coalesce(o.cpf_cnpj,''),'\\D','','g')=:doc
+      AND upper(s.status) IN ('PENDING','OVERDUE')
+    ORDER BY s.created_at DESC, ss.updated_at DESC NULLS LAST
+    LIMIT 1
+  ", [':doc' => $doc]);
+}
+
+function hasActiveSubscriptionByOrganization(string $organizationId): bool {
+  if ($organizationId === '') {
+    return false;
+  }
+  $row = db()->one("
+    SELECT 1
+    FROM client.subscriptions s
+    WHERE s.organization_id=:oid
+      AND upper(s.status)='ACTIVE'
+    LIMIT 1
+  ", [':oid' => $organizationId]);
+  return $row !== null;
+}
+
+function isCrmClientReadyByOrganization(string $organizationId): bool {
+  if ($organizationId === '') {
+    return false;
+  }
+  $row = db()->one("
+    SELECT id
+    FROM crm.deal
+    WHERE organization_id=:oid
+      AND deal_type='HOSPEDAGEM'
+      AND lifecycle_status='CLIENT'
+    LIMIT 1
+  ", [':oid' => $organizationId]);
+  return $row !== null;
+}
+
+function pendingPaymentByOrganization(string $organizationId): ?array {
+  if ($organizationId === '') {
+    return null;
+  }
+  if (hasActiveSubscriptionByOrganization($organizationId)) {
+    return null;
+  }
+  return db()->one("
+    SELECT
+      s.asaas_subscription_id,
+      s.status,
+      ss.updated_at,
+      ss.id AS signup_session_id,
+      coalesce(ss.metadata->>'payment_pending_until','') AS payment_pending_until,
+      coalesce(ss.metadata->>'payment_redirect_url','') AS payment_redirect_url
+    FROM client.subscriptions s
+    LEFT JOIN crm.signup_session ss ON ss.organization_id=s.organization_id
+    WHERE s.organization_id=:oid
+      AND upper(s.status) IN ('PENDING','OVERDUE')
+    ORDER BY s.created_at DESC, ss.updated_at DESC NULLS LAST
+    LIMIT 1
+  ", [':oid' => $organizationId]);
+}
+
 function registerContract(Request $request): void {
   if (!rateLimitAllow('register-contract', 30, 300)) {
-    Response::json(['error' => 'Muitas tentativas. Aguarde alguns minutos e tente novamente.'], 429);
+    apiError('Muitas tentativas. Aguarde alguns minutos e tente novamente.', 429, 'RATE_LIMIT', 'Espere alguns minutos e tente novamente.');
     return;
   }
   requireCsrf($request);
@@ -1505,38 +2722,136 @@ function registerContract(Request $request): void {
   if (!Validator::email($d['email'] ?? null) || !Validator::email($d['billing_email'] ?? null)) {
     $errors['email'] = 'E-mail inválido';
   }
-  if (!verifyRecaptchaToken((string)($d['g-recaptcha-response'] ?? ''))) {
-    $errors['g-recaptcha-response'] = 'Validação reCAPTCHA inválida';
+  if (!verifyTurnstileToken((string)($d['cf-turnstile-response'] ?? ''))) {
+    $errors['cf-turnstile-response'] = 'CAPTCHA inválido, tente novamente.';
   }
   if (!boolInput($d['lgpd'] ?? false)) {
     $errors['lgpd'] = 'Aceite LGPD é obrigatório';
   }
-  if (strlen((string)($d['password'] ?? '')) < 6) {
-    $errors['password'] = 'Senha precisa de pelo menos 6 caracteres';
+  if (strlen((string)($d['password'] ?? '')) < 8 || !preg_match('/[A-Za-z]/', (string)$d['password']) || !preg_match('/\d/', (string)$d['password'])) {
+    $errors['password'] = 'Senha precisa ter no mínimo 8 caracteres com letras e números';
   }
 
-  $paymentMethod = strtoupper((string)($d['payment_method'] ?? 'PIX'));
-  if (!in_array($paymentMethod, ['PIX','CREDIT_CARD'], true)) {
-    $errors['payment_method'] = 'Método de pagamento inválido';
+  $paymentMethod = strtoupper((string)($d['payment_method'] ?? 'CREDIT_CARD'));
+  if ($paymentMethod !== 'CREDIT_CARD') {
+    $errors['payment_method'] = 'Nesta etapa aceitamos apenas cartão de crédito.';
+  }
+
+  $docDigits = normalizeDigits((string)($d['cpf_cnpj'] ?? ''));
+  if (!isValidCpfCnpj($docDigits)) {
+    $errors['cpf_cnpj'] = 'CPF/CNPJ inválido';
+  }
+  $zipDigits = normalizeDigits((string)($d['billing_zip'] ?? ''));
+  if (strlen($zipDigits) !== 8) {
+    $errors['billing_zip'] = 'CEP inválido';
+  }
+  $phoneDigits = normalizeDigits((string)($d['phone'] ?? ''));
+  if (strlen($phoneDigits) < 10 || strlen($phoneDigits) > 13) {
+    $errors['phone'] = 'Telefone inválido';
+  }
+  $state = normalizeState((string)($d['billing_state'] ?? ''));
+  if (!preg_match('/^[A-Z]{2}$/', $state)) {
+    $errors['billing_state'] = 'UF inválida';
+  }
+  $billingCity = trim((string)($d['billing_city'] ?? ''));
+  if (mb_strlen($billingCity) < 2) {
+    $errors['billing_city'] = 'Cidade inválida';
   }
 
   if (!empty($errors)) {
-    Response::json(['error' => 'Dados inválidos', 'details' => $errors], 422);
+    apiError('Dados inválidos', 422, 'VALIDATION_ERROR', 'Revise os campos destacados e tente novamente.', ['details' => $errors]);
     return;
   }
 
-  $exists = db()->one("SELECT id FROM client.users WHERE email=:email", [':email' => $d['email']]);
+  $emailNormalized = strtolower(trim((string)$d['email']));
+  $exists = db()->one("SELECT id FROM client.users WHERE email=:email", [':email' => $emailNormalized]);
   if ($exists) {
-    Response::json(['error' => 'E-mail já cadastrado'], 409);
+    $existingSub = db()->one("
+      SELECT s.asaas_subscription_id, s.status
+      FROM client.users u
+      JOIN client.organizations o ON o.user_id=u.id
+      JOIN client.subscriptions s ON s.organization_id=o.id
+      WHERE u.email=:email
+      ORDER BY s.created_at DESC
+      LIMIT 1
+    ", [':email' => $emailNormalized]);
+    if ($existingSub && in_array(strtoupper((string)$existingSub['status']), ['PENDING', 'OVERDUE'], true)) {
+      $asaas = new AsaasClient();
+      $payments = $asaas->getPaymentsBySubscription((string)$existingSub['asaas_subscription_id'], 1);
+      $payment = $payments['data'][0] ?? null;
+      $redirectUrl = is_array($payment)
+        ? (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? '')
+        : '';
+      Response::json([
+        'ok' => true,
+        'existing' => true,
+        'code' => 'PAYMENT_PENDING',
+        'status' => $existingSub['status'],
+        'asaas_subscription_id' => $existingSub['asaas_subscription_id'],
+        'payment_redirect_url' => $redirectUrl !== '' ? $redirectUrl : null,
+        'awaiting_payment' => true,
+        'pending_until' => date('c', time() + 900),
+      ], 200);
+      return;
+    }
+    apiError('E-mail já cadastrado', 409, 'ACCOUNT_EXISTS', 'Use a opção Entrar ou recupere o acesso.');
+    return;
+  }
+
+  $existingByDocPlan = db()->one("
+    SELECT s.asaas_subscription_id, s.status
+    FROM client.organizations o
+    JOIN client.subscriptions s ON s.organization_id=o.id
+    JOIN client.plans p ON p.id=s.plan_id
+    WHERE regexp_replace(o.cpf_cnpj,'\\D','','g')=:doc
+      AND p.code=:plan
+      AND upper(s.status) IN ('ACTIVE','PENDING','OVERDUE')
+    ORDER BY s.created_at DESC
+    LIMIT 1
+  ", [':doc' => $docDigits, ':plan' => (string)$d['plan_code']]);
+  if ($existingByDocPlan) {
+    $redirectUrl = null;
+    if (in_array(strtoupper((string)$existingByDocPlan['status']), ['PENDING','OVERDUE'], true)) {
+      $asaasLookup = new AsaasClient();
+      $payments = $asaasLookup->getPaymentsBySubscription((string)$existingByDocPlan['asaas_subscription_id'], 1);
+      $payment = $payments['data'][0] ?? null;
+      if (is_array($payment)) {
+        $redirectUrl = (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? '');
+      }
+    }
+    apiError(
+      'Já existe assinatura ativa ou pendente para este CPF/CNPJ neste plano.',
+      409,
+      'DUPLICATE_SUBSCRIPTION',
+      $redirectUrl ? 'Reabra o link de pagamento para concluir a contratação pendente.' : 'Acesse sua conta ou entre em contato para ajustar a assinatura.',
+      [
+        'asaas_subscription_id' => (string)$existingByDocPlan['asaas_subscription_id'],
+        'status' => (string)$existingByDocPlan['status'],
+        'payment_redirect_url' => $redirectUrl ?: null,
+      ]
+    );
+    return;
+  }
+
+  $simultaneousSignup = db()->one("
+    SELECT id
+    FROM crm.signup_session
+    WHERE (lower(email)=:email OR regexp_replace(coalesce(metadata->>'cpf_cnpj',''),'\\D','','g')=:doc)
+      AND status IN ('SIGNUP_STARTED','CHECKOUT_STARTED','SUBSCRIPTION_CREATED')
+      AND updated_at > (now() - interval '15 minutes')
+    LIMIT 1
+  ", [':email' => $emailNormalized, ':doc' => $docDigits]);
+  if ($simultaneousSignup) {
+    apiError('Já existe um cadastro em andamento para este cliente. Aguarde alguns minutos para tentar novamente.', 409, 'SIGNUP_IN_PROGRESS', 'Aguarde alguns minutos e tente novamente.');
     return;
   }
 
   $signupSessionId = db()->one("INSERT INTO crm.signup_session(email,phone,plan_code,status,source,payment_confirmed,metadata)
 VALUES(:email,:phone,:plan,'SIGNUP_STARTED','SIGNUP_FLOW',false,:meta) RETURNING id", [
     ':email' => strtolower((string)$d['email']),
-    ':phone' => preg_replace('/\D+/', '', (string)$d['phone']),
+    ':phone' => $phoneDigits,
     ':plan' => $d['plan_code'],
-    ':meta' => json_encode(['entrypoint' => 'portal_register'], JSON_UNESCAPED_UNICODE),
+    ':meta' => json_encode(['entrypoint' => 'portal_register', 'cpf_cnpj' => $docDigits], JSON_UNESCAPED_UNICODE),
   ])['id'];
 
   $uid = db()->one("INSERT INTO client.users(name,email,password_hash,phone,role) VALUES(:n,:e,:p,:ph,'CLIENTE') RETURNING id", [
@@ -1547,19 +2862,19 @@ VALUES(:email,:phone,:plan,'SIGNUP_STARTED','SIGNUP_FLOW',false,:meta) RETURNING
 VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,:state,:country,:hasDomain,:hasSite,:siteUrl) RETURNING id", [
     ':u' => $uid,
     ':pt' => $d['person_type'],
-    ':doc' => $d['cpf_cnpj'],
+    ':doc' => $docDigits,
     ':ln' => $d['legal_name'],
     ':tn' => $d['trade_name'] ?? null,
     ':be' => $d['billing_email'],
     ':wa' => $d['phone'],
     ':dom' => $d['domain'] ?? null,
-    ':zip' => $d['billing_zip'],
+    ':zip' => $zipDigits,
     ':street' => $d['billing_street'],
     ':num' => $d['billing_number'],
     ':comp' => $d['billing_complement'] ?? null,
     ':district' => $d['billing_district'],
-    ':city' => $d['billing_city'],
-    ':state' => strtoupper((string)$d['billing_state']),
+    ':city' => $billingCity,
+    ':state' => $state,
     ':country' => $d['billing_country'] ?? 'Brasil',
     ':hasDomain' => boolInput($d['has_domain'] ?? false) ? 'true' : 'false',
     ':hasSite' => boolInput($d['has_site'] ?? false) ? 'true' : 'false',
@@ -1573,21 +2888,29 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
 
   $plan = db()->one("SELECT id, code, monthly_price FROM client.plans WHERE code=:c", [':c' => $d['plan_code']]);
   if (!$plan) {
-    Response::json(['error' => 'Plano inválido'], 422);
+    apiError('Plano inválido', 422, 'PLAN_INVALID', 'Selecione um plano válido e tente novamente.');
     return;
   }
 
   $asaas = new AsaasClient();
   $usingAsaasApi = trim((string)(getenv('ASAAS_API_KEY') ?: '')) !== '';
-  $rawPhone = preg_replace('/\D+/', '', (string)$d['phone']) ?? '';
+  $rawPhone = $phoneDigits;
   if (strlen($rawPhone) > 11 && str_starts_with($rawPhone, '55')) {
     $rawPhone = substr($rawPhone, 2);
   }
-  $customer = $asaas->createCustomer([
+  $existingCustomer = $asaas->findCustomerByCpfCnpj($docDigits);
+  $customer = $existingCustomer ?: $asaas->createCustomer([
     'name' => $d['legal_name'],
     'email' => $d['billing_email'],
     'mobilePhone' => $rawPhone,
-    'cpfCnpj' => preg_replace('/\D+/', '', (string)$d['cpf_cnpj']),
+    'cpfCnpj' => $docDigits,
+    'postalCode' => $zipDigits,
+    'address' => trim((string)$d['billing_street']),
+    'addressNumber' => trim((string)$d['billing_number']),
+    'complement' => trim((string)($d['billing_complement'] ?? '')),
+    'province' => trim((string)$d['billing_district']),
+    'city' => $billingCity,
+    'state' => $state,
   ]);
   if ($usingAsaasApi && empty($customer['id'])) {
     db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
@@ -1597,10 +2920,13 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
       ':meta' => json_encode(['asaas_error' => $customer], JSON_UNESCAPED_UNICODE),
     ]);
     $gatewayMsg = is_array($customer['errors'] ?? null) ? (($customer['errors'][0]['description'] ?? null) ?: null) : null;
-    Response::json([
-      'error' => 'Falha ao criar cliente no gateway de pagamento. Verifique os dados e credenciais do ASAAS sandbox.',
-      'gateway_message' => $gatewayMsg,
-    ], 502);
+    apiError(
+      'Falha ao criar cliente no gateway de pagamento. Verifique os dados e credenciais do ASAAS sandbox.',
+      502,
+      'ASAAS_CUSTOMER_ERROR',
+      'Confirme CPF/CNPJ, endereço e tente novamente.',
+      ['gateway_message' => $gatewayMsg]
+    );
     return;
   }
 
@@ -1612,8 +2938,30 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
     'cycle' => 'MONTHLY',
     'description' => 'Assinatura KoddaHub plano ' . $plan['code'],
   ];
+  $callbackEnabled = in_array(strtolower((string)(getenv('ASAAS_CHECKOUT_CALLBACK_ENABLED') ?: 'false')), ['1','true','yes','on'], true);
+  if ($callbackEnabled) {
+    $successReturnUrl = rtrim((string)(getenv('APP_URL_CLIENTE') ?: 'https://clientes.koddahub.com.br'), '/') . '/checkout/return';
+    $subscriptionPayload['callback'] = [
+      'successUrl' => $successReturnUrl,
+      'autoRedirect' => true,
+    ];
+  }
 
   $subscription = $asaas->createSubscription($subscriptionPayload);
+  if ($usingAsaasApi && empty($subscription['id'])) {
+    $firstError = is_array($subscription['errors'] ?? null) ? (string)($subscription['errors'][0]['description'] ?? '') : '';
+    if ($firstError !== '' && (
+      stripos($firstError, 'callback') !== false ||
+      stripos($firstError, 'successUrl') !== false ||
+      stripos($firstError, 'autoRedirect') !== false ||
+      stripos($firstError, 'domínio configurado') !== false ||
+      stripos($firstError, 'cadastre um site') !== false
+    )) {
+      // Fallback resiliente: alguns fluxos ASAAS podem não aceitar callback em criação de assinatura.
+      unset($subscriptionPayload['callback']);
+      $subscription = $asaas->createSubscription($subscriptionPayload);
+    }
+  }
   if ($usingAsaasApi && empty($subscription['id'])) {
     db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
     db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
@@ -1622,13 +2970,32 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
       ':meta' => json_encode(['asaas_error' => $subscription], JSON_UNESCAPED_UNICODE),
     ]);
     $gatewayMsg = is_array($subscription['errors'] ?? null) ? (($subscription['errors'][0]['description'] ?? null) ?: null) : null;
-    Response::json([
-      'error' => 'Falha ao iniciar assinatura no ASAAS. Revise wallet, webhook e credenciais sandbox.',
-      'gateway_message' => $gatewayMsg,
-    ], 502);
+    apiError(
+      'Falha ao iniciar assinatura no ASAAS. Revise wallet, webhook e credenciais sandbox.',
+      502,
+      'ASAAS_SUBSCRIPTION_ERROR',
+      'Tente novamente em instantes. Se persistir, valide a configuração da conta ASAAS.',
+      ['gateway_message' => $gatewayMsg]
+    );
     return;
   }
   $paymentRedirectUrl = $asaas->extractPaymentRedirectUrl($subscription) ?? null;
+  if ($usingAsaasApi && (string)$paymentRedirectUrl === '' && !empty($subscription['id'])) {
+    for ($i = 0; $i < 4; $i++) {
+      usleep(350000);
+      $payments = $asaas->getPaymentsBySubscription((string)$subscription['id'], 1);
+      $payment = $payments['data'][0] ?? null;
+      if (is_array($payment)) {
+        $paymentRedirectUrl = (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? '');
+        if ($paymentRedirectUrl !== '') {
+          break;
+        }
+      }
+    }
+    if ($paymentRedirectUrl === '') {
+      $paymentRedirectUrl = null;
+    }
+  }
   $subStatus = (!$usingAsaasApi && $paymentMethod === 'CREDIT_CARD') ? 'ACTIVE' : 'PENDING';
 
   $subId = db()->one("INSERT INTO client.subscriptions(organization_id,plan_id,asaas_customer_id,asaas_subscription_id,status,payment_method,next_due_date,grace_until) VALUES(:o,:p,:cid,:sid,:status,:pm,:due,:grace) RETURNING id", [
@@ -1653,6 +3020,7 @@ WHERE id=:id", [
       'asaas_subscription_id' => $subscription['id'] ?? ('mock_sub_' . substr((string)$orgId, 0, 8)),
       'payment_method' => $paymentMethod,
       'payment_redirect_url' => $paymentRedirectUrl,
+      'payment_pending_until' => date('c', time() + 900),
     ], JSON_UNESCAPED_UNICODE),
     ':id' => $signupSessionId,
   ]);
@@ -1678,7 +3046,7 @@ VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
   unset(
     $safeLeadPayload['password'],
     $safeLeadPayload['password_confirm'],
-    $safeLeadPayload['g-recaptcha-response']
+    $safeLeadPayload['cf-turnstile-response']
   );
 
   db()->exec("INSERT INTO crm.leads(source,source_ref,name,email,phone,interest,payload,stage) VALUES('assinatura','site',:name,:email,:phone,:interest,:payload,'NOVO')", [
@@ -1710,10 +3078,12 @@ VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
 
   Response::json([
     'ok' => true,
+    'signup_session_id' => $signupSessionId,
     'subscription_id' => $subId,
     'asaas_subscription_id' => ($subscription['id'] ?? null),
     'status' => $subStatus,
     'payment_redirect_url' => $paymentRedirectUrl,
+    'pending_until' => date('c', time() + 900),
     'awaiting_payment' => $subStatus !== 'ACTIVE',
   ], 201);
 }
@@ -1725,16 +3095,30 @@ $router->get('/health', function() {
 });
 
 $router->get('/', function(Request $request) {
-  $alert = (string)$request->input('payment', '') === 'confirmed'
-    ? 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.'
-    : '';
+  $paymentState = (string)$request->input('payment', '');
+  $resetState = (string)$request->input('reset', '');
+  $alert = '';
+  if ($resetState === 'success') {
+    $alert = 'Senha redefinida com sucesso. Faça login para continuar.';
+  } elseif ($paymentState === 'confirmed') {
+    $alert = 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.';
+  } elseif ($paymentState === 'pending') {
+    $alert = 'Finalize o pagamento no ASAAS. Assim que confirmar, entre e preencha o briefing para publicar seu primeiro site em até 24h.';
+  }
   Response::html(renderAuthPage((string)$request->input('plan', 'basic'), $alert));
 });
 
 $router->get('/login', function(Request $request) {
-  $alert = (string)$request->input('payment', '') === 'confirmed'
-    ? 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.'
-    : '';
+  $paymentState = (string)$request->input('payment', '');
+  $resetState = (string)$request->input('reset', '');
+  $alert = '';
+  if ($resetState === 'success') {
+    $alert = 'Senha redefinida com sucesso. Faça login para continuar.';
+  } elseif ($paymentState === 'confirmed') {
+    $alert = 'Pagamento confirmado! Entre agora e preencha o briefing para publicar seu primeiro site em até 24h.';
+  } elseif ($paymentState === 'pending') {
+    $alert = 'Finalize o pagamento no ASAAS. Assim que confirmar, entre e preencha o briefing para publicar seu primeiro site em até 24h.';
+  }
   Response::html(renderAuthPage((string)$request->input('plan', 'basic'), $alert));
 });
 
@@ -1742,11 +3126,43 @@ $router->get('/signup', function(Request $request) {
   Response::html(renderAuthPage((string)$request->input('plan', 'basic')));
 });
 
+$router->get('/esqueci-senha', function(Request $request) {
+  $state = (string)$request->input('state', '');
+  $alert = $state === 'sent' ? 'Se o e-mail existir, enviaremos instruções para redefinição.' : '';
+  Response::html(renderForgotPasswordPage($alert));
+});
+
+$router->get('/redefinir-senha', function(Request $request) {
+  $token = trim((string)$request->input('token', ''));
+  $alert = '';
+  $tokenValid = false;
+  if ($token === '') {
+    $alert = 'Token inválido ou expirado.';
+  } else {
+    ensurePasswordResetTable();
+    $tokenHash = hashPasswordResetToken(strtolower($token));
+    $valid = db()->one("
+      SELECT id
+      FROM client.password_resets
+      WHERE token_hash=:hash
+        AND used_at IS NULL
+        AND expires_at > now()
+      LIMIT 1
+    ", [':hash' => $tokenHash]);
+    if ($valid) {
+      $tokenValid = true;
+    } else {
+      $alert = 'Token inválido ou expirado.';
+    }
+  }
+  Response::html(renderResetPasswordPage($token, $alert, $tokenValid));
+});
+
 $router->get('/checkout/pending', function(Request $request) {
   requireClientAuth();
   $sid = trim((string)$request->input('sid', ''));
   $pay = trim((string)$request->input('pay', ''));
-  if ($sid === '' || $pay === '') {
+  if ($sid === '') {
     header('Location: /portal/dashboard');
     return;
   }
@@ -1809,72 +3225,526 @@ $router->get('/portal/approval/{token}', function(Request $request) {
 
 $router->get('/portal/dashboard', function(Request $request) {
   requireClientAuth();
+  $pending = currentClientPendingContext();
+  if ($pending) {
+    $qs = [];
+    if (!empty($pending['sid'])) {
+      $qs['sid'] = (string)$pending['sid'];
+    }
+    if (!empty($pending['signup_session_id'])) {
+      $qs['ssid'] = (string)$pending['signup_session_id'];
+    }
+    $target = '/portal/pagamento-pendente';
+    if (!empty($qs)) {
+      $target .= '?' . http_build_query($qs);
+    }
+    header('Location: ' . $target);
+    return;
+  }
   $notice = $request->input('new') ? 'Contratação concluída. Seu acesso foi liberado.' : null;
   Response::html(renderDashboard($notice));
 });
 
+$router->get('/portal/pagamento-pendente', function(Request $request) {
+  requireClientAuth('/portal/pagamento-pendente');
+  $pending = currentClientPendingContext();
+  if (!$pending) {
+    header('Location: /portal/dashboard');
+    return;
+  }
+  Response::html(renderPortalPaymentPendingPage($pending));
+});
+
 $router->get('/onboarding/site-brief', function(Request $request) {
   requireClientAuth();
+  $pending = currentClientPendingContext();
+  if ($pending) {
+    $qs = [];
+    if (!empty($pending['sid'])) {
+      $qs['sid'] = (string)$pending['sid'];
+    }
+    if (!empty($pending['signup_session_id'])) {
+      $qs['ssid'] = (string)$pending['signup_session_id'];
+    }
+    $target = '/portal/pagamento-pendente';
+    if (!empty($qs)) {
+      $target .= '?' . http_build_query($qs);
+    }
+    header('Location: ' . $target);
+    return;
+  }
   Response::html(onboardingPage($request->input('ok') ? 'Briefing salvo com sucesso. Prompt gerado e enviado para a operação.' : null));
 });
 
+$router->post('/api/auth/pending-check', function(Request $request) {
+  if (!rateLimitAllow('auth-pending-check', 40, 300)) {
+    apiError('Muitas tentativas. Aguarde alguns minutos.', 429, 'RATE_LIMIT', 'Aguarde alguns minutos para nova consulta.');
+    return;
+  }
+  requireCsrf($request);
+  $email = trim((string)$request->input('email', ''));
+  $doc = trim((string)$request->input('cpf_cnpj', ''));
+
+  $pending = null;
+  if ($email !== '') {
+    $pending = pendingPaymentByEmail($email);
+  }
+  if (!$pending && $doc !== '') {
+    $pending = pendingPaymentByDocument($doc);
+  }
+  if (!$pending) {
+    Response::json(['ok' => true, 'has_pending' => false]);
+    return;
+  }
+
+  $sid = (string)($pending['asaas_subscription_id'] ?? '');
+  $signupSessionId = (string)($pending['signup_session_id'] ?? '');
+  $pendingUntil = (string)($pending['payment_pending_until'] ?? '');
+  if ($pendingUntil === '') {
+    $pendingUntil = date('c', strtotime((string)$pending['updated_at'] . ' +15 minutes'));
+  }
+  $redirectUrl = (string)($pending['payment_redirect_url'] ?? '');
+  if ($sid !== '') {
+    $asaas = new AsaasClient();
+    $payments = $asaas->getPaymentsBySubscription($sid, 1);
+    $payment = $payments['data'][0] ?? null;
+    if (is_array($payment)) {
+      $redirectUrl = (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? $redirectUrl);
+    }
+  }
+  Response::json([
+    'ok' => true,
+    'has_pending' => true,
+    'sid' => $sid,
+    'signup_session_id' => $signupSessionId !== '' ? $signupSessionId : null,
+    'pending_until' => $pendingUntil,
+    'payment_redirect_url' => $redirectUrl !== '' ? $redirectUrl : null,
+  ]);
+});
+
+$router->post('/api/auth/signup-precheck', function(Request $request) {
+  if (!rateLimitAllow('auth-signup-precheck', 80, 300)) {
+    apiError('Muitas validações em pouco tempo.', 429, 'RATE_LIMIT', 'Aguarde alguns segundos para tentar novamente.');
+    return;
+  }
+  requireCsrf($request);
+  $d = $request->body;
+  $step = (int)($d['step'] ?? 0);
+
+  if ($step === 1) {
+    $doc = normalizeDigits((string)($d['cpf_cnpj'] ?? ''));
+    $phone = normalizeDigits((string)($d['phone'] ?? ''));
+    if (!isValidCpfCnpj($doc)) {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'cpf_cnpj',
+        'error' => 'CPF/CNPJ inválido para o tipo selecionado.',
+        'error_code' => 'DOC_INVALID',
+      ]);
+      return;
+    }
+    $docExists = db()->one("
+      SELECT o.id
+      FROM client.organizations o
+      WHERE regexp_replace(coalesce(o.cpf_cnpj,''),'\\D','','g')=:doc
+      LIMIT 1
+    ", [':doc' => $doc]);
+    if ($docExists) {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'cpf_cnpj',
+        'error' => 'CPF/CNPJ já cadastrado. Use o login ou recuperação de senha.',
+        'error_code' => 'DOC_ALREADY_REGISTERED',
+      ]);
+      return;
+    }
+
+    if ($phone !== '') {
+      $phoneExists = db()->one("
+        SELECT 1
+        FROM (
+          SELECT regexp_replace(coalesce(u.phone,''),'\\D','','g') AS ph FROM client.users u
+          UNION ALL
+          SELECT regexp_replace(coalesce(o.whatsapp,''),'\\D','','g') AS ph FROM client.organizations o
+          UNION ALL
+          SELECT regexp_replace(coalesce(ss.phone,''),'\\D','','g') AS ph FROM crm.signup_session ss
+            WHERE ss.status IN ('SIGNUP_STARTED','CHECKOUT_STARTED','SUBSCRIPTION_CREATED','PAYMENT_CONFIRMED')
+        ) p
+        WHERE p.ph=:ph
+        LIMIT 1
+      ", [':ph' => $phone]);
+      if ($phoneExists) {
+        Response::json([
+          'ok' => true,
+          'can_proceed' => false,
+          'field' => 'phone',
+          'error' => 'Telefone já cadastrado. Use o login da conta existente.',
+          'error_code' => 'PHONE_ALREADY_REGISTERED',
+        ]);
+        return;
+      }
+    }
+  }
+
+  if ($step === 3) {
+    $email = normalizeEmail((string)($d['email'] ?? ''));
+    if (!Validator::email($email)) {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'email',
+        'error' => 'Informe um e-mail válido para continuar.',
+        'error_code' => 'EMAIL_INVALID',
+      ]);
+      return;
+    }
+    if (!boolInput($d['lgpd'] ?? false)) {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'lgpd',
+        'error' => 'Aceite os termos LGPD para continuar.',
+        'error_code' => 'LGPD_REQUIRED',
+      ]);
+      return;
+    }
+    $turnstileToken = trim((string)($d['turnstile_token'] ?? ''));
+    if ($turnstileToken === '') {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'turnstile',
+        'error' => 'Conclua a validação de segurança para continuar.',
+        'error_code' => 'TURNSTILE_REQUIRED',
+      ]);
+      return;
+    }
+    $emailExists = db()->one("SELECT id FROM client.users WHERE lower(email)=:email LIMIT 1", [':email' => $email]);
+    if ($emailExists) {
+      Response::json([
+        'ok' => true,
+        'can_proceed' => false,
+        'field' => 'email',
+        'error' => 'E-mail já cadastrado. Faça login ou recupere sua senha.',
+        'error_code' => 'ACCOUNT_EXISTS',
+      ]);
+      return;
+    }
+  }
+
+  Response::json(['ok' => true, 'can_proceed' => true]);
+});
+
+$router->post('/api/auth/signup-session/{id}/status', function(Request $request) {
+  requireCsrf($request);
+  $sessionId = (string)($request->query['id'] ?? '');
+  if ($sessionId === '') {
+    Response::json(['error' => 'Sessão inválida'], 422);
+    return;
+  }
+
+  $session = db()->one("
+    SELECT
+      ss.id,
+      ss.organization_id,
+      ss.status,
+      ss.payment_confirmed,
+      ss.updated_at,
+      coalesce(ss.metadata->>'asaas_subscription_id','') AS asaas_subscription_id,
+      coalesce(ss.metadata->>'payment_pending_until','') AS payment_pending_until,
+      coalesce(ss.metadata->>'payment_redirect_url','') AS payment_redirect_url
+    FROM crm.signup_session ss
+    WHERE ss.id=:id
+    LIMIT 1
+  ", [':id' => $sessionId]);
+  if (!$session) {
+    Response::json(['error' => 'Sessão não encontrada'], 404);
+    return;
+  }
+
+  $sid = (string)($session['asaas_subscription_id'] ?? '');
+  $orgId = (string)($session['organization_id'] ?? '');
+  $sub = null;
+  if ($sid !== '') {
+    $sub = db()->one("
+      SELECT status
+      FROM client.subscriptions
+      WHERE asaas_subscription_id=:sid
+      LIMIT 1
+    ", [':sid' => $sid]);
+  }
+  if (!$sub && $orgId !== '') {
+    $sub = db()->one("
+      SELECT status, asaas_subscription_id
+      FROM client.subscriptions
+      WHERE organization_id=:oid
+      ORDER BY created_at DESC
+      LIMIT 1
+    ", [':oid' => $orgId]);
+    if ($sid === '' && $sub) {
+      $sid = (string)($sub['asaas_subscription_id'] ?? '');
+    }
+  }
+
+  $subStatus = strtoupper((string)($sub['status'] ?? ''));
+  $blockedStatuses = ['CANCELED', 'CANCELLED', 'SUSPENDED', 'OVERDUE', 'FAILED'];
+  $isBlockedByGateway = in_array($subStatus, $blockedStatuses, true);
+  $paymentConfirmed = !$isBlockedByGateway && (
+    (bool)($session['payment_confirmed'] ?? false)
+    || strtoupper((string)($session['status'] ?? '')) === 'PAYMENT_CONFIRMED'
+    || $subStatus === 'ACTIVE'
+  );
+
+  $crmReady = false;
+  if ($orgId !== '') {
+    $crmDeal = db()->one("
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id=:oid
+        AND deal_type='HOSPEDAGEM'
+        AND lifecycle_status='CLIENT'
+      LIMIT 1
+    ", [':oid' => $orgId]);
+    $crmReady = $crmDeal !== null;
+  }
+
+  $pendingUntil = (string)($session['payment_pending_until'] ?? '');
+  if ($pendingUntil === '') {
+    $pendingUntil = date('c', strtotime((string)$session['updated_at'] . ' +15 minutes'));
+  }
+
+  Response::json([
+    'ok' => true,
+    'session_id' => $sessionId,
+    'sid' => $sid !== '' ? $sid : null,
+    'payment_confirmed' => $paymentConfirmed,
+    'crm_ready' => $crmReady,
+    'ready' => ($paymentConfirmed && $crmReady),
+    'payment_status' => $subStatus !== '' ? $subStatus : strtoupper((string)($session['status'] ?? 'PENDING')),
+    'pending_until' => $pendingUntil,
+    'payment_redirect_url' => ((string)($session['payment_redirect_url'] ?? '')) !== '' ? (string)$session['payment_redirect_url'] : null,
+  ]);
+});
+
+$router->post('/api/portal/pagamento-pendente/status', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização inválida'], 422);
+    return;
+  }
+
+  $pending = currentClientPendingContext();
+  $latestSub = db()->one("
+    SELECT asaas_subscription_id, status, created_at
+    FROM client.subscriptions
+    WHERE organization_id=:oid
+    ORDER BY created_at DESC
+    LIMIT 1
+  ", [':oid' => $orgId]);
+  $subStatus = strtoupper((string)($latestSub['status'] ?? ''));
+  $paymentConfirmed = $subStatus === 'ACTIVE';
+  $crmReady = isCrmClientReadyByOrganization($orgId);
+  $sid = trim((string)($latestSub['asaas_subscription_id'] ?? ''));
+
+  Response::json([
+    'ok' => true,
+    'ready' => ($paymentConfirmed && $crmReady),
+    'payment_confirmed' => $paymentConfirmed,
+    'crm_ready' => $crmReady,
+    'payment_status' => $subStatus !== '' ? $subStatus : 'PENDING',
+    'sid' => $sid !== '' ? $sid : ($pending['sid'] ?? null),
+    'signup_session_id' => $pending['signup_session_id'] ?? null,
+    'pending_until' => $pending['pending_until'] ?? null,
+    'payment_redirect_url' => $pending['payment_redirect_url'] ?? null,
+  ]);
+});
+
+$router->post('/api/auth/forgot-password', function(Request $request) {
+  requireCsrf($request);
+  if (!rateLimitAllow('auth-forgot-ip', 10, 3600)) {
+    apiError('Muitas solicitações. Aguarde para tentar novamente.', 429, 'PASSWORD_RESET_RATE_LIMIT', 'Aguarde alguns minutos e tente novamente.');
+    return;
+  }
+  $d = $request->body;
+  if (!verifyTurnstileToken((string)($d['cf-turnstile-response'] ?? ''))) {
+    apiError('CAPTCHA inválido, tente novamente.', 422, 'TURNSTILE_INVALID', 'Conclua a validação para continuar.');
+    return;
+  }
+
+  $email = normalizeEmail((string)($d['email'] ?? ''));
+  if ($email !== '' && !rateLimitAllowKeyed('auth-forgot-email', $email, 3, 3600)) {
+    apiError('Muitas solicitações para este e-mail. Tente novamente mais tarde.', 429, 'PASSWORD_RESET_RATE_LIMIT', 'Aguarde alguns minutos e tente novamente.');
+    return;
+  }
+
+  ensurePasswordResetTable();
+  db()->exec("DELETE FROM client.password_resets WHERE expires_at < now() OR (used_at IS NOT NULL AND used_at < now() - interval '7 day')");
+
+  if (Validator::email($email)) {
+    $account = db()->one("
+      SELECT u.email, o.id AS organization_id
+      FROM client.users u
+      LEFT JOIN client.organizations o ON o.user_id=u.id
+      WHERE lower(u.email)=:email
+      LIMIT 1
+    ", [':email' => $email]);
+    if ($account) {
+      $rawToken = generatePasswordResetToken();
+      $tokenHash = hashPasswordResetToken($rawToken);
+      db()->exec("
+        INSERT INTO client.password_resets(email, token_hash, expires_at, ip_address, user_agent)
+        VALUES(:email, :token_hash, now() + interval '15 minutes', :ip, :ua)
+      ", [
+        ':email' => $email,
+        ':token_hash' => $tokenHash,
+        ':ip' => getClientIp(),
+        ':ua' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 1000),
+      ]);
+      queuePasswordResetEmail($account['organization_id'] ?? null, $email, $rawToken);
+    }
+  }
+
+  Response::json([
+    'ok' => true,
+    'message' => 'Se o e-mail existir, enviaremos instruções para redefinição em instantes.',
+  ]);
+});
+
+$router->post('/api/auth/reset-password', function(Request $request) {
+  requireCsrf($request);
+  if (!rateLimitAllow('auth-reset-ip', 10, 60)) {
+    apiError('Muitas tentativas. Aguarde e tente novamente.', 429, 'PASSWORD_RESET_RATE_LIMIT', 'Aguarde um minuto para tentar novamente.');
+    return;
+  }
+  $d = $request->body;
+  $token = strtolower(trim((string)($d['token'] ?? '')));
+  if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+    apiError('Token inválido ou expirado.', 422, 'PASSWORD_RESET_TOKEN_INVALID', 'Solicite um novo link de recuperação.');
+    return;
+  }
+  $password = (string)($d['password'] ?? '');
+  $passwordConfirm = (string)($d['password_confirm'] ?? '');
+  if (strlen($password) < 8 || !preg_match('/[A-Za-z]/', $password) || !preg_match('/\d/', $password)) {
+    apiError('A senha deve ter no mínimo 8 caracteres com letras e números.', 422, 'VALIDATION_ERROR', 'Defina uma senha mais forte para continuar.');
+    return;
+  }
+  if ($password !== $passwordConfirm) {
+    apiError('A confirmação da senha não confere.', 422, 'VALIDATION_ERROR', 'Revise os dois campos de senha e tente novamente.');
+    return;
+  }
+  if (!verifyTurnstileToken((string)($d['cf-turnstile-response'] ?? ''))) {
+    apiError('CAPTCHA inválido, tente novamente.', 422, 'TURNSTILE_INVALID', 'Conclua a validação para continuar.');
+    return;
+  }
+
+  ensurePasswordResetTable();
+  $tokenHash = hashPasswordResetToken($token);
+  $row = db()->one("
+    SELECT id, email, token_hash, expires_at, used_at
+    FROM client.password_resets
+    WHERE token_hash=:token_hash
+    LIMIT 1
+  ", [':token_hash' => $tokenHash]);
+  if (!$row || !hash_equals((string)$row['token_hash'], $tokenHash)) {
+    apiError('Token inválido ou expirado.', 422, 'PASSWORD_RESET_TOKEN_INVALID', 'Solicite um novo link de recuperação.');
+    return;
+  }
+  if (!empty($row['used_at'])) {
+    apiError('Este link já foi utilizado.', 422, 'PASSWORD_RESET_TOKEN_USED', 'Solicite um novo link para redefinir sua senha.');
+    return;
+  }
+  if (strtotime((string)$row['expires_at']) < time()) {
+    apiError('Token inválido ou expirado.', 422, 'PASSWORD_RESET_TOKEN_EXPIRED', 'Solicite um novo link de recuperação.');
+    return;
+  }
+
+  $email = normalizeEmail((string)$row['email']);
+  $user = db()->one("SELECT id FROM client.users WHERE lower(email)=:email LIMIT 1", [':email' => $email]);
+  if ($user) {
+    db()->exec("UPDATE client.users SET password_hash=:ph, updated_at=now() WHERE id=:id", [
+      ':ph' => Auth::hashPassword($password),
+      ':id' => $user['id'],
+    ]);
+  }
+  db()->exec("UPDATE client.password_resets SET used_at=now() WHERE id=:id", [':id' => $row['id']]);
+  db()->exec("UPDATE client.password_resets SET used_at=now() WHERE email=:email AND used_at IS NULL AND id<>:id", [
+    ':email' => $email,
+    ':id' => $row['id'],
+  ]);
+
+  Response::json([
+    'ok' => true,
+    'message' => 'Senha redefinida com sucesso. Faça login para continuar.',
+    'redirect' => '/login?reset=success',
+  ]);
+});
+
 $router->post('/api/auth/login', function(Request $request) {
-  if (!rateLimitAllow('auth-login', 20, 300)) {
-    Response::json(['error' => 'Muitas tentativas de login. Aguarde alguns minutos.'], 429);
+  if (!rateLimitAllow('auth-login', 5, 60)) {
+    apiError('Muitas tentativas de login. Aguarde alguns minutos.', 429, 'RATE_LIMIT', 'Aguarde alguns minutos para tentar novamente.');
     return;
   }
   requireCsrf($request);
 
   $d = $request->body;
-  if (!verifyRecaptchaToken((string)($d['g-recaptcha-response'] ?? ''))) {
-    Response::json(['error' => 'Validação reCAPTCHA inválida'], 422);
+  if (!verifyTurnstileToken((string)($d['cf-turnstile-response'] ?? ''))) {
+    apiError('CAPTCHA inválido, tente novamente.', 422, 'TURNSTILE_INVALID', 'Conclua a validação para continuar.');
     return;
   }
 
-  $email = (string)($d['email'] ?? '');
+  $email = normalizeEmail((string)($d['email'] ?? ''));
   $password = (string)($d['password'] ?? '');
   $u = db()->one("SELECT u.id,u.name,u.email,u.password_hash,o.id AS organization_id FROM client.users u LEFT JOIN client.organizations o ON o.user_id=u.id WHERE u.email=:e", [':e' => $email]);
   if (!$u || !Auth::verifyPassword($password, (string)$u['password_hash'])) {
-    Response::json(['error' => 'Credenciais inválidas'], 401);
+    apiError('Credenciais inválidas', 401, 'INVALID_CREDENTIALS', 'Revise e-mail e senha e tente novamente.');
     return;
   }
 
-  ensureClientSession($u);
-  Response::json(['ok' => true, 'redirect' => resolveAfterLoginRedirect()]);
-});
-
-$router->post('/api/auth/google-demo', function(Request $request) {
-  if (!rateLimitAllow('auth-google-demo', 20, 300)) {
-    Response::json(['error' => 'Muitas tentativas. Aguarde alguns minutos.'], 429);
+  $orgId = trim((string)($u['organization_id'] ?? ''));
+  $pending = $orgId !== '' ? pendingPaymentByOrganization($orgId) : pendingPaymentByEmail((string)$email);
+  if ($pending) {
+    ensureClientSession($u);
+    $sid = (string)($pending['asaas_subscription_id'] ?? '');
+    $signupSessionId = (string)($pending['signup_session_id'] ?? '');
+    $pendingUntil = (string)($pending['payment_pending_until'] ?? '');
+    if ($pendingUntil === '') {
+      $pendingUntil = date('c', strtotime((string)$pending['updated_at'] . ' +15 minutes'));
+    }
+    $redirectUrl = (string)($pending['payment_redirect_url'] ?? '');
+    if ($sid !== '') {
+      $asaas = new AsaasClient();
+      $payments = $asaas->getPaymentsBySubscription($sid, 1);
+      $payment = $payments['data'][0] ?? null;
+      if (is_array($payment)) {
+        $redirectUrl = (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? $redirectUrl);
+      }
+    }
+    $next = '/portal/pagamento-pendente';
+    $qs = [];
+    if ($sid !== '') {
+      $qs['sid'] = $sid;
+    }
+    if ($signupSessionId !== '') {
+      $qs['ssid'] = $signupSessionId;
+    }
+    if (!empty($qs)) {
+      $next .= '?' . http_build_query($qs);
+    }
+    Response::json([
+      'ok' => true,
+      'redirect' => $next,
+      'payment_pending' => true,
+      'sid' => $sid !== '' ? $sid : null,
+      'signup_session_id' => $signupSessionId !== '' ? $signupSessionId : null,
+      'pending_until' => $pendingUntil,
+      'payment_redirect_url' => $redirectUrl !== '' ? $redirectUrl : null,
+      'message' => 'Pagamento pendente. Continue no monitoramento de pagamento para liberar o acesso completo.',
+    ]);
     return;
-  }
-  requireCsrf($request);
-
-  $name = trim((string)$request->input('name', 'Cliente Google'));
-  $email = trim((string)$request->input('email', ''));
-
-  if (!Validator::email($email)) {
-    Response::json(['error' => 'E-mail Google inválido'], 422);
-    return;
-  }
-
-  $u = db()->one("SELECT u.id,u.name,u.email,o.id AS organization_id FROM client.users u LEFT JOIN client.organizations o ON o.user_id=u.id WHERE u.email=:e", [':e' => $email]);
-
-  if (!$u) {
-    $uid = db()->one("INSERT INTO client.users(name,email,password_hash,phone,role) VALUES(:n,:e,:p,:ph,'CLIENTE') RETURNING id", [
-      ':n' => $name,
-      ':e' => $email,
-      ':p' => Auth::hashPassword(bin2hex(random_bytes(8))),
-      ':ph' => null,
-    ])['id'];
-
-    $orgId = db()->one("INSERT INTO client.organizations(user_id,person_type,cpf_cnpj,legal_name,billing_email,has_domain,has_site) VALUES(:u,'PF','00000000000',:ln,:be,false,false) RETURNING id", [
-      ':u' => $uid,
-      ':ln' => $name,
-      ':be' => $email,
-    ])['id'];
-
-    $u = ['id' => $uid, 'name' => $name, 'email' => $email, 'organization_id' => $orgId];
   }
 
   ensureClientSession($u);
@@ -1920,7 +3790,6 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
 });
 
 $router->get('/api/billing/subscriptions/{id}/status', function(Request $request) {
-  requireClientAuth();
   $sid = (string)($request->query['id'] ?? '');
   if ($sid === '') {
     Response::json(['error' => 'Assinatura inválida'], 422);
@@ -1937,11 +3806,17 @@ $router->get('/api/billing/subscriptions/{id}/status', function(Request $request
     Response::json(['error' => 'Assinatura não encontrada'], 404);
     return;
   }
-  Response::json(['ok' => true, 'subscription' => $sub]);
+  $status = strtoupper((string)($sub['status'] ?? ''));
+  $paymentStatus = $status === 'ACTIVE' ? 'CONFIRMED' : ($status === 'PENDING' ? 'PENDING' : $status);
+  Response::json([
+    'ok' => true,
+    'subscription' => $sub,
+    'payment_status' => $paymentStatus,
+    'can_login' => $status === 'ACTIVE',
+  ]);
 });
 
 $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request) {
-  requireClientAuth();
   requireCsrf($request);
   $sid = (string)($request->query['id'] ?? '');
   if ($sid === '') {
@@ -1960,7 +3835,7 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
   if (is_array($payment)) {
     $redirectUrl = $payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? null;
   }
-  Response::json(['ok' => true, 'payment_redirect_url' => $redirectUrl]);
+  Response::json(['ok' => true, 'payment_redirect_url' => $redirectUrl, 'retry_url' => $redirectUrl]);
 });
 
 $router->post('/api/billing/card/update', function(Request $request) {
@@ -2138,6 +4013,113 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
   }
 
   Response::json(['ok' => true, 'brief_id' => $briefId, 'prompt_json' => $prompt['json'], 'prompt_text' => $prompt['text']], 201);
+});
+
+$router->post('/api/portal/approval/request-link', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não vinculada à sessão.'], 422);
+    return;
+  }
+
+  $deal = db()->one("
+    SELECT d.id, d.title, o.billing_email
+    FROM crm.deal d
+    LEFT JOIN client.organizations o ON o.id = d.organization_id
+    WHERE d.organization_id=:oid
+      AND d.deal_type='HOSPEDAGEM'
+      AND d.lifecycle_status='CLIENT'
+    ORDER BY d.updated_at DESC
+    LIMIT 1
+  ", [':oid' => $orgId]);
+
+  if (!$deal) {
+    Response::json(['error' => 'Nenhum deal de hospedagem fechado encontrado para gerar link de validação.'], 404);
+    return;
+  }
+
+  $template = db()->one("
+    SELECT id, version, preview_url
+    FROM crm.deal_template_revision
+    WHERE deal_id=:did
+    ORDER BY version DESC, created_at DESC
+    LIMIT 1
+  ", [':did' => $deal['id']]);
+
+  if (!$template) {
+    Response::json(['error' => 'Nenhuma revisão de template disponível para aprovação.'], 422);
+    return;
+  }
+
+  db()->exec("
+    UPDATE crm.deal_client_approval
+    SET status='EXPIRED', updated_at=now()
+    WHERE deal_id=:did
+      AND status='PENDING'
+  ", [':did' => $deal['id']]);
+
+  $rawToken = bin2hex(random_bytes(32));
+  $tokenHash = hash('sha256', $rawToken);
+  $expiresHours = 72;
+  $expiresAt = date('Y-m-d H:i:s', time() + ($expiresHours * 3600));
+
+  $approval = db()->one("
+    INSERT INTO crm.deal_client_approval(
+      deal_id, template_revision_id, token_hash, expires_at, status, created_at, updated_at
+    )
+    VALUES(
+      :did, :trid, :thash, :expires_at, 'PENDING', now(), now()
+    )
+    RETURNING id
+  ", [
+    ':did' => $deal['id'],
+    ':trid' => $template['id'],
+    ':thash' => $tokenHash,
+    ':expires_at' => $expiresAt,
+  ]);
+
+  db()->exec("UPDATE crm.deal_template_revision SET status='SENT_CLIENT', updated_at=now() WHERE id=:id", [
+    ':id' => $template['id'],
+  ]);
+  moveDealOperationStage((string)$deal['id'], 'aprovacao_cliente');
+
+  $approvalUrl = '/portal/approval/' . $rawToken;
+
+  if (!empty($deal['billing_email'])) {
+    db()->exec("
+      INSERT INTO crm.email_queue(organization_id, email_to, subject, body, status, created_at)
+      VALUES(:oid, :email, :subject, :body, 'PENDING', now())
+    ", [
+      ':oid' => $orgId,
+      ':email' => $deal['billing_email'],
+      ':subject' => '[KoddaHub] Link temporário para validação do template',
+      ':body' => "Olá!\n\nSeu template está pronto para validação.\n\nAcesse: " . (rtrim((string)(getenv('PORTAL_BASE_URL') ?: ''), '/') . $approvalUrl) . "\n\nEste link expira em {$expiresHours}h.\n\nEquipe KoddaHub.",
+    ]);
+  }
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id, 'CLIENT_APPROVAL_REQUESTED', :content, :metadata::jsonb, 'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $deal['id'],
+    ':content' => 'Link temporário de validação gerado no portal do cliente.',
+    ':metadata' => json_encode([
+      'approval_id' => $approval['id'] ?? null,
+      'template_revision_id' => $template['id'],
+      'approval_path' => $approvalUrl,
+      'expires_at' => $expiresAt,
+    ], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  Response::json([
+    'ok' => true,
+    'approval_url' => $approvalUrl,
+    'preview_url' => $template['preview_url'] ?? null,
+    'expires_at' => $expiresAt,
+  ]);
 });
 
 $router->post('/api/portal/approval/{token}/approve', function(Request $request) {
@@ -2339,19 +4321,35 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
   if ($subCode) {
     if (str_contains($eventType, 'SUBSCRIPTION_CREATED') || str_contains($eventType, 'SUBSCRIPTION_UPDATED')) {
       db()->exec("UPDATE client.subscriptions SET status='PENDING', updated_at=now() WHERE asaas_subscription_id=:sid AND status <> 'ACTIVE'", [':sid' => $subCode]);
+      $org = db()->one("
+        SELECT organization_id
+        FROM client.subscriptions
+        WHERE asaas_subscription_id=:sid
+        ORDER BY created_at DESC
+        LIMIT 1
+      ", [':sid' => $subCode]);
+      if ($org && !empty($org['organization_id'])) {
+        syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_updated');
+      }
     }
     if (str_contains($eventType, 'PAYMENT_CONFIRMED') || str_contains($eventType, 'PAYMENT_RECEIVED')) {
       db()->exec("UPDATE client.subscriptions SET status='ACTIVE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
 
       $sub = db()->one("SELECT s.id, s.organization_id, p.monthly_price FROM client.subscriptions s JOIN client.plans p ON p.id=s.plan_id WHERE s.asaas_subscription_id=:sid", [':sid' => $subCode]);
       if ($sub) {
-        db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload) VALUES(:sid,:pay,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
-          ':sid' => $sub['id'],
-          ':pay' => (string)($event['payment']['id'] ?? ('pay_' . substr($eventId, 0, 12))),
-          ':amount' => (float)$sub['monthly_price'],
-          ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
-          ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+        $paymentId = (string)($event['payment']['id'] ?? ('pay_' . substr($eventId, 0, 12)));
+        $alreadyPayment = db()->one("SELECT id FROM client.payments WHERE asaas_payment_id=:pid LIMIT 1", [
+          ':pid' => $paymentId,
         ]);
+        if (!$alreadyPayment) {
+          db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload) VALUES(:sid,:pay,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
+            ':sid' => $sub['id'],
+            ':pay' => $paymentId,
+            ':amount' => (float)$sub['monthly_price'],
+            ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
+            ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+          ]);
+        }
 
         $org = db()->one("SELECT legal_name,billing_email,whatsapp FROM client.organizations WHERE id=:oid", [':oid' => $sub['organization_id']]);
         if ($org) {
@@ -2378,6 +4376,8 @@ WHERE id IN (
           ':oid' => $sub['organization_id'],
           ':sid' => $subCode,
         ]);
+
+        syncHospedagemDealByOrganization((string)$sub['organization_id'], (string)$subCode, 'webhook_payment_confirmed');
       }
     }
     if (str_contains($eventType, 'PAYMENT_OVERDUE') || str_contains($eventType, 'PAYMENT_FAILED')) {
@@ -2399,10 +4399,21 @@ WHERE id IN (
           'Ação necessária - Pagamento pendente da assinatura KoddaHub',
           'Identificamos uma pendência no pagamento da sua assinatura. Acesse sua área do cliente para regularizar a cobrança.'
         );
+        syncHospedagemDealByOrganization((string)$org['id'], (string)$subCode, 'webhook_payment_overdue');
       }
     }
     if (str_contains($eventType, 'SUBSCRIPTION_DELETED') || str_contains($eventType, 'SUBSCRIPTION_CANCELED')) {
       db()->exec("UPDATE client.subscriptions SET status='CANCELED', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+      $org = db()->one("
+        SELECT organization_id
+        FROM client.subscriptions
+        WHERE asaas_subscription_id=:sid
+        ORDER BY created_at DESC
+        LIMIT 1
+      ", [':sid' => $subCode]);
+      if ($org && !empty($org['organization_id'])) {
+        syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_canceled');
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { ensureDealOperation } from '@/lib/deals';
+import { ensureSite24hOperationSchema } from '@/lib/site24h-operation';
 import { prisma } from '@/lib/prisma';
 
 async function latestPromptFromPortal(organizationId: string) {
@@ -19,10 +20,26 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const denied = ensureApiAuth(req);
   if (denied) return denied;
 
+  await ensureSite24hOperationSchema();
+
   const body = await req.json().catch(() => ({}));
-  const notes = String(body.notes || '').trim();
-  if (!notes) {
-    return NextResponse.json({ error: 'Informe o que precisa ser complementado no pré-prompt.' }, { status: 422 });
+  const subject = String(body.subject || '[KoddaHub] Precisamos de mais informações do briefing').trim();
+  const message = String(body.message || body.notes || '').trim();
+  const dueAtRaw = String(body.dueAt || '').trim();
+  const dueAt = dueAtRaw ? new Date(dueAtRaw) : null;
+  const requestItemsInput: string[] = Array.isArray(body.requestItems)
+    ? body.requestItems
+    : String(body.requestItems || '')
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
+  const requestItems: string[] = requestItemsInput
+    .map((item: unknown) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (!message && requestItems.length === 0) {
+    return NextResponse.json({ error: 'Informe a mensagem ou pelo menos 1 item solicitado.' }, { status: 422 });
   }
 
   try {
@@ -59,6 +76,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       }
 
       const targetVersion = latestRevision ? latestRevision.version : 1;
+      const incomingPromptText = typeof body.promptText === 'string' ? body.promptText.trim() : '';
+      const incomingPromptJson = body.promptJson ?? null;
+      if (incomingPromptText) {
+        promptText = incomingPromptText;
+      }
+      if (incomingPromptJson) {
+        promptJson = incomingPromptJson;
+      }
+
       const revision = latestRevision
         ? await tx.dealPromptRevision.update({
             where: { id: latestRevision.id },
@@ -66,7 +92,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
               promptText: promptText || 'Prompt pendente de refinamento.',
               promptJson: promptJson as never,
               status: 'REQUESTED_INFO',
-              requestedNotes: notes,
+              requestedNotes: message || requestItems.join(' | ') || null,
               updatedAt: new Date(),
             },
           })
@@ -77,23 +103,65 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
               promptText: promptText || 'Prompt pendente de refinamento.',
               promptJson: promptJson as never,
               status: 'REQUESTED_INFO',
-              requestedNotes: notes,
+              requestedNotes: message || requestItems.join(' | ') || null,
               createdBy: 'ADMIN',
             },
           });
 
       const emailTo = deal.contactEmail || deal.organization?.billingEmail;
+      let emailQueueId: string | null = null;
       if (emailTo) {
-        await tx.emailQueue.create({
+        const email = await tx.emailQueue.create({
           data: {
             organizationId: deal.organizationId || null,
             emailTo,
-            subject: '[KoddaHub] Precisamos de mais informações para seu site',
-            body: `Olá!\n\nPara avançarmos na etapa Pré-prompt do seu Site 24h, precisamos destes detalhes:\n\n${notes}\n\nResponda este e-mail com as informações solicitadas.\n\nEquipe KoddaHub.`,
+            subject: subject || '[KoddaHub] Precisamos de mais informações para seu site',
+            body: [
+              'Olá!',
+              '',
+              'Para avançarmos na etapa Pré-prompt do seu Site 24h, precisamos destes detalhes:',
+              '',
+              ...(requestItems.length > 0 ? requestItems.map((item, index) => `${index + 1}. ${item}`) : []),
+              ...(message ? ['', message] : []),
+              '',
+              'Responda este e-mail com as informações solicitadas.',
+              'Equipe KoddaHub.',
+            ].join('\n'),
             status: 'PENDING',
           },
         });
+        emailQueueId = email.id;
       }
+
+      const promptRequestRows = await tx.$queryRaw<Array<{ id: string }>>`
+        INSERT INTO crm.deal_prompt_request(
+          deal_id,
+          prompt_revision_id,
+          subject,
+          request_items,
+          message,
+          due_at,
+          email_queue_id,
+          status,
+          created_by,
+          created_at,
+          updated_at
+        )
+        VALUES(
+          ${deal.id}::uuid,
+          ${revision.id}::uuid,
+          ${subject || '[KoddaHub] Solicitação de informações adicionais'},
+          ${JSON.stringify(requestItems)}::jsonb,
+          ${message || requestItems.join('\n') || 'Solicitação de informações adicionais'},
+          ${dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt : null},
+          ${emailQueueId}::uuid,
+          'SENT',
+          'ADMIN',
+          now(),
+          now()
+        )
+        RETURNING id::text
+      `;
 
       await ensureDealOperation(tx, { id: deal.id, dealType: deal.dealType }, 'pre_prompt');
 
@@ -102,12 +170,20 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           dealId: deal.id,
           activityType: 'PREPROMPT_REQUEST_INFO',
           content: 'Solicitação de informação adicional enviada ao cliente por e-mail.',
-          metadata: { notes, revisionVersion: revision.version },
+          metadata: {
+            subject,
+            dueAt: dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt.toISOString() : null,
+            requestItems,
+            revisionVersion: revision.version,
+            emailQueueId,
+          },
           createdBy: 'ADMIN',
         },
       });
 
       return {
+        requestId: promptRequestRows[0]?.id || null,
+        emailQueueId,
         revisionId: revision.id,
         version: revision.version,
       };
@@ -118,4 +194,3 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: 'Falha ao solicitar informações adicionais', details: String(error) }, { status: 500 });
   }
 }
-

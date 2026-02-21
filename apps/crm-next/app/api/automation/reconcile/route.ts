@@ -5,9 +5,46 @@ import { ensureDealOperation, lifecycleByStageCode, resolvePipelineAndStages } f
 import { normalizeIntent } from '@/lib/domain';
 import { prisma } from '@/lib/prisma';
 
+async function ensureDealSuppressionTable() {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS crm.deal_suppression (
+      organization_id uuid NOT NULL,
+      deal_type varchar(40) NOT NULL,
+      subscription_id uuid NULL,
+      reason text NULL,
+      created_by varchar(120) NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (organization_id, deal_type)
+    )
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS deal_suppression_subscription_idx
+      ON crm.deal_suppression(subscription_id)
+  `);
+}
+
+async function isSuppressedOrganization(organizationId: string | null, dealType: string): Promise<boolean> {
+  if (!organizationId) return false;
+  const row = await prisma.$queryRaw<Array<{ organization_id: string }>>`
+    SELECT organization_id
+    FROM crm.deal_suppression
+    WHERE organization_id = ${organizationId}::uuid
+      AND deal_type = ${dealType}
+    LIMIT 1
+  `;
+  return row.length > 0;
+}
+
 function titleForSession(session: { email: string | null; phone: string | null; planCode: string | null }) {
   const contact = session.email || session.phone || 'Lead sem contato';
   return `${contact} - ${session.planCode || 'plano'}`;
+}
+
+function normalizePhone(value: string | null): string | null {
+  if (!value) return null;
+  const digits = value.replace(/\D+/g, '');
+  return digits.length > 0 ? digits : null;
 }
 
 async function findOrCreateDealForSession(params: {
@@ -21,18 +58,61 @@ async function findOrCreateDealForSession(params: {
   planCode: string | null;
   reason: string;
 }) {
-  const whereOr: Prisma.DealWhereInput[] = [];
-  if (params.organizationId) whereOr.push({ organizationId: params.organizationId });
-  if (params.email) whereOr.push({ contactEmail: params.email });
-  if (params.phone) whereOr.push({ contactPhone: params.phone });
+  if (await isSuppressedOrganization(params.organizationId, 'HOSPEDAGEM')) {
+    return null;
+  }
 
-  const existing = await prisma.deal.findFirst({
-    where: {
-      pipelineId: params.pipelineId,
-      OR: whereOr.length > 0 ? whereOr : [{ id: '00000000-0000-0000-0000-000000000000' }],
-    },
-    orderBy: { updatedAt: 'desc' },
-  });
+  const emailNorm = params.email ? params.email.trim().toLowerCase() : null;
+  const phoneNorm = normalizePhone(params.phone);
+
+  let existing = null as Awaited<ReturnType<typeof prisma.deal.findFirst>>;
+
+  if (params.organizationId) {
+    existing = await prisma.deal.findFirst({
+      where: {
+        pipelineId: params.pipelineId,
+        dealType: 'HOSPEDAGEM',
+        organizationId: params.organizationId,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (!existing) {
+      const whereOr: Prisma.DealWhereInput[] = [];
+      if (emailNorm) whereOr.push({ contactEmail: emailNorm });
+      if (params.phone) whereOr.push({ contactPhone: params.phone });
+      if (phoneNorm && params.phone !== phoneNorm) whereOr.push({ contactPhone: phoneNorm });
+
+      if (whereOr.length > 0) {
+        existing = await prisma.deal.findFirst({
+          where: {
+            pipelineId: params.pipelineId,
+            dealType: 'HOSPEDAGEM',
+            organizationId: null,
+            OR: whereOr,
+          },
+          orderBy: { updatedAt: 'desc' },
+        });
+      }
+    }
+  } else {
+    const whereOr: Prisma.DealWhereInput[] = [];
+    if (emailNorm) whereOr.push({ contactEmail: emailNorm });
+    if (params.phone) whereOr.push({ contactPhone: params.phone });
+    if (phoneNorm && params.phone !== phoneNorm) whereOr.push({ contactPhone: phoneNorm });
+
+    if (whereOr.length > 0) {
+      existing = await prisma.deal.findFirst({
+        where: {
+          pipelineId: params.pipelineId,
+          dealType: 'HOSPEDAGEM',
+          organizationId: null,
+          OR: whereOr,
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
+  }
 
   const lifecycle = lifecycleByStageCode(params.stageCode);
 
@@ -43,8 +123,9 @@ async function findOrCreateDealForSession(params: {
         data: {
           stageId: params.stageId,
           title: params.title,
-          contactEmail: params.email,
-          contactPhone: params.phone,
+          contactEmail: emailNorm ?? params.email,
+          contactPhone: phoneNorm ?? params.phone,
+          organizationId: existing.organizationId ?? params.organizationId,
           planCode: params.planCode,
           intent: params.planCode ? normalizeIntent(`hospedagem_${params.planCode}`) : existing.intent,
           lifecycleStatus: lifecycle.lifecycleStatus,
@@ -85,8 +166,8 @@ async function findOrCreateDealForSession(params: {
       organizationId: params.organizationId,
       title: params.title,
       contactName: params.email || params.phone || 'Cliente',
-      contactEmail: params.email,
-      contactPhone: params.phone,
+      contactEmail: emailNorm ?? params.email,
+      contactPhone: phoneNorm ?? params.phone,
       dealType: 'HOSPEDAGEM',
       category: 'RECORRENTE',
       intent: params.planCode ? normalizeIntent(`hospedagem_${params.planCode}`) : 'hospedagem_basico',
@@ -112,118 +193,6 @@ async function findOrCreateDealForSession(params: {
   });
 
   return deal;
-}
-
-async function syncClosedAvulsoDeals() {
-  const pipeline = await resolvePipelineAndStages('avulsos');
-  const wonStage = pipeline.stages.find((stage) => stage.code === 'fechado_ganho') || pipeline.stages.at(-1);
-  if (!wonStage) return 0;
-
-  const proposals = await prisma.proposalAvulsa.findMany({
-    where: { status: 'FECHADO' },
-    orderBy: { updatedAt: 'desc' },
-    take: 200,
-  });
-
-  let processed = 0;
-
-  for (const proposal of proposals) {
-    const whereOr: Prisma.DealWhereInput[] = [];
-    if (proposal.organizationId) whereOr.push({ organizationId: proposal.organizationId });
-    if (proposal.leadId) whereOr.push({ leadId: proposal.leadId });
-
-    const existing = await prisma.deal.findFirst({
-      where: {
-        pipelineId: pipeline.id,
-        OR: whereOr.length > 0 ? whereOr : [{ id: '00000000-0000-0000-0000-000000000000' }],
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    const lifecycle = lifecycleByStageCode(wonStage.code);
-
-    let dealId = existing?.id;
-
-    if (existing) {
-      await prisma.$transaction(async (tx) => {
-        await tx.deal.update({
-          where: { id: existing.id },
-          data: {
-            stageId: wonStage.id,
-            title: proposal.title,
-            dealType: 'PROJETO_AVULSO',
-            category: 'AVULSO',
-            intent: 'projeto_avulso',
-            origin: 'MANUAL',
-            productCode: existing.productCode || 'site_institucional',
-            valueCents: proposal.valueCents,
-            lifecycleStatus: lifecycle.lifecycleStatus,
-            isClosed: lifecycle.isClosed,
-            closedAt: lifecycle.closedAt,
-            updatedAt: new Date(),
-          },
-        });
-
-        await tx.dealStageHistory.create({
-          data: {
-            dealId: existing.id,
-            fromStageId: existing.stageId,
-            toStageId: wonStage.id,
-            changedBy: 'SYSTEM',
-            reason: 'Proposta avulsa fechada',
-          },
-        });
-      });
-    } else {
-      const positionIndex = await prisma.deal.count({
-        where: { pipelineId: pipeline.id, stageId: wonStage.id, lifecycleStatus: { not: 'CLIENT' } },
-      });
-
-      const created = await prisma.deal.create({
-        data: {
-          pipelineId: pipeline.id,
-          stageId: wonStage.id,
-          leadId: proposal.leadId,
-          organizationId: proposal.organizationId,
-          title: proposal.title,
-          contactName: proposal.title,
-          dealType: 'PROJETO_AVULSO',
-          category: 'AVULSO',
-          intent: 'projeto_avulso',
-          origin: 'MANUAL',
-          productCode: 'site_institucional',
-          valueCents: proposal.valueCents,
-          positionIndex,
-          lifecycleStatus: lifecycle.lifecycleStatus,
-          isClosed: lifecycle.isClosed,
-          closedAt: lifecycle.closedAt,
-          metadata: { source: 'reconcile_proposal_avulsa' },
-        },
-      });
-      dealId = created.id;
-
-      await prisma.dealStageHistory.create({
-        data: {
-          dealId: created.id,
-          fromStageId: null,
-          toStageId: wonStage.id,
-          changedBy: 'SYSTEM',
-          reason: 'Proposta avulsa fechada',
-        },
-      });
-    }
-
-    if (dealId) {
-      await prisma.$transaction(async (tx) => {
-        const target = await tx.deal.findUnique({ where: { id: dealId }, select: { id: true, dealType: true } });
-        if (target) await ensureDealOperation(tx, target);
-      });
-    }
-
-    processed += 1;
-  }
-
-  return processed;
 }
 
 export async function GET(req: NextRequest) {
@@ -252,6 +221,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
+
+  await ensureDealSuppressionTable();
 
   const now = new Date();
   const cutoff = new Date(now.getTime() - 2 * 60 * 60 * 1000);
@@ -282,7 +253,7 @@ export async function POST(req: NextRequest) {
       data: { status: 'ABANDONED', abandonedAt: now, updatedAt: now },
     });
 
-    await findOrCreateDealForSession({
+    const deal = await findOrCreateDealForSession({
       organizationId: session.organizationId,
       email: session.email,
       phone: session.phone,
@@ -294,7 +265,9 @@ export async function POST(req: NextRequest) {
       reason: 'Cadastro abandonado após 2h sem pagamento',
     });
 
-    abandonedCount += 1;
+    if (deal) {
+      abandonedCount += 1;
+    }
   }
 
   const paidSessions = await prisma.signupSession.findMany({
@@ -325,17 +298,20 @@ export async function POST(req: NextRequest) {
       reason: 'Pagamento confirmado',
     });
 
-    await prisma.$transaction(async (tx) => {
-      const target = await tx.deal.findUnique({ where: { id: deal.id }, select: { id: true, dealType: true } });
-      if (target) {
-        await ensureDealOperation(tx, target);
-      }
-    });
-
-    activatedCount += 1;
+    if (deal) {
+      await prisma.$transaction(async (tx) => {
+        const target = await tx.deal.findUnique({ where: { id: deal.id }, select: { id: true, dealType: true } });
+        if (target) {
+          await ensureDealOperation(tx, target);
+        }
+      });
+      activatedCount += 1;
+    }
   }
 
-  const proposalOps = await syncClosedAvulsoDeals();
+  // Evita criação automática cíclica de deals avulsos sem vínculo.
+  // A entrada de avulsos deve ocorrer apenas por fluxo manual/fechamento explícito.
+  const proposalOps = 0;
 
   const summary = `abandonos=${abandonedCount}, pagamentos_confirmados=${activatedCount}, propostas_fechadas=${proposalOps}`;
 

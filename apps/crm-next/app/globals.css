@@ -933,6 +933,107 @@ td {
   color: #b91c1c;
 }
 
+.clientes-v2-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.clientes-table-panel.ativos {
+  border-color: #86efac;
+}
+
+.clientes-table-panel.atrasados {
+  border-color: #fcd34d;
+}
+
+.clientes-table-panel.inativos {
+  border-color: #fca5a5;
+}
+
+.clientes-table-toolbar {
+  margin-bottom: 10px;
+}
+
+.clientes-table-toolbar input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: #f8fafc;
+}
+
+.clientes-pagination {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.clientes-pagination button {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.clientes-pagination button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.clientes-pagination span {
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.clientes-actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.status-chip.ativo {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.status-chip.atrasado {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.status-chip.inativo {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.ghost-modal-content {
+  width: min(920px, calc(100vw - 24px));
+}
+
+.ghost-modal-note {
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #64748b;
+}
+
 .deal-detail-wrapper {
   display: grid;
   gap: 12px;
@@ -1021,14 +1122,33 @@ td {
   margin-top: 3px;
 }
 
-.operation-inline-control {
-  margin-bottom: 6px;
-}
-
-.operation-flow-blocks {
-  margin-top: 16px;
+.operation-stage-layout {
   display: grid;
   gap: 12px;
+}
+
+.operation-stage-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.operation-stage-tabs button {
+  flex: 0 0 auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0f172a;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.operation-stage-tabs button.active {
+  background: linear-gradient(90deg, #0c8ce0, #2563eb);
+  border-color: #0c8ce0;
+  color: #ffffff;
 }
 
 .operation-card {
@@ -1037,6 +1157,13 @@ td {
   background: #ffffff;
   padding: 12px;
   display: grid;
+  gap: 8px;
+}
+
+.operation-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
 }
 
@@ -1051,6 +1178,12 @@ td {
 }
 
 .operation-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.preprompt-toolbar {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -1076,6 +1209,18 @@ td {
 .template-form-grid select,
 .operation-card textarea {
   width: 100%;
+}
+
+.operation-ssh-block {
+  margin: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow: auto;
 }
 
 .operation-meta-grid {
@@ -1218,6 +1363,11 @@ td {
     align-items: stretch;
   }
 
+  .clientes-actions-group {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .deal-header {
     flex-direction: column;
   }
@@ -1248,6 +1398,15 @@ td {
   .crm-v2-modal-content {
     width: calc(100vw - 8px);
     margin: 1vh auto;
+  }
+
+  .clientes-pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .clientes-pagination button {
+    width: 100%;
   }
 
   /* Ajuste específico da aba Proposta (deal) no mobile */

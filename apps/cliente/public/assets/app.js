@@ -2,8 +2,176 @@
   const $ = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
 
-  const state = { step: 1, maxStep: 4 };
+  const state = { step: 1, maxStep: 4, paymentPollTimer: null, paymentDeadlineTimer: null, pendingExpired: false, cepResolved: false };
   const csrfToken = document.body?.dataset?.csrfToken || '';
+  let pendingSid = null;
+  let pendingSignupSessionId = null;
+  let pendingPaymentUrl = null;
+  let pendingUntilEpoch = null;
+  let authPendingBlocked = false;
+  let pendingModalDismissed = false;
+  let authStatePrimaryAction = null;
+
+  const onlyDigits = (v) => String(v || '').replace(/\D+/g, '');
+  const formatPhone = (v) => {
+    const d = onlyDigits(v).slice(0, 11);
+    if (d.length <= 2) return d;
+    if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+    if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+    return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  };
+  const formatCpfCnpj = (v) => {
+    const d = onlyDigits(v).slice(0, 14);
+    if (d.length <= 11) {
+      return d
+        .replace(/(\d{3})(\d)/, '$1.$2')
+        .replace(/(\d{3})(\d)/, '$1.$2')
+        .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+    }
+    return d
+      .replace(/^(\d{2})(\d)/, '$1.$2')
+      .replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3')
+      .replace(/\.(\d{3})(\d)/, '.$1/$2')
+      .replace(/(\d{4})(\d)/, '$1-$2');
+  };
+  const formatZip = (v) => {
+    const d = onlyDigits(v).slice(0, 8);
+    return d.replace(/^(\d{5})(\d)/, '$1-$2');
+  };
+
+  function setFieldError(el, msg = '') {
+    if (!el) return;
+    el.style.borderColor = msg ? 'rgba(239,68,68,.9)' : 'rgba(255,255,255,.18)';
+    el.setAttribute('aria-invalid', msg ? 'true' : 'false');
+  }
+
+  function isValidCpf(cpf) {
+    if (!/^\d{11}$/.test(cpf) || /^(\d)\1+$/.test(cpf)) return false;
+    let sum = 0;
+    for (let i = 0; i < 9; i++) sum += Number(cpf[i]) * (10 - i);
+    let digit = (sum * 10) % 11;
+    if (digit === 10) digit = 0;
+    if (digit !== Number(cpf[9])) return false;
+    sum = 0;
+    for (let i = 0; i < 10; i++) sum += Number(cpf[i]) * (11 - i);
+    digit = (sum * 10) % 11;
+    if (digit === 10) digit = 0;
+    return digit === Number(cpf[10]);
+  }
+
+  function isValidCnpj(cnpj) {
+    if (!/^\d{14}$/.test(cnpj) || /^(\d)\1+$/.test(cnpj)) return false;
+    const w1 = [5,4,3,2,9,8,7,6,5,4,3,2];
+    const w2 = [6,5,4,3,2,9,8,7,6,5,4,3,2];
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += Number(cnpj[i]) * w1[i];
+    let r = sum % 11;
+    const d1 = r < 2 ? 0 : 11 - r;
+    if (d1 !== Number(cnpj[12])) return false;
+    sum = 0;
+    for (let i = 0; i < 13; i++) sum += Number(cnpj[i]) * w2[i];
+    r = sum % 11;
+    const d2 = r < 2 ? 0 : 11 - r;
+    return d2 === Number(cnpj[13]);
+  }
+
+  function showFlowOverlay(title, message) {
+    const wrap = $('#authFlowOverlay');
+    if (!wrap) return;
+    $('#authFlowTitle').textContent = title || 'Redirecionando...';
+    $('#authFlowMessage').textContent = message || 'Aguarde...';
+    wrap.classList.remove('hidden');
+  }
+
+  function hideFlowOverlay() {
+    $('#authFlowOverlay')?.classList.add('hidden');
+  }
+
+  function showStateModal({
+    title,
+    text,
+    richHtml = '',
+    countdown = null,
+    showRetry = false,
+    showCheck = false,
+    showClose = false,
+    showPrimary = false,
+    primaryLabel = 'Continuar',
+    onPrimary = null,
+    loading = false
+  }) {
+    const modal = $('#authStateModal');
+    if (!modal) return;
+    $('#authStateTitle').textContent = title || 'Aviso';
+    $('#authStateText').textContent = text || '';
+    const rich = $('#authStateRich');
+    if (rich) {
+      if (richHtml) {
+        rich.innerHTML = richHtml;
+        rich.classList.remove('hidden');
+      } else {
+        rich.innerHTML = '';
+        rich.classList.add('hidden');
+      }
+    }
+    $('#authStateSpinner')?.classList.toggle('hidden', !loading);
+    const cd = $('#authStateCountdown');
+    if (cd) {
+      if (countdown) {
+        cd.textContent = countdown;
+        cd.classList.remove('hidden');
+      } else {
+        cd.classList.add('hidden');
+      }
+    }
+    $('#authStateRetryBtn')?.classList.toggle('hidden', !showRetry);
+    $('#authStateCheckBtn')?.classList.toggle('hidden', !showCheck);
+    const primaryBtn = $('#authStatePrimaryBtn');
+    if (primaryBtn) {
+      primaryBtn.textContent = primaryLabel || 'Continuar';
+      primaryBtn.classList.toggle('hidden', !showPrimary);
+    }
+    authStatePrimaryAction = typeof onPrimary === 'function' ? onPrimary : null;
+    $('#authStateCloseBtn')?.classList.toggle('hidden', !showClose);
+    modal.classList.remove('hidden');
+  }
+
+  function hideStateModal() {
+    $('#authStateModal')?.classList.add('hidden');
+    $('#authStateSpinner')?.classList.add('hidden');
+    $('#authStateRich')?.classList.add('hidden');
+    authStatePrimaryAction = null;
+    if (pendingSid || pendingSignupSessionId) {
+      pendingModalDismissed = true;
+    }
+  }
+
+  function setAuthPendingBlocked(blocked) {
+    authPendingBlocked = !!blocked;
+  }
+
+  async function checkPendingByIdentity({ email = '', cpfCnpj = '' } = {}) {
+    const payload = {
+      email: String(email || '').trim(),
+      cpf_cnpj: String(cpfCnpj || '').trim(),
+    };
+    if (!payload.email && !payload.cpf_cnpj) return null;
+    try {
+      const res = await apiFetch('/api/auth/pending-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) return null;
+      if (data?.has_pending && (data?.sid || data?.signup_session_id)) {
+        return data;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   async function apiFetch(url, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -29,8 +197,8 @@
     notice.classList.remove('ok', 'err');
   }
 
-  function getRecaptchaToken(formEl) {
-    return (formEl?.querySelector('[name="g-recaptcha-response"]')?.value || '').trim();
+  function getTurnstileToken(formEl) {
+    return (formEl?.querySelector('[name="cf-turnstile-response"]')?.value || '').trim();
   }
 
   function setTab(tab) {
@@ -61,13 +229,55 @@
     if (submit) submit.classList.toggle('hidden', state.step !== state.maxStep);
   }
 
-  function validateStep(step) {
+  async function runSignupStepPrecheck(step) {
+    if (![1, 3].includes(Number(step))) return true;
+    const payload = { step: Number(step) };
+    if (Number(step) === 1) {
+      payload.cpf_cnpj = ($('#cpf_cnpj')?.value || '').trim();
+      payload.phone = ($('#phone')?.value || '').trim();
+    } else if (Number(step) === 3) {
+      payload.email = ($('#signup_email')?.value || '').trim();
+      payload.lgpd = !!($('#signupForm input[name="lgpd"]')?.checked);
+      payload.turnstile_token = getTurnstileToken($('#signupForm'));
+    }
+    try {
+      const res = await apiFetch('/api/auth/signup-precheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.can_proceed === false) {
+        const msg = data?.error || 'Não foi possível validar esta etapa. Tente novamente.';
+        setNotice(msg);
+        const fieldName = String(data?.field || '');
+        const fieldMap = {
+          cpf_cnpj: '#cpf_cnpj',
+          phone: '#phone',
+          email: '#signup_email',
+          lgpd: '#signupForm input[name=\"lgpd\"]',
+          turnstile: '.cf-turnstile',
+        };
+        const target = $(fieldMap[fieldName] || '');
+        if (target && typeof target.focus === 'function') target.focus();
+        return false;
+      }
+      return true;
+    } catch (_) {
+      setNotice('Falha ao validar etapa no servidor. Tente novamente em instantes.');
+      return false;
+    }
+  }
+
+  async function validateStep(step) {
     const block = $(`.wizard-step[data-step='${step}']`);
     if (!block) return true;
 
     const required = $$('[data-required="true"]', block);
     for (const field of required) {
-      if (!field.value || !String(field.value).trim()) {
+      const isCheckbox = (field.type || '').toLowerCase() === 'checkbox';
+      const empty = isCheckbox ? !field.checked : (!field.value || !String(field.value).trim());
+      if (empty) {
         const labelText = field.id ? (block.querySelector(`label[for='${field.id}']`)?.textContent || 'campo obrigatório') : 'campo obrigatório';
         setNotice(`Preencha o campo "${labelText.trim()}" para continuar.`);
         field.focus();
@@ -78,24 +288,267 @@
     if (step === 3) {
       const pass = $('#signup_password')?.value || '';
       const pass2 = $('#signup_password_confirm')?.value || '';
-      if (pass.length < 6 || pass !== pass2) {
-        setNotice('Senha inválida ou confirmação diferente.');
+      if (pass.length < 8 || !/[A-Za-z]/.test(pass) || !/\d/.test(pass) || pass !== pass2) {
+        setNotice('Senha deve ter no mínimo 8 caracteres, com letras e números, e confirmação igual.');
         return false;
       }
-      if (!getRecaptchaToken($('#signupForm'))) {
-        setNotice('Conclua o reCAPTCHA para continuar.');
+      if (!$('#signupForm input[name="lgpd"]')?.checked) {
+        setNotice('Aceite os termos LGPD para continuar.');
+        return false;
+      }
+      if (!getTurnstileToken($('#signupForm'))) {
+        setNotice('CAPTCHA inválido, tente novamente.');
         return false;
       }
     }
 
-    return true;
+    if (step === 1) {
+      const docEl = $('#cpf_cnpj');
+      const doc = onlyDigits(docEl?.value || '');
+      const personType = $('#person_type')?.value || 'PF';
+      const valid = personType === 'PJ' ? isValidCnpj(doc) : isValidCpf(doc);
+      if (!valid) {
+        setFieldError(docEl, 'invalid');
+        setNotice('CPF/CNPJ inválido para o tipo selecionado.');
+        docEl?.focus();
+        return false;
+      }
+      setFieldError(docEl);
+    }
+
+    if (step === 2) {
+      const zip = onlyDigits($('#billing_zip')?.value || '');
+      if (zip.length !== 8) {
+        setNotice('Informe um CEP válido.');
+        $('#billing_zip')?.focus();
+        return false;
+      }
+      if (!state.cepResolved) {
+        setNotice('Preencha um CEP válido para buscar o endereço automaticamente.');
+        $('#billing_zip')?.focus();
+        return false;
+      }
+      const requiredAddress = ['#billing_street', '#billing_district', '#billing_city', '#billing_state'];
+      for (const selector of requiredAddress) {
+        const input = $(selector);
+        if (!input || !String(input.value || '').trim()) {
+          setNotice('Endereço não foi carregado pelo CEP. Revise o CEP e tente novamente.');
+          $('#billing_zip')?.focus();
+          return false;
+        }
+      }
+    }
+
+    return await runSignupStepPrecheck(step);
+  }
+
+  async function tryResolveCep() {
+    const zipEl = $('#billing_zip');
+    if (!zipEl) return;
+    const zip = onlyDigits(zipEl.value);
+    if (zip.length !== 8) {
+      state.cepResolved = false;
+      return;
+    }
+    try {
+      const resp = await fetch(`https://viacep.com.br/ws/${zip}/json/`);
+      const data = await resp.json();
+      if (!resp.ok || data?.erro) {
+        state.cepResolved = false;
+        ['#billing_street', '#billing_district', '#billing_city', '#billing_state'].forEach((selector) => {
+          const field = $(selector);
+          if (field) field.value = '';
+        });
+        showStateModal({
+          title: 'CEP não encontrado',
+          text: 'Não foi possível carregar o endereço pelo CEP. Revise o CEP informado para continuar.',
+          showClose: true,
+        });
+        return;
+      }
+      if ($('#billing_street')) $('#billing_street').value = data.logradouro || '';
+      if ($('#billing_district')) $('#billing_district').value = data.bairro || '';
+      if ($('#billing_city')) $('#billing_city').value = data.localidade || '';
+      if ($('#billing_state')) $('#billing_state').value = String(data.uf || '').toUpperCase();
+      state.cepResolved = true;
+    } catch (err) {
+      state.cepResolved = false;
+      ['#billing_street', '#billing_district', '#billing_city', '#billing_state'].forEach((selector) => {
+        const field = $(selector);
+        if (field) field.value = '';
+      });
+      showStateModal({
+        title: 'Falha ao consultar CEP',
+        text: 'Não conseguimos consultar o CEP agora. Tente novamente em alguns instantes.',
+        showClose: true,
+      });
+    }
+  }
+
+  function clearPendingTimers() {
+    if (state.paymentPollTimer) clearInterval(state.paymentPollTimer);
+    if (state.paymentDeadlineTimer) clearInterval(state.paymentDeadlineTimer);
+    state.paymentPollTimer = null;
+    state.paymentDeadlineTimer = null;
+  }
+
+  function openPaymentTab(url) {
+    if (!url) return false;
+    const tab = window.open(url, '_blank', 'noopener,noreferrer');
+    return !!tab;
+  }
+
+  function showWelcomeConfirmedModal() {
+    showStateModal({
+      title: 'Bem-vindo(a) à KoddaHub!',
+      text: 'Pagamento confirmado e acesso liberado.',
+      richHtml: `
+        <ul>
+          <li>Pagamento confirmado com sucesso</li>
+          <li>Cadastro liberado na área do cliente</li>
+          <li>Próximo passo: preencher o briefing do seu site</li>
+        </ul>
+      `,
+      showPrimary: true,
+      primaryLabel: 'Seguir para login',
+      onPrimary: () => {
+        hideStateModal();
+        $('#login_email')?.focus();
+      },
+      showClose: true,
+      loading: false,
+    });
+  }
+
+  async function verifyPendingPaymentNow(showFeedback = false) {
+    if (!pendingSid && !pendingSignupSessionId) return false;
+    try {
+      if (pendingSignupSessionId) {
+        const resSession = await apiFetch('/api/auth/signup-session/' + encodeURIComponent(String(pendingSignupSessionId)) + '/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const sessionData = await resSession.json();
+        if (resSession.ok) {
+          if (sessionData?.sid && !pendingSid) pendingSid = String(sessionData.sid);
+          if (sessionData?.payment_redirect_url && !pendingPaymentUrl) pendingPaymentUrl = String(sessionData.payment_redirect_url);
+          if (sessionData?.ready) {
+            clearPendingTimers();
+            setAuthPendingBlocked(false);
+            pendingSid = null;
+            pendingSignupSessionId = null;
+            pendingModalDismissed = false;
+            setTimeout(() => {
+              window.location.href = '/login?payment=confirmed';
+            }, 1100);
+            return true;
+          }
+          if (!pendingModalDismissed || showFeedback) {
+            showStateModal({
+              title: 'Aguardando pagamento',
+              text: sessionData?.payment_confirmed
+                ? 'Pagamento confirmado no ASAAS. Estamos sincronizando seu cadastro no CRM para liberar o login.'
+                : 'Finalize a cobrança no ASAAS para liberar seu login.',
+              showRetry: true,
+              showCheck: false,
+              showClose: true,
+              loading: true,
+            });
+          }
+          return false;
+        }
+      }
+
+      if (!pendingSid) return false;
+      const res = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(String(pendingSid)) + '/status');
+      const data = await res.json();
+      if (!res.ok) return false;
+      if (data?.can_login) {
+        clearPendingTimers();
+        setAuthPendingBlocked(false);
+        pendingSid = null;
+        pendingSignupSessionId = null;
+        pendingModalDismissed = false;
+        setTimeout(() => {
+          window.location.href = '/login?payment=confirmed';
+        }, 1300);
+        return true;
+      }
+      if (showFeedback) {
+        showStateModal({
+          title: 'Aguardando pagamento',
+          text: 'Ainda estamos aguardando o ASAAS confirmar o pagamento.',
+          showRetry: true,
+          showCheck: false,
+          showClose: true,
+          loading: true,
+        });
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function startPendingFlow(sid, pendingUntilIso = null, paymentUrl = null, signupSessionId = null) {
+    if (!sid && !signupSessionId) return;
+    pendingSid = sid || null;
+    pendingSignupSessionId = signupSessionId || null;
+    pendingPaymentUrl = paymentUrl || null;
+    setAuthPendingBlocked(true);
+    pendingModalDismissed = false;
+    state.pendingExpired = false;
+    pendingUntilEpoch = pendingUntilIso ? Date.parse(pendingUntilIso) : (Date.now() + 15 * 60 * 1000);
+    showStateModal({
+      title: 'Aguardando pagamento',
+      text: 'Estamos aguardando confirmação do ASAAS para liberar seu acesso.',
+      showRetry: true,
+      showCheck: false,
+      showClose: true,
+      loading: true,
+    });
+
+    const updateCountdown = () => {
+      const remainMs = Math.max(0, pendingUntilEpoch - Date.now());
+      const mins = String(Math.floor(remainMs / 60000)).padStart(2, '0');
+      const secs = String(Math.floor((remainMs % 60000) / 1000)).padStart(2, '0');
+      const label = `Tempo restante: ${mins}:${secs}`;
+      const countdownEl = $('#authStateCountdown');
+      if (countdownEl) {
+        countdownEl.classList.remove('hidden');
+        countdownEl.textContent = label;
+      }
+      if (remainMs <= 0) {
+        if (state.pendingExpired) return;
+        state.pendingExpired = true;
+        if (state.paymentDeadlineTimer) {
+          clearInterval(state.paymentDeadlineTimer);
+          state.paymentDeadlineTimer = null;
+        }
+        showStateModal({
+          title: 'Falha ao completar transação',
+          text: 'Pagamento não confirmado em 15 minutos. Reabra o link e conclua a cobrança para liberar o acesso.',
+          showRetry: true,
+          showCheck: false,
+          showClose: true,
+          loading: false,
+        });
+      }
+    };
+
+    const pollStatus = async () => verifyPendingPaymentNow(false);
+
+    clearPendingTimers();
+    updateCountdown();
+    pollStatus();
+    state.paymentDeadlineTimer = setInterval(updateCountdown, 1000);
+    state.paymentPollTimer = setInterval(pollStatus, 10000);
   }
 
   async function loginSubmit(e) {
     e.preventDefault();
     clearNotice();
-    if (!getRecaptchaToken($('#loginForm'))) {
-      setNotice('Conclua o reCAPTCHA para entrar.');
+    if (!getTurnstileToken($('#loginForm'))) {
+      setNotice('CAPTCHA inválido, tente novamente.');
       return;
     }
     const body = Object.fromEntries(new FormData(e.target).entries());
@@ -104,83 +557,175 @@
     });
     const data = await res.json();
     if (!res.ok) {
-      setNotice(data.error || 'Falha no login');
+      setNotice((data.error || 'Falha no login') + (data.action_hint ? ` ${data.action_hint}` : ''));
       return;
     }
-    location.href = '/portal/dashboard';
+    location.href = data.redirect || '/portal/dashboard';
   }
 
   async function signupSubmit(e) {
     e.preventDefault();
+    if (e.target.dataset.submitting === '1') return;
     clearNotice();
+    hideStateModal();
     for (let i = 1; i <= state.maxStep; i++) {
-      if (!validateStep(i)) { setStep(i); return; }
+      if (!(await validateStep(i))) { setStep(i); return; }
     }
-
+    e.target.dataset.submitting = '1';
+    $('#wizardSubmit')?.setAttribute('disabled', 'disabled');
+    showFlowOverlay('Aguardando link de pagamento...', 'Estamos cadastrando o cliente e preparando o checkout seguro no ASAAS.');
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
-
-    const res = await apiFetch('/api/auth/register-contract', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    const pendingCheck = await checkPendingByIdentity({
+      email: String(body.email || body.billing_email || '').trim(),
+      cpfCnpj: String(body.cpf_cnpj || '').trim(),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      let message = data.error || 'Falha no cadastro';
-      if (data.gateway_message) {
-        message += ` (${data.gateway_message})`;
+    if (pendingCheck?.sid || pendingCheck?.signup_session_id) {
+      hideFlowOverlay();
+      startPendingFlow(
+        pendingCheck?.sid ? String(pendingCheck.sid) : null,
+        pendingCheck.pending_until || null,
+        pendingCheck.payment_redirect_url || null,
+        pendingCheck?.signup_session_id ? String(pendingCheck.signup_session_id) : null
+      );
+      return;
+    }
+
+    try {
+      const res = await apiFetch('/api/auth/register-contract', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      const data = contentType.includes('application/json')
+        ? await res.json()
+        : { error: 'Resposta inesperada da API de cadastro/pagamento.' };
+      if (!res.ok) {
+        if (data?.asaas_subscription_id && data?.payment_redirect_url) {
+          hideFlowOverlay();
+          const sid = String(data.asaas_subscription_id);
+          const ssid = data?.signup_session_id ? String(data.signup_session_id) : '';
+          openPaymentTab(data.payment_redirect_url);
+          startPendingFlow(sid, data.pending_until || null, data.payment_redirect_url, ssid || null);
+          return;
+        }
+        hideFlowOverlay();
+        let message = data.error || 'Falha no cadastro';
+        if (data.action_hint) {
+          message += ` ${String(data.action_hint)}`;
+        }
+        if (data.gateway_message) {
+          message += ` (${data.gateway_message})`;
+        }
+        if (data.details && typeof data.details === 'object') {
+          const firstDetail = Object.values(data.details)[0];
+          if (firstDetail) message = String(firstDetail);
+        }
+        showStateModal({
+          title: 'Não foi possível iniciar o pagamento',
+          text: message,
+          showClose: true,
+        });
+        return;
       }
-      if (data.details && typeof data.details === 'object') {
-        const firstDetail = Object.values(data.details)[0];
-        if (firstDetail) message = String(firstDetail);
+
+      const sidRaw = String(data.asaas_subscription_id || '');
+      const ssidRaw = String(data.signup_session_id || '');
+      const paymentUrl = data.payment_redirect_url || null;
+      if (paymentUrl) {
+        hideFlowOverlay();
+        openPaymentTab(paymentUrl);
+        startPendingFlow(sidRaw, data.pending_until || null, paymentUrl, ssidRaw || null);
+        return;
       }
-      setNotice(message);
-      return;
+
+      if (data.awaiting_payment && data.asaas_subscription_id) {
+        hideFlowOverlay();
+        startPendingFlow(sidRaw, data.pending_until || null, null, ssidRaw || null);
+        return;
+      }
+      hideFlowOverlay();
+      window.location.href = `/portal/dashboard?new=1&subscription_id=${encodeURIComponent(data.subscription_id || '')}`;
+    } catch (err) {
+      hideFlowOverlay();
+      showStateModal({
+        title: 'Falha de comunicação',
+        text: 'Não foi possível completar o cadastro agora. Tente novamente em alguns segundos.',
+        showClose: true,
+      });
+    } finally {
+      e.target.dataset.submitting = '0';
+      $('#wizardSubmit')?.removeAttribute('disabled');
     }
-    if (data.payment_redirect_url) {
-      setNotice('Cadastro concluído. Redirecionando para pagamento seguro...', 'ok');
-      const sid = encodeURIComponent(data.asaas_subscription_id || '');
-      const pay = encodeURIComponent(data.payment_redirect_url);
-      window.location.href = `/checkout/pending?sid=${sid}&pay=${pay}`;
-      return;
-    }
-    if (data.awaiting_payment && data.asaas_subscription_id) {
-      const sid = encodeURIComponent(data.asaas_subscription_id || '');
-      window.location.href = `/checkout/pending?sid=${sid}&pay=`;
-      return;
-    }
-    location.href = `/portal/dashboard?new=1&subscription_id=${encodeURIComponent(data.subscription_id || '')}`;
   }
 
-  function toggleGoogleDemoPanel(show) {
-    const panel = $('#googleDemoPanel');
-    if (!panel) return;
-    panel.classList.toggle('hidden', !show);
-    if (show) {
-      $('#google_demo_email')?.focus();
-    }
+  function initAuthInputEnhancements() {
+    const phone = $('#phone');
+    const doc = $('#cpf_cnpj');
+    const zip = $('#billing_zip');
+    const stateUf = $('#billing_state');
+    const street = $('#billing_street');
+    const district = $('#billing_district');
+    const city = $('#billing_city');
+
+    phone?.addEventListener('input', () => { phone.value = formatPhone(phone.value); });
+    doc?.addEventListener('input', () => { doc.value = formatCpfCnpj(doc.value); });
+    zip?.addEventListener('input', () => {
+      zip.value = formatZip(zip.value);
+      state.cepResolved = false;
+      if (onlyDigits(zip.value).length < 8) {
+        if (street) street.value = '';
+        if (district) district.value = '';
+        if (city) city.value = '';
+        if (stateUf) stateUf.value = '';
+      }
+    });
+    zip?.addEventListener('blur', tryResolveCep);
+    [street, district, city, stateUf].forEach((el) => {
+      if (el) el.setAttribute('readonly', 'readonly');
+    });
+
+    doc?.addEventListener('blur', () => {
+      const personType = $('#person_type')?.value || 'PF';
+      const digits = onlyDigits(doc.value);
+      const valid = personType === 'PJ' ? isValidCnpj(digits) : isValidCpf(digits);
+      setFieldError(doc, valid ? '' : 'invalid');
+      if (!valid) setNotice('CPF/CNPJ inválido para o tipo selecionado.');
+    });
   }
 
-  async function googleDemoSubmit() {
-    clearNotice();
-    const email = ($('#google_demo_email')?.value || '').trim();
-    const name = ($('#google_demo_name')?.value || '').trim() || 'Cliente Google';
-    if (!email) {
-      setNotice('Informe um e-mail para continuar com Google (modo demo).');
-      return;
-    }
-    const res = await apiFetch('/api/auth/google-demo', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name })
+  function initAuthKeyBehavior() {
+    const signupForm = $('#signupForm');
+    signupForm?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.tagName === 'TEXTAREA') return;
+      if (target.tagName === 'BUTTON') return;
+      if (target.id === 'billing_zip') {
+        e.preventDefault();
+        tryResolveCep();
+        target.blur();
+        return;
+      }
+      e.preventDefault();
+      target.blur();
     });
-    const data = await res.json();
-    if (!res.ok) {
-      setNotice(data.error || 'Falha no Google Login');
-      return;
-    }
-    location.href = '/portal/dashboard';
+
+    const loginForm = $('#loginForm');
+    loginForm?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.tagName === 'TEXTAREA') return;
+      if (target.tagName === 'BUTTON') return;
+      e.preventDefault();
+      target.blur();
+    });
   }
 
   function mount() {
     applyRealtimeValidation();
+    initAuthInputEnhancements();
 
     if (document.body.dataset.page === 'dashboard') {
       initDashboard();
@@ -190,17 +735,66 @@
     $$('.tabbtn').forEach((btn) => btn.addEventListener('click', () => setTab(btn.dataset.tab)));
 
     $('#wizardPrev')?.addEventListener('click', () => setStep(state.step - 1));
-    $('#wizardNext')?.addEventListener('click', () => {
-      if (!validateStep(state.step)) return;
+    $('#wizardNext')?.addEventListener('click', async () => {
+      if (!(await validateStep(state.step))) return;
       setStep(state.step + 1);
+    });
+
+    $('#authStateCloseBtn')?.addEventListener('click', hideStateModal);
+    $('#authStatePrimaryBtn')?.addEventListener('click', () => {
+      if (typeof authStatePrimaryAction === 'function') {
+        authStatePrimaryAction();
+      }
+    });
+    $('#authStateRetryBtn')?.addEventListener('click', async () => {
+      if (pendingPaymentUrl) {
+        openPaymentTab(pendingPaymentUrl);
+        return;
+      }
+      if (!pendingSid) {
+        return;
+      }
+      try {
+        const retry = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(String(pendingSid)) + '/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const retryData = await retry.json();
+        if (retry.ok && retryData?.payment_redirect_url) {
+          pendingPaymentUrl = String(retryData.payment_redirect_url);
+          openPaymentTab(pendingPaymentUrl);
+          return;
+        }
+      } catch (_) {}
+      showStateModal({
+        title: 'Link indisponível no momento',
+        text: 'Não foi possível recuperar o link de pagamento agora. Tente novamente em instantes.',
+        showRetry: true,
+        showClose: true,
+        loading: false,
+      });
+    });
+    ['#login_email', '#billing_email', '#cpf_cnpj'].forEach((selector) => {
+      const el = $(selector);
+      el?.addEventListener('blur', async () => {
+        const pendingCheck = await checkPendingByIdentity({
+          email: ($('#login_email')?.value || $('#billing_email')?.value || '').trim(),
+          cpfCnpj: ($('#cpf_cnpj')?.value || '').trim(),
+        });
+        if (pendingCheck?.sid || pendingCheck?.signup_session_id) {
+          startPendingFlow(
+            pendingCheck?.sid ? String(pendingCheck.sid) : null,
+            pendingCheck.pending_until || null,
+            pendingCheck.payment_redirect_url || null,
+            pendingCheck?.signup_session_id ? String(pendingCheck.signup_session_id) : null
+          );
+        }
+      });
     });
 
     $('#loginForm')?.addEventListener('submit', loginSubmit);
     $('#signupForm')?.addEventListener('submit', signupSubmit);
-
-    $('#googleLoginBtn')?.addEventListener('click', () => toggleGoogleDemoPanel(true));
-    $('#googleDemoCancel')?.addEventListener('click', () => toggleGoogleDemoPanel(false));
-    $('#googleDemoSubmit')?.addEventListener('click', googleDemoSubmit);
 
     const personType = $('#person_type');
     const trade = $('#trade_name_col');
@@ -232,6 +826,37 @@
 
     setTab('login');
     setStep(1);
+    initAuthKeyBehavior();
+
+    const qp = new URLSearchParams(window.location.search || '');
+    const sidParam = (qp.get('sid') || '').trim();
+    const ssidParam = (qp.get('ssid') || '').trim();
+    const paymentState = (qp.get('payment') || '').trim();
+    if (paymentState === 'pending' && (sidParam || ssidParam)) {
+      startPendingFlow(sidParam || null, null, null, ssidParam || null);
+    } else if (paymentState === 'confirmed') {
+      setAuthPendingBlocked(false);
+      pendingSid = null;
+      pendingSignupSessionId = null;
+      showWelcomeConfirmedModal();
+      clearPaymentQueryParams();
+    }
+  }
+
+  function clearPaymentQueryParams() {
+    try {
+      const url = new URL(window.location.href);
+      const hasPaymentParams =
+        url.searchParams.has('payment')
+        || url.searchParams.has('sid')
+        || url.searchParams.has('ssid');
+      if (!hasPaymentParams) return;
+      url.searchParams.delete('payment');
+      url.searchParams.delete('sid');
+      url.searchParams.delete('ssid');
+      const nextUrl = url.pathname + (url.search ? url.search : '') + (url.hash || '');
+      window.history.replaceState({}, '', nextUrl);
+    } catch (_) {}
   }
 
   function applyRealtimeValidation() {
@@ -352,6 +977,32 @@
         return;
       }
       setPortalNotice('Nenhuma cobrança pendente encontrada no momento.', 'err');
+    });
+
+    $('#portalApprovalLinkBtn')?.addEventListener('click', async () => {
+      const btn = $('#portalApprovalLinkBtn');
+      if (!btn) return;
+      btn.setAttribute('disabled', 'disabled');
+      try {
+        const r = await apiFetch('/api/portal/approval/request-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          setPortalNotice(d.error || 'Não foi possível gerar o link de validação agora.', 'err');
+          return;
+        }
+        if (d.approval_url) {
+          window.open(d.approval_url, '_blank', 'noopener,noreferrer');
+          setPortalNotice('Link temporário de validação aberto em nova guia.', 'ok');
+          return;
+        }
+        setPortalNotice('Link de validação indisponível no momento.', 'err');
+      } finally {
+        btn.removeAttribute('disabled');
+      }
     });
 
     const profileForm = $('#profileForm');

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
+import { ensureDealSuppressionTable, purgeOrganizationData } from '@/lib/deal-purge';
 import { ensureDealOperation } from '@/lib/deals';
 import { toCentsFromInput } from '@/lib/money';
 import { prisma } from '@/lib/prisma';
@@ -212,15 +213,59 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const denied = ensureApiAuth(req);
   if (denied) return denied;
 
+  const scope = req.nextUrl.searchParams.get('scope');
+  const fullPurge = scope === 'full';
+  const fromGhostList = req.nextUrl.searchParams.get('from') === 'ghost';
+
+  if (fullPurge && !fromGhostList) {
+    return NextResponse.json(
+      { error: 'Exclusão permanente deve ser feita pela Lista Fantasma.' },
+      { status: 403 }
+    );
+  }
+
   try {
+    await ensureDealSuppressionTable();
     await prisma.$transaction(async (tx) => {
       const deal = await tx.deal.findUnique({
         where: { id: params.id },
-        select: { id: true, leadId: true },
+        select: { id: true, leadId: true, organizationId: true, subscriptionId: true, dealType: true, lifecycleStatus: true },
       });
 
       if (!deal) {
         throw new Error('Deal não encontrado');
+      }
+
+      if (fullPurge && deal.organizationId && deal.dealType === 'HOSPEDAGEM' && deal.lifecycleStatus === 'CLIENT') {
+        await purgeOrganizationData(tx, deal.organizationId);
+        return;
+      }
+
+      if (deal.organizationId) {
+        await tx.$executeRawUnsafe(
+          `
+            INSERT INTO crm.deal_suppression (
+              organization_id,
+              deal_type,
+              subscription_id,
+              reason,
+              created_by,
+              created_at,
+              updated_at
+            )
+            VALUES ($1::uuid, $2::varchar, $3::uuid, $4::text, 'CRM_DELETE', now(), now())
+            ON CONFLICT (organization_id, deal_type)
+            DO UPDATE SET
+              subscription_id = EXCLUDED.subscription_id,
+              reason = EXCLUDED.reason,
+              created_by = EXCLUDED.created_by,
+              updated_at = now()
+          `,
+          deal.organizationId,
+          deal.dealType,
+          deal.subscriptionId,
+          'Deal excluído manualmente no CRM'
+        );
       }
 
       await tx.dealStageHistory.deleteMany({ where: { dealId: deal.id } });
@@ -243,7 +288,7 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
       }
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, purge: fullPurge ? 'full' : 'deal' });
   } catch (error) {
     return NextResponse.json({ error: 'Falha ao excluir deal', details: String(error) }, { status: 500 });
   }

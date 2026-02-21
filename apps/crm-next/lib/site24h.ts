@@ -4,8 +4,9 @@ import path from 'path';
 
 export const CLIENT_PROJECTS_ROOT = process.env.CLIENT_PROJECTS_ROOT || '/home/server/projects/clientes';
 export const PREVIEW_BASE_URL = process.env.PREVIEW_BASE_URL || 'https://preview.koddahub.com.br';
+export const CRM_PUBLIC_BASE_URL = process.env.CRM_PUBLIC_BASE_URL || 'https://koddacrm.koddahub.com.br';
 export const PORTAL_BASE_URL = process.env.PORTAL_BASE_URL || 'http://192.168.25.3:8081';
-export const VSCODE_SSH_HOST = process.env.VSCODE_SSH_HOST || 'ssh.koddahub.com.br';
+export const VSCODE_SSH_HOST = process.env.VSCODE_SSH_HOST || 'server';
 export const VSCODE_WEB_BASE_URL = process.env.VSCODE_WEB_BASE_URL || '';
 
 export function slugifyName(input: string) {
@@ -43,9 +44,12 @@ export async function ensureProjectFolder(projectPath: string) {
 }
 
 export function buildPreviewUrl(orgSlug: string, entryFile = 'index.html') {
-  const base = PREVIEW_BASE_URL.replace(/\/+$/, '');
+  const base = CRM_PUBLIC_BASE_URL.replace(/\/+$/, '');
   const cleanEntry = entryFile.replace(/^\/+/, '');
-  return `${base}/${orgSlug}/${cleanEntry}`;
+  if (!cleanEntry || cleanEntry === 'index.html') {
+    return `${base}/${orgSlug}/previewv1`;
+  }
+  return `${base}/${orgSlug}/previewv1?entry=${encodeURIComponent(cleanEntry)}`;
 }
 
 export function buildPortalApprovalUrl(token: string) {
@@ -85,4 +89,3 @@ export async function hashTemplateFile(projectPath: string, entryFile = 'index.h
   const content = await fs.readFile(full, 'utf8');
   return sha256(normalizeHtmlForHash(content));
 }
-

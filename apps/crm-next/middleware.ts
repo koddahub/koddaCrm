@@ -8,8 +8,17 @@ function adminToken() {
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const isPreviewLanding = /^\/[^/]+\/previewv1(?:\/|$)/.test(pathname);
+  const isPreviewProxy = pathname.startsWith('/preview-proxy/');
 
-  if (pathname.startsWith('/api/') || pathname.startsWith('/login') || pathname.startsWith('/_next') || pathname.startsWith('/favicon')) {
+  if (
+    pathname.startsWith('/api/') ||
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/_next') ||
+    pathname.startsWith('/favicon') ||
+    isPreviewLanding ||
+    isPreviewProxy
+  ) {
     return NextResponse.next();
   }
 
