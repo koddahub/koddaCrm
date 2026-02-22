@@ -43,13 +43,29 @@ export async function ensureProjectFolder(projectPath: string) {
   await fs.mkdir(resolved, { recursive: true });
 }
 
-export function buildPreviewUrl(orgSlug: string, entryFile = 'index.html') {
+export function buildPreviewUrl(
+  orgSlug: string,
+  entryFile = 'index.html',
+  options?: { releaseVersion?: number | string | null; variantCode?: string | null },
+) {
   const base = CRM_PUBLIC_BASE_URL.replace(/\/+$/, '');
   const cleanEntry = entryFile.replace(/^\/+/, '');
-  if (!cleanEntry || cleanEntry === 'index.html') {
+  const releaseVersionRaw = options?.releaseVersion ?? null;
+  const releaseVersion = releaseVersionRaw !== null && releaseVersionRaw !== undefined
+    ? String(releaseVersionRaw).trim().replace(/^v/i, '')
+    : '';
+  const variantCode = String(options?.variantCode || '').trim().toLowerCase();
+  const query = new URLSearchParams();
+  if (releaseVersion) query.set('release', `v${releaseVersion}`);
+  if (variantCode) query.set('variant', variantCode);
+  if (cleanEntry && cleanEntry !== 'index.html') {
+    query.set('entry', cleanEntry);
+  }
+  const queryString = query.toString();
+  if (!queryString) {
     return `${base}/${orgSlug}/previewv1`;
   }
-  return `${base}/${orgSlug}/previewv1?entry=${encodeURIComponent(cleanEntry)}`;
+  return `${base}/${orgSlug}/previewv1?${queryString}`;
 }
 
 export function buildPortalApprovalUrl(token: string) {

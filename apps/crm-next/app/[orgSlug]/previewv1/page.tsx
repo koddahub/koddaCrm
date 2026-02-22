@@ -4,6 +4,8 @@ type PreviewPageProps = {
   };
   searchParams?: {
     entry?: string;
+    release?: string;
+    variant?: string;
   };
 };
 
@@ -16,7 +18,13 @@ function sanitizeEntry(input?: string) {
 export default function PreviewV1Page({ params, searchParams }: PreviewPageProps) {
   const orgSlug = encodeURIComponent(params.orgSlug || '');
   const entry = sanitizeEntry(searchParams?.entry);
-  const iframeSrc = `/preview-proxy/${orgSlug}/${entry}`;
+  const release = String(searchParams?.release || '').trim();
+  const variant = String(searchParams?.variant || '').trim().toLowerCase();
+  const query = new URLSearchParams();
+  if (release) query.set('release', release);
+  if (variant) query.set('variant', variant);
+  const queryString = query.toString();
+  const iframeSrc = `/preview-proxy/${orgSlug}/${entry}${queryString ? `?${queryString}` : ''}`;
 
   return (
     <main style={{ minHeight: '100vh', background: '#0b1220', color: '#fff' }}>
@@ -31,7 +39,10 @@ export default function PreviewV1Page({ params, searchParams }: PreviewPageProps
           backdropFilter: 'blur(8px)',
         }}
       >
-        <strong style={{ fontSize: 14 }}>Preview V1 - {params.orgSlug}</strong>
+        <strong style={{ fontSize: 14 }}>
+          Preview - {params.orgSlug}
+          {release ? ` (${release}${variant ? `/${variant}` : ''})` : ''}
+        </strong>
         <a
           href={iframeSrc}
           target="_blank"

@@ -3,10 +3,13 @@ import { readPreviewProjectFile } from '@/lib/preview-proxy';
 
 export const runtime = 'nodejs';
 
-export async function GET(_req: NextRequest, { params }: { params: { orgSlug: string; filePath: string[] } }) {
+export async function GET(req: NextRequest, { params }: { params: { orgSlug: string; filePath: string[] } }) {
   try {
     const relativePath = (params.filePath || []).join('/');
-    const output = await readPreviewProjectFile(params.orgSlug, relativePath);
+    const output = await readPreviewProjectFile(params.orgSlug, relativePath, {
+      release: req.nextUrl.searchParams.get('release'),
+      variant: req.nextUrl.searchParams.get('variant'),
+    });
     return new NextResponse(output.file, {
       status: 200,
       headers: {

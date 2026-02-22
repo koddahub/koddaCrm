@@ -9,6 +9,7 @@ import {
   publicationSubstepsStatus,
   sshConfigReference,
 } from '@/lib/site24h-operation';
+import { listDealSiteReleases, parseReleaseVariantFromPath } from '@/lib/site24h-release';
 import { prisma } from '@/lib/prisma';
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
 
   const latestTemplate = deal.templateRevisions[0] || null;
-  const templateVsCode = latestTemplate ? buildVsCodeLinks(latestTemplate.projectPath) : fallbackVsCode;
+  let templateVsCode = latestTemplate ? buildVsCodeLinks(latestTemplate.projectPath) : fallbackVsCode;
   const stageTabs = operationStagesByDealType(deal.dealType).map((item) => ({
     code: item.code,
     name: item.name,
@@ -71,6 +72,42 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const activeStageCode = deal.operations.find((item) => item.status === 'ACTIVE')?.stageCode || stageTabs[0]?.code || null;
 
   const templateCatalog = await listTemplateModels();
+  const siteReleases = await listDealSiteReleases(deal.id);
+  const activeRelease = siteReleases[0] || null;
+
+  const latestApproval = deal.clientApprovals[0] || null;
+  const approvalRevision = latestApproval
+    ? deal.templateRevisions.find((item) => item.id === latestApproval.templateRevisionId) || null
+    : null;
+  const selectedFromApproval = approvalRevision ? parseReleaseVariantFromPath(approvalRevision.projectPath) : null;
+  const latestRevisionSelection = latestTemplate ? parseReleaseVariantFromPath(latestTemplate.projectPath) : null;
+  const selectedApprovalVariant = {
+    releaseVersion: selectedFromApproval?.releaseVersion || latestRevisionSelection?.releaseVersion || null,
+    variantCode: selectedFromApproval?.variantCode || latestRevisionSelection?.variantCode || null,
+  };
+  const workspaceVariant = activeRelease?.variants.find((item) => item.variant_code === (selectedApprovalVariant.variantCode || 'V1'))
+    || activeRelease?.variants[0]
+    || null;
+  if (workspaceVariant?.folder_path) {
+    templateVsCode = buildVsCodeLinks(workspaceVariant.folder_path);
+  }
+
+  const assetRows = activeRelease
+    ? await prisma.$queryRaw<Array<{ asset_type: string; total: bigint | number }>>`
+        SELECT asset_type, count(*)::bigint AS total
+        FROM crm.deal_prompt_asset
+        WHERE release_id = ${activeRelease.id}::uuid
+        GROUP BY asset_type
+      `
+    : [];
+  const assetMap = new Map<string, number>();
+  for (const row of assetRows) {
+    assetMap.set(String(row.asset_type || '').toLowerCase(), Number(row.total || 0));
+  }
+  const logoCount = assetMap.get('logo') || 0;
+  const manualCount = assetMap.get('manual') || 0;
+  const contentCount = assetMap.get('conteudo') || 0;
+  const otherCount = assetMap.get('outro') || 0;
 
   let publicationSubsteps: Array<{
     id: string;
@@ -123,8 +160,69 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       catalog: templateCatalog,
     },
     approval: {
-      latest: deal.clientApprovals[0] || null,
+      latest: latestApproval,
       history: deal.clientApprovals,
+    },
+    releases: siteReleases.map((release) => ({
+      id: release.id,
+      dealId: release.deal_id,
+      version: release.version,
+      label: `v${release.version}`,
+      status: release.status,
+      projectRoot: release.project_root,
+      assetsPath: release.assets_path,
+      promptMdPath: release.prompt_md_path,
+      promptJsonPath: release.prompt_json_path,
+      createdBy: release.created_by,
+      createdAt: release.created_at,
+      updatedAt: release.updated_at,
+      variants: release.variants.map((variant) => ({
+        id: variant.id,
+        releaseId: variant.release_id,
+        variantCode: variant.variant_code,
+        folderPath: variant.folder_path,
+        entryFile: variant.entry_file,
+        previewUrl: variant.preview_url,
+        sourceHash: variant.source_hash,
+        status: variant.status,
+        createdAt: variant.created_at,
+        updatedAt: variant.updated_at,
+      })),
+    })),
+    activeRelease: activeRelease
+      ? {
+          id: activeRelease.id,
+          version: activeRelease.version,
+          label: `v${activeRelease.version}`,
+          status: activeRelease.status,
+          projectRoot: activeRelease.project_root,
+          assetsPath: activeRelease.assets_path,
+          promptMdPath: activeRelease.prompt_md_path,
+          promptJsonPath: activeRelease.prompt_json_path,
+          variants: activeRelease.variants.map((variant) => ({
+            id: variant.id,
+            variantCode: variant.variant_code,
+            folderPath: variant.folder_path,
+            entryFile: variant.entry_file,
+            previewUrl: variant.preview_url,
+            sourceHash: variant.source_hash,
+            status: variant.status,
+            createdAt: variant.created_at,
+            updatedAt: variant.updated_at,
+          })),
+        }
+      : null,
+    selectedApprovalVariant,
+    assets: {
+      releaseId: activeRelease?.id || null,
+      releaseLabel: activeRelease ? `v${activeRelease.version}` : null,
+      uploadPath: activeRelease?.assets_path || null,
+      summary: {
+        logo: { count: logoCount, status: logoCount > 0 ? 'received' : 'missing' },
+        identidadeVisual: { count: manualCount, status: manualCount > 0 ? 'received' : 'missing' },
+        conteudo: { count: contentCount, status: contentCount > 0 ? 'received' : 'missing' },
+        outros: { count: otherCount, status: otherCount > 0 ? 'received' : 'missing' },
+      },
     },
     publication: {
       checks: deal.publishChecks,

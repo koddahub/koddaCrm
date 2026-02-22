@@ -12,6 +12,61 @@ function sanitizeEntryPath(input: string | null | undefined) {
   return normalized;
 }
 
+function sanitizeReleaseLabel(input: string | null | undefined) {
+  const normalized = String(input || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const candidate = normalized.startsWith('v') ? normalized : `v${normalized}`;
+  if (!/^v\d+$/.test(candidate)) return null;
+  return candidate;
+}
+
+function sanitizeVariant(input: string | null | undefined) {
+  const normalized = String(input || '').trim().toLowerCase();
+  if (normalized === 'v2' || normalized === 'modelo_v2') return 'v2';
+  if (normalized === 'v3' || normalized === 'modelo_v3') return 'v3';
+  return 'v1';
+}
+
+function variantFolder(variant: string) {
+  if (variant === 'v2') return 'modelo_v2';
+  if (variant === 'v3') return 'modelo_v3';
+  return 'modelo_v1';
+}
+
+async function latestReleaseLabel(projectRoot: string) {
+  const releasesRoot = path.resolve(projectRoot, 'releases');
+  const entries = await fs.readdir(releasesRoot, { withFileTypes: true }).catch(() => []);
+  const versions = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .map((name) => {
+      const match = name.match(/^v(\d+)$/i);
+      return match ? Number.parseInt(match[1], 10) : null;
+    })
+    .filter((value): value is number => Number.isFinite(value));
+  if (versions.length === 0) return null;
+  versions.sort((a, b) => b - a);
+  return `v${versions[0]}`;
+}
+
+async function resolvePreviewRoot(projectRoot: string, releaseRaw?: string | null, variantRaw?: string | null) {
+  const explicitRelease = sanitizeReleaseLabel(releaseRaw);
+  const resolvedRelease = explicitRelease || (await latestReleaseLabel(projectRoot));
+  const variant = sanitizeVariant(variantRaw);
+  if (!resolvedRelease) {
+    return {
+      rootPath: projectRoot,
+      releaseLabel: null as string | null,
+      variant,
+    };
+  }
+  return {
+    rootPath: path.resolve(projectRoot, 'releases', resolvedRelease, variantFolder(variant)),
+    releaseLabel: resolvedRelease,
+    variant,
+  };
+}
+
 export function contentTypeByPath(filePath: string) {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
@@ -54,14 +109,22 @@ export function contentTypeByPath(filePath: string) {
   }
 }
 
-export async function readPreviewProjectFile(orgSlugRaw: string, relativePathRaw?: string | null) {
+export async function readPreviewProjectFile(
+  orgSlugRaw: string,
+  relativePathRaw?: string | null,
+  options?: {
+    release?: string | null;
+    variant?: string | null;
+  },
+) {
   const orgSlug = sanitizeOrgSlug(orgSlugRaw);
   if (!orgSlug) throw new Error('preview_org_slug_invalid');
 
   const projectRoot = resolveProjectPath(orgSlug);
-  const root = path.resolve(projectRoot);
+  const resolvedRoot = await resolvePreviewRoot(projectRoot, options?.release, options?.variant);
+  const root = path.resolve(resolvedRoot.rootPath);
   const relativePath = sanitizeEntryPath(relativePathRaw || 'index.html');
-  const requestedPath = path.resolve(projectRoot, relativePath);
+  const requestedPath = path.resolve(root, relativePath);
   if (!(requestedPath === root || requestedPath.startsWith(`${root}${path.sep}`))) {
     throw new Error('preview_path_outside_root');
   }
@@ -84,5 +147,7 @@ export async function readPreviewProjectFile(orgSlugRaw: string, relativePathRaw
     fullPath: finalPath,
     root: path.resolve(CLIENT_PROJECTS_ROOT),
     relativePath,
+    release: resolvedRoot.releaseLabel,
+    variant: resolvedRoot.variant,
   };
 }

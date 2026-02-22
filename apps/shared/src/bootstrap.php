@@ -10,6 +10,7 @@ require_once __DIR__ . '/Support/Auth.php';
 require_once __DIR__ . '/Support/Validator.php';
 require_once __DIR__ . '/Infra/Database.php';
 require_once __DIR__ . '/Infra/AsaasClient.php';
+require_once __DIR__ . '/Infra/PromptBuilderV2.php';
 require_once __DIR__ . '/Infra/PromptBuilder.php';
 require_once __DIR__ . '/Core/Router.php';
 

@@ -131,6 +131,174 @@ function ensureSite24hOperationTables(): void
     $ready = true;
 }
 
+function ensureSiteReleaseTables(): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.deal_site_release (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+            version INT NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+            project_root VARCHAR(500) NOT NULL,
+            assets_path VARCHAR(500) NOT NULL,
+            prompt_md_path VARCHAR(500),
+            prompt_json_path VARCHAR(500),
+            created_by VARCHAR(120),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (deal_id, version)
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_version ON crm.deal_site_release(deal_id, version DESC)");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_status ON crm.deal_site_release(deal_id, status)");
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.deal_site_variant (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            release_id UUID NOT NULL REFERENCES crm.deal_site_release(id) ON DELETE CASCADE,
+            variant_code VARCHAR(10) NOT NULL,
+            folder_path VARCHAR(500) NOT NULL,
+            entry_file VARCHAR(255) NOT NULL DEFAULT 'index.html',
+            preview_url VARCHAR(500),
+            source_hash VARCHAR(128),
+            status VARCHAR(40) NOT NULL DEFAULT 'BASE_PREPARED',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (release_id, variant_code)
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_site_variant_release_status ON crm.deal_site_variant(release_id, status)");
+
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS crm.deal_prompt_asset (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            release_id UUID NOT NULL REFERENCES crm.deal_site_release(id) ON DELETE CASCADE,
+            asset_type VARCHAR(40) NOT NULL,
+            original_path VARCHAR(500) NOT NULL,
+            release_path VARCHAR(500) NOT NULL,
+            meta_json JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    ");
+    db()->exec("CREATE INDEX IF NOT EXISTS idx_deal_prompt_asset_release_type ON crm.deal_prompt_asset(release_id, asset_type)");
+
+    $ready = true;
+}
+
+function runSiteReleaseConsistencyCheck(string $logFile): void
+{
+    ensureSiteReleaseTables();
+    $rows = db()->all("
+        SELECT
+            r.id AS release_id,
+            r.deal_id,
+            r.version,
+            r.project_root,
+            r.assets_path,
+            v.id AS variant_id,
+            v.variant_code,
+            v.folder_path,
+            v.entry_file
+        FROM crm.deal_site_release r
+        LEFT JOIN crm.deal_site_variant v ON v.release_id = r.id
+        ORDER BY r.updated_at DESC
+        LIMIT 4000
+    ");
+
+    $checked = 0;
+    $issues = 0;
+    foreach ($rows as $row) {
+        $checked++;
+        $dealId = (string)($row['deal_id'] ?? '');
+        if ($dealId === '') {
+            continue;
+        }
+
+        $releaseRoot = trim((string)($row['project_root'] ?? ''));
+        $assetsPath = trim((string)($row['assets_path'] ?? ''));
+        $variantPath = trim((string)($row['folder_path'] ?? ''));
+        $entryFile = trim((string)($row['entry_file'] ?? 'index.html'));
+        $variantCode = trim((string)($row['variant_code'] ?? ''));
+
+        $problem = null;
+        if ($releaseRoot === '' || !is_dir($releaseRoot)) {
+            $problem = 'release_root_missing';
+        } elseif ($assetsPath === '' || !is_dir($assetsPath)) {
+            $problem = 'assets_path_missing';
+        } elseif ($variantCode !== '') {
+            if ($variantPath === '' || !is_dir($variantPath)) {
+                $problem = 'variant_folder_missing';
+            } else {
+                $entryPath = rtrim($variantPath, '/') . '/' . ltrim($entryFile !== '' ? $entryFile : 'index.html', '/');
+                if (!is_file($entryPath)) {
+                    $problem = 'variant_entry_missing';
+                }
+            }
+        }
+
+        if ($problem === null) {
+            continue;
+        }
+
+        $issues++;
+        $content = sprintf(
+            'Inconsistencia de release detectada (%s) em release v%s%s.',
+            $problem,
+            (string)($row['version'] ?? '?'),
+            $variantCode !== '' ? ' variante ' . $variantCode : ''
+        );
+
+        $already = db()->one("
+            SELECT id
+            FROM crm.deal_activity
+            WHERE deal_id=:did
+              AND activity_type='SITE_RELEASE_INCONSISTENT'
+              AND created_at > now() - interval '6 hour'
+              AND content=:content
+            LIMIT 1
+        ", [
+            ':did' => $dealId,
+            ':content' => $content,
+        ]);
+
+        if (!$already) {
+            db()->exec("
+                INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+                VALUES(:did, 'SITE_RELEASE_INCONSISTENT', :content, :meta::jsonb, 'WORKER')
+            ", [
+                ':did' => $dealId,
+                ':content' => $content,
+                ':meta' => json_encode([
+                    'release_id' => $row['release_id'] ?? null,
+                    'variant_id' => $row['variant_id'] ?? null,
+                    'problem' => $problem,
+                    'release_root' => $releaseRoot,
+                    'assets_path' => $assetsPath,
+                    'variant_path' => $variantPath,
+                    'entry_file' => $entryFile,
+                ], JSON_UNESCAPED_UNICODE),
+            ]);
+        }
+
+        file_put_contents(
+            $logFile,
+            '[' . date('c') . '] site_release_inconsistency -> deal_id=' . $dealId . ' release=' . ($row['version'] ?? '?') . ' variant=' . ($variantCode ?: '-') . ' problem=' . $problem . PHP_EOL,
+            FILE_APPEND
+        );
+    }
+
+    file_put_contents(
+        $logFile,
+        '[' . date('c') . '] site_release_consistency -> checked=' . $checked . ' issues=' . $issues . PHP_EOL,
+        FILE_APPEND
+    );
+}
+
 function cleanupPasswordResetTokens(string $logFile): void
 {
     db()->exec("
@@ -1575,11 +1743,13 @@ while (true) {
         static $lastReconcileRun = 0;
         static $lastBillingClassRun = 0;
         static $lastPasswordResetCleanupRun = 0;
+        static $lastSiteReleaseCheckRun = 0;
         $nowTs = time();
         $backfillInterval = (int)(envString('CRM_BACKFILL_INTERVAL_SECONDS', '1800'));
         $reconcileInterval = (int)(envString('CRM_RECONCILE_INTERVAL_SECONDS', '300'));
         $billingClassInterval = (int)(envString('CRM_BILLING_CLASS_INTERVAL_SECONDS', '600'));
         $passwordResetCleanupInterval = 86400;
+        $siteReleaseCheckInterval = (int)(envString('CRM_SITE_RELEASE_CHECK_INTERVAL_SECONDS', '600'));
 
         if ($lastBackfillRun === 0 || ($nowTs - $lastBackfillRun) >= max(60, $backfillInterval)) {
             backfillDealsFromClientOrganizations($logFile);
@@ -1599,6 +1769,11 @@ while (true) {
         if ($lastPasswordResetCleanupRun === 0 || ($nowTs - $lastPasswordResetCleanupRun) >= $passwordResetCleanupInterval) {
             cleanupPasswordResetTokens($logFile);
             $lastPasswordResetCleanupRun = $nowTs;
+        }
+
+        if ($lastSiteReleaseCheckRun === 0 || ($nowTs - $lastSiteReleaseCheckRun) >= max(120, $siteReleaseCheckInterval)) {
+            runSiteReleaseConsistencyCheck($logFile);
+            $lastSiteReleaseCheckRun = $nowTs;
         }
 
         queueDailyBriefingReminders($logFile);

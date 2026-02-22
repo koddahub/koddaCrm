@@ -3,9 +3,12 @@ import { readPreviewProjectFile } from '@/lib/preview-proxy';
 
 export const runtime = 'nodejs';
 
-export async function GET(_req: NextRequest, { params }: { params: { orgSlug: string } }) {
+export async function GET(req: NextRequest, { params }: { params: { orgSlug: string } }) {
   try {
-    const output = await readPreviewProjectFile(params.orgSlug, 'index.html');
+    const output = await readPreviewProjectFile(params.orgSlug, 'index.html', {
+      release: req.nextUrl.searchParams.get('release'),
+      variant: req.nextUrl.searchParams.get('variant'),
+    });
     return new NextResponse(output.file, {
       status: 200,
       headers: {
