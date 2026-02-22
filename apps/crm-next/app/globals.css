@@ -1354,6 +1354,7 @@ td {
   display: grid;
   grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr);
   gap: 14px;
+  align-items: start;
 }
 
 .preprompt-left-col,
@@ -1367,7 +1368,8 @@ td {
   border-radius: 12px;
   background: #ffffff;
   padding: 12px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
@@ -1424,6 +1426,27 @@ td {
 
 .prompt-variant-note small {
   color: #64748b;
+}
+
+.preprompt-topbar {
+  border: 1px solid #dbe4ef;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.preprompt-editor-block {
+  min-height: 72vh;
+}
+
+.preprompt-editor-block textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 58vh;
+  resize: vertical;
 }
 
 .quick-brief-grid label span,
@@ -1939,17 +1962,15 @@ td {
   }
 
   .preprompt-editor-shell {
-    padding-bottom: 108px;
+    padding-bottom: 0;
   }
 
-  .preprompt-action-bar {
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 84px;
-    z-index: 32;
-    border-radius: 12px;
-    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.18);
+  .preprompt-editor-block {
+    min-height: auto;
+  }
+
+  .preprompt-editor-block textarea {
+    min-height: 52vh;
   }
 
 }

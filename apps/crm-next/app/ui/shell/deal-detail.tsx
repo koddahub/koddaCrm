@@ -147,6 +147,22 @@ type OperationFlowData = {
       status: string;
       updatedAt: string;
     }>;
+    promptSource?: 'filesystem' | 'database_fallback';
+    promptPaths?: {
+      clientRoot: string | null;
+      promptJsonPath: string | null;
+      promptMdPath: string | null;
+      promptV1Path: string | null;
+      promptV2Path: string | null;
+      promptV3Path: string | null;
+      identityPath: string | null;
+    };
+    promptFileMtime?: string | null;
+    variantPromptsResolved?: {
+      V1: string;
+      V2: string;
+      V3: string;
+    } | null;
   };
   template: {
     latest: {
@@ -424,6 +440,16 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     cores: '',
     tom: 'Profissional',
   });
+  const [briefContext, setBriefContext] = useState({
+    differentials: '',
+    services: '',
+    cta: '',
+    integrations: '',
+    domainTarget: '',
+    extraRequirements: '',
+    visualReferences: '',
+    legalContent: '',
+  });
   const [seoForm, setSeoForm] = useState({
     title: '',
     description: '',
@@ -523,16 +549,17 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     const promptJson = body.prompt?.latest?.promptJson as
       | {
-          brand?: { cores?: string; tom?: string };
-          conteudo?: { objetivo?: string; publico?: string };
-          seo?: { title?: string; description?: string; keywords?: string; schema_org_localbusiness?: boolean };
-          sections?: string[];
-          business?: { objetivo_principal?: string; publico_alvo?: string };
-          style?: { tom_voz?: string };
-          client?: { domain_target?: string };
-          content?: { paginas_necessarias?: string[] };
-        }
+        brand?: { cores?: string; tom?: string };
+        conteudo?: { objetivo?: string; publico?: string };
+        seo?: { title?: string; description?: string; keywords?: string; schema_org_localbusiness?: boolean };
+        sections?: string[];
+        business?: { objetivo_principal?: string; publico_alvo?: string; diferenciais?: string; produtos_servicos?: string };
+        style?: { tom_voz?: string; cta_principal?: string; sites_referencia?: string[] };
+        client?: { domain_target?: string };
+        content?: { paginas_necessarias?: string[]; integracoes_desejadas?: string[]; requisitos_tecnicos?: string; conteudo_legal?: string };
+      }
       | null;
+    const fallbackVariantPrompts = body.prompt?.variantPromptsResolved || null;
     if (promptJson) {
       const parsedPalette = [
         ...(Array.isArray((promptJson as { brand?: { palette?: string[] } })?.brand?.palette)
@@ -552,6 +579,16 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         cores: promptJson?.brand?.cores || '',
         tom: normalizeTone(promptJson?.brand?.tom || promptJson?.style?.tom_voz || ''),
       });
+      setBriefContext({
+        differentials: String(promptJson?.business?.diferenciais || ''),
+        services: String(promptJson?.business?.produtos_servicos || ''),
+        cta: String(promptJson?.style?.cta_principal || ''),
+        integrations: Array.isArray(promptJson?.content?.integracoes_desejadas) ? promptJson.content.integracoes_desejadas.join(', ') : '',
+        domainTarget: String(promptJson?.client?.domain_target || ''),
+        extraRequirements: String(promptJson?.content?.requisitos_tecnicos || ''),
+        visualReferences: Array.isArray(promptJson?.style?.sites_referencia) ? promptJson.style.sites_referencia.join('\n') : '',
+        legalContent: String(promptJson?.content?.conteudo_legal || ''),
+      });
       setSeoForm((prev) => ({
         ...prev,
         title: String(promptJson?.seo?.title || ''),
@@ -570,7 +607,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         })));
       }
       const variantData = (promptJson as { variant_prompts?: Record<string, string>; variantPrompts?: Record<string, string> });
-      const variantPromptsPayload = variantData?.variant_prompts || variantData?.variantPrompts || null;
+      const variantPromptsPayload = fallbackVariantPrompts || variantData?.variant_prompts || variantData?.variantPrompts || null;
       if (variantPromptsPayload && typeof variantPromptsPayload === 'object') {
         const nextVariants: Record<'V1' | 'V2' | 'V3', string> = {
           V1: String(variantPromptsPayload.V1 || body.prompt?.latest?.promptText || ''),
@@ -580,6 +617,15 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         setVariantPrompts(nextVariants);
         setPrePromptForm((prev) => ({ ...prev, promptText: nextVariants[promptVariantTab] || nextVariants.V1 }));
       }
+    }
+    if (!promptJson && fallbackVariantPrompts && typeof fallbackVariantPrompts === 'object') {
+      const nextVariants: Record<'V1' | 'V2' | 'V3', string> = {
+        V1: String(fallbackVariantPrompts.V1 || body.prompt?.latest?.promptText || ''),
+        V2: String(fallbackVariantPrompts.V2 || body.prompt?.latest?.promptText || ''),
+        V3: String(fallbackVariantPrompts.V3 || body.prompt?.latest?.promptText || ''),
+      };
+      setVariantPrompts(nextVariants);
+      setPrePromptForm((prev) => ({ ...prev, promptText: nextVariants[promptVariantTab] || nextVariants.V1 }));
     }
     if (body.template?.latest?.entryFile || body.template?.catalog?.[0]?.code || body.activeRelease) {
       const selectedReleaseVersion = body.activeRelease?.version
@@ -682,6 +728,52 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     await loadOperationFlow();
   }
 
+  async function copyActivePrompt() {
+    const prompt = prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || '';
+    if (!prompt) {
+      setNotice('Nenhum prompt para copiar na variante selecionada.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setNotice(`Prompt ${promptVariantTab} copiado para área de transferência.`);
+    } catch {
+      setNotice('Não foi possível copiar o prompt.');
+    }
+  }
+
+  async function approvePrePrompt() {
+    if (hasBlockingAssets) {
+      setNotice(`Aprovação bloqueada. Pendências: ${missingAssets.join(', ')}.`);
+      return;
+    }
+    const resolvedVariants = {
+      ...variantPrompts,
+      [promptVariantTab]: prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || buildConditionalPromptForVariant(promptVariantTab),
+    } as Record<'V1' | 'V2' | 'V3', string>;
+    const promptText = resolvedVariants[promptVariantTab];
+    const promptJson = buildPromptJsonFromEditor(resolvedVariants);
+    const res = await fetch(`/api/deals/${dealId}/preprompt/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        promptText,
+        promptJson,
+        releaseVersion: selectedRelease?.version || null,
+        copyMode: 'if_empty_or_missing',
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao aprovar pré-prompt');
+      return;
+    }
+    setNotice('Pré-prompt aprovado e operação avançada para Template V1.');
+    await loadOperationFlow();
+    await loadDeal();
+    setOperationStageTab('template_v1');
+  }
+
   async function requestPrePromptInfo() {
     if (!prePromptForm.message.trim() && !prePromptForm.requestItems.trim()) {
       setNotice('Descreva a mensagem e/ou itens de informação a solicitar ao cliente.');
@@ -715,44 +807,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       return;
     }
     setNotice('Solicitação enviada por e-mail ao cliente.');
-    await loadOperationFlow();
-    await loadDeal();
-  }
-
-  async function approvePrePrompt() {
-    if (hasBlockingAssets) {
-      setNotice('Não é possível aprovar: logo e identidade visual são obrigatórios.');
-      return;
-    }
-    const resolvedVariants = {
-      ...variantPrompts,
-      [promptVariantTab]: prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || buildConditionalPromptForVariant(promptVariantTab),
-    } as Record<'V1' | 'V2' | 'V3', string>;
-    setVariantPrompts(resolvedVariants);
-    const promptJson = buildPromptJsonFromEditor(resolvedVariants);
-    const promptText = resolvedVariants[promptVariantTab];
-    const res = await fetch(`/api/deals/${dealId}/preprompt/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        promptText,
-        promptJson,
-        templateModelCode: templateForm.templateModelCode || null,
-        copyMode: templateForm.copyMode || 'if_empty_or_missing',
-        releaseVersion: templateForm.releaseVersion ? Number(templateForm.releaseVersion) : null,
-        templateAppliedAllVariants: true,
-      }),
-    });
-    const body = await res.json();
-    if (!res.ok) {
-      setNotice(body.error || 'Falha ao aprovar pré-prompt');
-      return;
-    }
-    setNotice(
-      body.templateApplied
-        ? `Pré-prompt aprovado. Modelo aplicado: ${body?.templateModel?.name || body?.templateModel?.code || '-'}.`
-        : 'Pré-prompt aprovado. Projeto já possuía template e não foi sobrescrito.',
-    );
     await loadOperationFlow();
     await loadDeal();
   }
@@ -1032,8 +1086,19 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       business: {
         objective: quickBrief.objetivo || '',
         audience: quickBrief.publico || '',
+        differentials: briefContext.differentials || '',
+        services: briefContext.services || '',
         product: data?.deal.productCode || data?.deal.planCode || data?.deal.intent || '',
         valueCents: data?.deal.valueCents || 0,
+        integrations: briefContext.integrations || '',
+        domainTarget: briefContext.domainTarget || data?.organization?.domain || '',
+        extraRequirements: briefContext.extraRequirements || '',
+        legalContent: briefContext.legalContent || '',
+        visualReferences: briefContext.visualReferences || '',
+      },
+      style: {
+        toneOfVoice: quickBrief.tom || 'Profissional',
+        cta: briefContext.cta || 'Fale conosco',
       },
       site: {
         sections: activeSections,
@@ -1056,6 +1121,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
           .map((item) => item.trim())
           .filter(Boolean),
       },
+      definitionOfDone: [
+        'HTML/CSS/JS sem erros de console.',
+        'Responsividade validada em 375, 768, 1024 e 1366+.',
+        'Navegação e links internos funcionando.',
+        'SEO local aplicado (title, description, keywords e schema quando ativo).',
+        'Acessibilidade mínima: contraste e labels em campos de formulário.',
+      ],
       variants: {
         V1: {
           structure: PROMPT_VARIANT_TASKS.V1.structure,
@@ -1087,11 +1159,23 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     const variantFolder =
       selectedRelease?.variants?.find((item) => item.variantCode === variantCode)?.folderPath ||
       `${selectedRelease?.projectRoot || '/home/server/projects/clientes/cliente'}/modelo_${variantCode.toLowerCase()}`;
+    const clientRoot = operationFlow?.prompt?.promptPaths?.clientRoot || selectedRelease?.projectRoot || '';
+    const cta = briefContext.cta || 'Fale conosco';
     const payload = {
       variant: variantCode,
-      objective: quickBrief.objetivo || '',
-      audience: quickBrief.publico || '',
-      tone: quickBrief.tom || 'Profissional',
+      briefing: {
+        objective: quickBrief.objetivo || '',
+        audience: quickBrief.publico || '',
+        differentials: briefContext.differentials || '',
+        services: briefContext.services || '',
+        cta,
+        tone: quickBrief.tom || 'Profissional',
+        integrations: briefContext.integrations || '',
+        domain_target: briefContext.domainTarget || data?.organization?.domain || '',
+        extra_requirements: briefContext.extraRequirements || '',
+        legal_content: briefContext.legalContent || '',
+        visual_references: briefContext.visualReferences || '',
+      },
       palette,
       sections: activeSections,
       seo: {
@@ -1106,23 +1190,42 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         manual_status: assetsSummary?.identidadeVisual?.status || 'missing',
         content_status: assetsSummary?.conteudo?.status || 'missing',
         upload_path: operationFlow?.assets?.uploadPath || '',
+        identity_md_path: operationFlow?.prompt?.promptPaths?.identityPath || '',
       },
       paths: {
-        client_root: selectedRelease?.projectRoot || '',
+        client_root: clientRoot,
         variant_root: variantFolder,
+        prompt_root_json: operationFlow?.prompt?.promptPaths?.promptJsonPath || '',
+        prompt_root_md: operationFlow?.prompt?.promptPaths?.promptMdPath || '',
       },
+      acceptance_checklist: [
+        'Layout responsivo sem overflow em mobile/tablet/desktop.',
+        'HTML semântico e acessível (headings, alt em imagens essenciais, labels em forms).',
+        'CTA principal visível e coerente com objetivo de negócio.',
+        'SEO básico completo (title/description/keywords e schema quando habilitado).',
+        'Sem erros de JS no console.',
+      ],
       hard_rules: variant.hardRules,
     };
     return [
       `# Prompt Operacional Site24h - ${variantCode}`,
       '',
-      '## Objetivo',
-      `Personalizar o template ${variantCode} para o cliente com fidelidade visual, responsividade e foco em conversão.`,
+      '## Objetivo da execução',
+      `Personalizar o template ${variantCode} para o cliente com fidelidade visual, alto padrão técnico e foco em conversão.`,
       '',
-      '## Contexto do Cliente',
+      '## Contexto do cliente',
       `- Nome: ${data?.organization?.legalName || data?.deal.contactName || data?.deal.title || '-'}`,
       `- Produto/Plano: ${data?.deal.productCode || data?.deal.planCode || data?.deal.intent || '-'}`,
-      `- Domínio alvo: ${data?.organization?.domain || 'não informado'}`,
+      `- Domínio alvo: ${briefContext.domainTarget || data?.organization?.domain || 'não informado'}`,
+      `- Objetivo: ${quickBrief.objetivo || 'não informado'}`,
+      `- Público-alvo: ${quickBrief.publico || 'não informado'}`,
+      `- Diferenciais: ${briefContext.differentials || 'não informado'}`,
+      `- Serviços: ${briefContext.services || 'não informado'}`,
+      `- CTA principal: ${cta}`,
+      `- Tom de voz: ${quickBrief.tom || 'Profissional'}`,
+      `- Integrações: ${briefContext.integrations || 'não informado'}`,
+      `- Referências visuais: ${briefContext.visualReferences || 'não informado'}`,
+      `- Requisitos extras: ${briefContext.extraRequirements || 'não informado'}`,
       `- Pasta da variante: ${variantFolder}`,
       `- Estrutura alvo: ${variant.structure}`,
       '',
@@ -1131,15 +1234,32 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       '- Se `assets.manual_status` for `received`: priorizar paleta e estilo descritos no manual em detrimento de defaults.',
       '- Se `assets.content_status` for `missing`: gerar textos provisórios coerentes com o objetivo, mantendo tom de voz definido.',
       '- Nunca quebrar estrutura mobile e desktop do template base.',
-      ...variant.hardRules.map((rule) => `- ${rule}`),
+      ...variant.hardRules.map((rule) => `- OBRIGATÓRIO: ${rule}`),
+      '',
+      '## Regras negativas explícitas',
+      ...(
+        variantCode === 'V1'
+          ? ['- PROIBIDO adicionar formulário de contato.', '- PROIBIDO incluir botão de WhatsApp.', '- PROIBIDO incluir chatbot.']
+          : variantCode === 'V2'
+            ? ['- PROIBIDO incluir chatbot.', '- PROIBIDO remover as páginas sobre.html e contato.html.']
+            : ['- PROIBIDO remover chatbot Kodassauro.', '- PROIBIDO remover formulário e botão WhatsApp.']
+      ),
       '',
       '## Checklist técnico da execução',
       '1. Carregar arquivos do template base desta variante (HTML/CSS/JS).',
       '2. Aplicar identidade visual (cores, logo, tom de voz, CTA).',
-      '3. Reescrever conteúdo das seções ativas com foco no objetivo do negócio.',
+      '3. Reescrever conteúdo das seções ativas com foco no objetivo e público.',
       '4. Validar SEO local (title, description, keywords e schema quando ativo).',
       '5. Validar responsividade completa (375, 768, 1024, 1366+).',
-      '6. Gerar versão final pronta para preview em `index.html` da variante.',
+      '6. Validar acessibilidade básica e links internos.',
+      '7. Gerar versão final pronta para preview em `index.html` da variante.',
+      '',
+      '## Definition of Done (DoD)',
+      '- A página carrega sem erro de console.',
+      '- Estrutura visual alinhada ao briefing e paleta.',
+      '- CTA principal aparece em posição de destaque.',
+      '- Conteúdo provisório só onde faltarem assets reais.',
+      '- Arquivos finais salvos na pasta da variante sem quebrar assets relativos.',
       '',
       '## Dados estruturados',
       '```json',
@@ -1147,7 +1267,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       '```',
       '',
       '## Resultado esperado',
-      `Entregar variante ${variantCode} pronta para validação no CRM com layout profissional, sem erros de CSS/JS e com assets organizados na pasta da variante.`,
+      `Entregar variante ${variantCode} pronta para validação no CRM com layout profissional, sem erros de CSS/JS, sem regressões de responsividade e com assets organizados na pasta da variante.`,
     ].join('\n');
   }
 
@@ -1166,16 +1286,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setNotice('Prompts V1/V2/V3 atualizados com as configurações atuais.');
     }
     return next;
-  }
-
-  async function copyFullPrompt() {
-    const text = variantPrompts[promptVariantTab] || prePromptForm.promptText || buildConditionalPromptForVariant(promptVariantTab);
-    try {
-      await navigator.clipboard.writeText(text);
-      setNotice(`Prompt ${promptVariantTab} copiado para área de transferência.`);
-    } catch {
-      setNotice('Não foi possível copiar automaticamente o prompt.');
-    }
   }
 
   async function approveSelectedTemplateToClient() {
@@ -1462,15 +1572,43 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     <div className="preprompt-header-status">
                       <span className={`preprompt-status-badge ${promptBadge.className}`}>{promptBadge.label}</span>
                       <small>
+                        Fonte: {operationFlow?.prompt?.promptSource === 'filesystem' ? 'Pasta do cliente' : 'Fallback banco'}
+                      </small>
+                      <small>
                         Última revisão: {operationFlow?.prompt?.latest ? `v${operationFlow.prompt.latest.version} (${operationFlow.prompt.latest.status})` : 'sem revisão'}
                       </small>
                       <small>{dateTime(operationFlow?.prompt?.latest?.updatedAt || null)}</small>
                     </div>
                   </header>
 
+                  <div className="preprompt-topbar">
+                    <div className="operation-actions">
+                      <button type="button" className="secondary-btn" onClick={savePrePromptDraft}>
+                        <i className="bi bi-save" aria-hidden="true" /> Salvar rascunho (V1/V2/V3)
+                      </button>
+                      <button type="button" className="secondary-btn" onClick={copyActivePrompt}>
+                        <i className="bi bi-clipboard" aria-hidden="true" /> Copiar prompt
+                      </button>
+                      <button type="button" className="primary-btn" onClick={approvePrePrompt} disabled={hasBlockingAssets}>
+                        <i className="bi bi-check2-circle" aria-hidden="true" /> Aprovar pré-prompt
+                      </button>
+                    </div>
+                    <div className="preprompt-progress">
+                      <span className="done">Briefing</span>
+                      <span className="current">Revisão</span>
+                      <span className={hasBlockingAssets ? 'pending' : 'done'}>Assets</span>
+                      <span className="pending">Aprovação</span>
+                    </div>
+                    {missingAssets.length > 0 ? (
+                      <small className="muted">
+                        Pendências de assets: {missingAssets.join(', ')}.
+                      </small>
+                    ) : null}
+                  </div>
+
                   <div className="preprompt-content-grid">
                     <div className="preprompt-left-col">
-                      <section className="preprompt-block">
+                      <section className="preprompt-block preprompt-editor-block">
                         <h5><i className="bi bi-code-slash" aria-hidden="true" /> Prompt (editor)</h5>
                         <div className="prompt-variant-tabs">
                           {(['V1', 'V2', 'V3'] as const).map((variant) => (
@@ -1598,18 +1736,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                         <button type="button" className="secondary-btn btn-press" onClick={() => setShowSeoModal(true)}>
                           <i className="bi bi-search" aria-hidden="true" /> SEO Local
                         </button>
-                        <label>Release ativa</label>
-                        <select
-                          value={templateForm.releaseVersion}
-                          onChange={(e) => setTemplateForm((prev) => ({ ...prev, releaseVersion: e.target.value }))}
-                        >
-                          {releaseOptions.length === 0 ? <option value="">Sem release provisionada</option> : null}
-                          {releaseOptions.map((release) => (
-                            <option key={release.id} value={String(release.version)}>
-                              {release.label} ({release.status})
-                            </option>
-                          ))}
-                        </select>
                         <small className="muted">
                           Ao salvar alterações nos modais, os prompts V1/V2/V3 são atualizados automaticamente.
                         </small>
@@ -1619,47 +1745,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       </section>
                     </aside>
                   </div>
-
-                  <footer className="preprompt-action-bar">
-                    <div className="operation-actions">
-                      <button type="button" className="secondary-btn" onClick={savePrePromptDraft}>
-                        <i className="bi bi-save" aria-hidden="true" /> Salvar rascunho
-                      </button>
-                      <button type="button" className="secondary-btn" onClick={requestPrePromptInfo}>
-                        <i className="bi bi-envelope" aria-hidden="true" /> Solicitar informações
-                      </button>
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        onClick={approvePrePrompt}
-                        disabled={hasBlockingAssets}
-                        title={hasBlockingAssets ? 'Logo e identidade visual são obrigatórios para aprovar.' : 'Aprovar pré-prompt'}
-                      >
-                        <i className="bi bi-check2-circle" aria-hidden="true" /> Aprovar pré-prompt
-                      </button>
-                      <button type="button" className="secondary-btn" onClick={copyFullPrompt}>
-                        <i className="bi bi-clipboard" aria-hidden="true" /> Copiar prompt
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => openVariantPreview(selectedTemplateCard || 'V1')}
-                      >
-                        <i className="bi bi-display" aria-hidden="true" /> Preview do site
-                      </button>
-                    </div>
-                    <div className="preprompt-progress">
-                      <span className="done">Briefing</span>
-                      <span className="current">Revisão</span>
-                      <span className={hasBlockingAssets ? 'pending' : 'done'}>Assets</span>
-                      <span className="pending">Aprovação</span>
-                    </div>
-                    {missingAssets.length > 0 ? (
-                      <small className="muted">
-                        Pendências de assets: {missingAssets.join(', ')}.
-                      </small>
-                    ) : null}
-                  </footer>
                 </div>
               ) : null}
 

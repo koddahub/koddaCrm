@@ -76,6 +76,41 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return NextResponse.json({ error: 'Release não encontrada para aprovação de pré-prompt.' }, { status: 422 });
     }
 
+    const assetRows = await prisma.$queryRaw<Array<{ asset_type: string; total: bigint | number }>>`
+      SELECT asset_type, count(*)::bigint AS total
+      FROM crm.deal_prompt_asset
+      WHERE release_id = ${release.id}::uuid
+      GROUP BY asset_type
+    `;
+    const assetCounts = new Map<string, number>();
+    for (const row of assetRows) {
+      assetCounts.set(String(row.asset_type || '').toLowerCase(), Number(row.total || 0));
+    }
+    const missing: string[] = [];
+    if ((assetCounts.get('logo') || 0) <= 0) {
+      missing.push('logo');
+    }
+    if ((assetCounts.get('manual') || 0) <= 0) {
+      missing.push('manual de marca');
+    }
+    if (missing.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'Aprovação bloqueada por pendências de assets obrigatórios.',
+          error_code: 'PREPROMPT_REQUIRED_ASSETS_MISSING',
+          action_hint: 'Anexe logo e manual de marca antes de aprovar o pré-prompt.',
+          missing_assets: missing,
+          release: {
+            id: release.id,
+            version: release.version,
+            label: prepared.releaseLabel,
+            assetsPath: release.assets_path,
+          },
+        },
+        { status: 422 },
+      );
+    }
+
     const latestRevision = await prisma.dealPromptRevision.findFirst({
       where: { dealId: deal.id },
       orderBy: { version: 'desc' },
@@ -146,11 +181,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return next;
     });
 
-    const promptVersionPath = path.resolve(release.project_root, `prompt_v${revision.version}.md`);
-    const promptMdPath = path.resolve(release.project_root, 'prompt_personalizacao.md');
-    const promptJsonPath = path.resolve(release.project_root, 'prompt_personalizacao.json');
+    const releaseRootNormalized = String(release.project_root || '').replace(/\\/g, '/');
+    const releasesMarker = '/releases/';
+    const releaseMarkerIndex = releaseRootNormalized.indexOf(releasesMarker);
+    const clientRoot = releaseMarkerIndex > 0
+      ? releaseRootNormalized.slice(0, releaseMarkerIndex)
+      : releaseRootNormalized || path.resolve('/home/server/projects/clientes', orgSlug);
 
-    await fs.mkdir(release.project_root, { recursive: true });
+    const promptVersionPath = path.resolve(clientRoot, `prompt_v${revision.version}.md`);
+    const promptMdPath = path.resolve(clientRoot, 'prompt_personalizacao.md');
+    const promptJsonPath = path.resolve(clientRoot, 'prompt_personalizacao.json');
+
+    await fs.mkdir(clientRoot, { recursive: true });
     await fs.writeFile(promptVersionPath, promptText, 'utf8');
     await fs.writeFile(promptMdPath, promptText, 'utf8');
     await fs.writeFile(
@@ -206,6 +248,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       })),
       paths: {
         releaseRoot: release.project_root,
+        clientRoot,
         promptVersionPath,
         promptMdPath,
         promptJsonPath,

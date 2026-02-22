@@ -2208,6 +2208,143 @@ function site24hCopyDirectory(string $sourceDir, string $targetDir): void {
   }
 }
 
+function site24hWriteAtomic(string $targetFile, string $content): bool {
+  $parent = dirname($targetFile);
+  if (!is_dir($parent)) {
+    @mkdir($parent, 0775, true);
+  }
+  $tmp = $targetFile . '.tmp_' . bin2hex(random_bytes(6));
+  $ok = @file_put_contents($tmp, $content);
+  if ($ok === false) {
+    @unlink($tmp);
+    return false;
+  }
+  if (!@rename($tmp, $targetFile)) {
+    @unlink($tmp);
+    return false;
+  }
+  return true;
+}
+
+function site24hDirectoryIsEmpty(string $dir): bool {
+  if (!is_dir($dir)) {
+    return true;
+  }
+  $entries = @scandir($dir);
+  if (!is_array($entries)) {
+    return true;
+  }
+  foreach ($entries as $entry) {
+    if ($entry === '.' || $entry === '..') {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function site24hCopyIfMissingOrEmpty(string $sourceDir, string $targetDir, string $entryFile = 'index.html'): bool {
+  if (!is_dir($sourceDir)) {
+    return false;
+  }
+  if (!is_dir($targetDir)) {
+    @mkdir($targetDir, 0775, true);
+  }
+  $entryPath = rtrim($targetDir, '/') . '/' . ltrim($entryFile, '/');
+  $shouldCopy = site24hDirectoryIsEmpty($targetDir) || !is_file($entryPath);
+  if (!$shouldCopy) {
+    return false;
+  }
+  site24hCopyDirectory($sourceDir, $targetDir);
+  return true;
+}
+
+function site24hResolveActiveRelease(string $dealId): ?array {
+  $row = db()->one("
+    SELECT id, version, status, project_root, assets_path, prompt_md_path, prompt_json_path
+    FROM crm.deal_site_release
+    WHERE deal_id=:did
+      AND status IN ('DRAFT','READY','IN_REVIEW')
+    ORDER BY version DESC, updated_at DESC
+    LIMIT 1
+  ", [':did' => $dealId]);
+  return $row ?: null;
+}
+
+function site24hBuildIdentityVisualMarkdown(array $params): string {
+  $organizationName = trim((string)($params['organization_name'] ?? 'Cliente'));
+  $promptJson = is_array($params['prompt_json'] ?? null) ? $params['prompt_json'] : [];
+  $identity = is_array($promptJson['identity'] ?? null) ? $promptJson['identity'] : [];
+  $business = is_array($promptJson['business'] ?? null) ? $promptJson['business'] : [];
+  $style = is_array($promptJson['style'] ?? null) ? $promptJson['style'] : [];
+  $content = is_array($promptJson['content'] ?? null) ? $promptJson['content'] : [];
+
+  $palette = trim((string)($identity['paleta_cores'] ?? ($style['paleta_cores'] ?? 'Nao informado')));
+  $tone = trim((string)($style['tom_voz'] ?? 'nao informado'));
+  $cta = trim((string)($style['cta_principal'] ?? 'Fale conosco'));
+  $objective = trim((string)($business['objetivo_principal'] ?? 'nao informado'));
+  $audience = trim((string)($business['publico_alvo'] ?? 'nao informado'));
+  $logoStatus = !empty($identity['possui_logo']) ? 'recebido' : 'pendente';
+  $manualStatus = !empty($identity['possui_manual_marca']) ? 'recebido' : 'pendente';
+  $contentStatus = trim((string)($content['status_conteudo'] ?? 'nao informado'));
+
+  $manualRefs = array_values(array_filter(array_map(
+    static fn($item) => trim((string)$item),
+    (array)($params['manual_assets'] ?? [])
+  )));
+  $allAssets = array_values(array_filter(array_map(
+    static fn($item) => trim((string)$item),
+    (array)($params['all_assets'] ?? [])
+  )));
+
+  $lines = [];
+  $lines[] = '# Identidade Visual - Site24h';
+  $lines[] = '';
+  $lines[] = '- Cliente: **' . ($organizationName !== '' ? $organizationName : 'Cliente') . '**';
+  $lines[] = '- Atualizado em: **' . date('c') . '**';
+  $lines[] = '';
+  $lines[] = '## Diretrizes principais';
+  $lines[] = '- Paleta de cores: **' . ($palette !== '' ? $palette : 'Nao informado') . '**';
+  $lines[] = '- Tom de voz: **' . ($tone !== '' ? $tone : 'nao informado') . '**';
+  $lines[] = '- CTA principal: **' . ($cta !== '' ? $cta : 'Fale conosco') . '**';
+  $lines[] = '';
+  $lines[] = '## Contexto de negocio';
+  $lines[] = '- Objetivo principal: ' . ($objective !== '' ? $objective : 'nao informado');
+  $lines[] = '- Publico-alvo: ' . ($audience !== '' ? $audience : 'nao informado');
+  $lines[] = '';
+  $lines[] = '## Status de assets';
+  $lines[] = '- Logo: **' . $logoStatus . '**';
+  $lines[] = '- Manual de marca: **' . $manualStatus . '**';
+  $lines[] = '- Conteudo (textos/imagens): **' . ($contentStatus !== '' ? $contentStatus : 'nao informado') . '**';
+  $lines[] = '';
+  $lines[] = '## Referencias de manual de marca';
+  if (count($manualRefs) > 0) {
+    foreach ($manualRefs as $item) {
+      $lines[] = '- ' . $item;
+    }
+  } else {
+    $lines[] = '- Nao informado';
+  }
+  $lines[] = '';
+  $lines[] = '## Inventario de arquivos recebidos';
+  if (count($allAssets) > 0) {
+    foreach ($allAssets as $item) {
+      $lines[] = '- ' . $item;
+    }
+  } else {
+    $lines[] = '- Nenhum arquivo recebido.';
+  }
+  $lines[] = '';
+  $lines[] = '## Regras de aplicacao visual';
+  $lines[] = '- Aplicar identidade em header e footer de todas as variantes.';
+  $lines[] = '- Manter contraste minimo AA para textos e botoes.';
+  $lines[] = '- Priorizar logo oficial; se ausente, usar placeholder tecnico.';
+  $lines[] = '- Preservar responsividade desktop/mobile sem quebrar grid base.';
+  $lines[] = '';
+
+  return implode("\n", $lines);
+}
+
 function site24hAssetTypeByPath(string $path): string {
   $name = strtolower(basename($path));
   if (str_contains($name, 'logo')) {
@@ -2250,49 +2387,104 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
   $releasesRoot = $orgRoot . '/releases';
   @mkdir($releasesRoot, 0775, true);
 
-  $max = db()->one("SELECT COALESCE(MAX(version), 0) AS version FROM crm.deal_site_release WHERE deal_id=:did", [
-    ':did' => $dealId,
-  ]);
-  $version = ((int)($max['version'] ?? 0)) + 1;
-  $releaseLabel = 'v' . $version;
-  $releaseRoot = $releasesRoot . '/' . $releaseLabel;
-  $assetsPath = $releaseRoot . '/assets';
+  $activeRelease = site24hResolveActiveRelease($dealId);
+  $releaseReused = false;
+  if ($activeRelease) {
+    $releaseId = (string)($activeRelease['id'] ?? '');
+    $version = (int)($activeRelease['version'] ?? 0);
+    $releaseLabel = 'v' . $version;
+    $releaseRoot = trim((string)($activeRelease['project_root'] ?? ''));
+    if ($releaseRoot === '') {
+      $releaseRoot = $releasesRoot . '/' . $releaseLabel;
+    }
+    $assetsPath = trim((string)($activeRelease['assets_path'] ?? ''));
+    if ($assetsPath === '') {
+      $assetsPath = $orgRoot . '/assets';
+    }
+    $releaseReused = true;
+  } else {
+    $max = db()->one("SELECT COALESCE(MAX(version), 0) AS version FROM crm.deal_site_release WHERE deal_id=:did", [
+      ':did' => $dealId,
+    ]);
+    $version = ((int)($max['version'] ?? 0)) + 1;
+    $releaseLabel = 'v' . $version;
+    $releaseRoot = $releasesRoot . '/' . $releaseLabel;
+    $assetsPath = $orgRoot . '/assets';
+    $releaseId = '';
+  }
+
+  @mkdir($releaseRoot, 0775, true);
   @mkdir($assetsPath, 0775, true);
 
-  $promptJsonPath = $releaseRoot . '/prompt_personalizacao.json';
-  $promptMdPath = $releaseRoot . '/prompt_personalizacao.md';
-  $manifestPath = $releaseRoot . '/release_manifest.json';
+  $promptJsonPath = $orgRoot . '/prompt_personalizacao.json';
+  $promptMdPath = $orgRoot . '/prompt_personalizacao.md';
+  $identityPath = $orgRoot . '/identidade_visual.md';
+  $manifestPath = $orgRoot . '/release_manifest.json';
 
   $prompt = is_array($params['prompt'] ?? null) ? $params['prompt'] : [];
   $promptJson = $prompt['json'] ?? [];
   $promptMarkdown = trim((string)($prompt['markdown'] ?? ''));
+  $fileWarnings = [];
   if ($promptMarkdown === '') {
     $promptMarkdown = trim((string)($prompt['text'] ?? ''));
   }
 
-  @file_put_contents($promptJsonPath, json_encode($promptJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-  @file_put_contents($promptMdPath, $promptMarkdown !== '' ? $promptMarkdown : '# Prompt de personalizacao');
+  if (!site24hWriteAtomic($promptJsonPath, json_encode($promptJson, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))) {
+    $fileWarnings[] = 'Falha ao salvar prompt_personalizacao.json na raiz do cliente.';
+  }
+  if (!site24hWriteAtomic($promptMdPath, $promptMarkdown !== '' ? $promptMarkdown : '# Prompt de personalizacao')) {
+    $fileWarnings[] = 'Falha ao salvar prompt_personalizacao.md na raiz do cliente.';
+  }
+  $variantPrompts = is_array($promptJson['variant_prompts'] ?? null) ? $promptJson['variant_prompts'] : [];
+  $variantDraftPaths = [
+    'V1' => $orgRoot . '/prompt_v1_draft.md',
+    'V2' => $orgRoot . '/prompt_v2_draft.md',
+    'V3' => $orgRoot . '/prompt_v3_draft.md',
+  ];
+  foreach ($variantDraftPaths as $variantCode => $draftPath) {
+    $content = trim((string)($variantPrompts[$variantCode] ?? ''));
+    if ($content === '') {
+      $content = $promptMarkdown !== '' ? $promptMarkdown : '# Prompt de personalizacao';
+    }
+    if (!site24hWriteAtomic($draftPath, $content)) {
+      $fileWarnings[] = 'Falha ao salvar ' . basename($draftPath) . ' na raiz do cliente.';
+    }
+  }
 
-  $release = db()->one("
-    INSERT INTO crm.deal_site_release(
-      deal_id, version, status, project_root, assets_path, prompt_md_path, prompt_json_path, created_by, created_at, updated_at
-    )
-    VALUES(
-      :deal_id, :version, 'DRAFT', :project_root, :assets_path, :prompt_md_path, :prompt_json_path, :created_by, now(), now()
-    )
-    RETURNING id
-  ", [
-    ':deal_id' => $dealId,
-    ':version' => $version,
-    ':project_root' => $releaseRoot,
-    ':assets_path' => $assetsPath,
-    ':prompt_md_path' => $promptMdPath,
-    ':prompt_json_path' => $promptJsonPath,
-    ':created_by' => (string)($params['created_by'] ?? 'CLIENT_PORTAL'),
-  ]);
-  $releaseId = (string)($release['id'] ?? '');
-  if ($releaseId === '') {
-    return null;
+  if ($releaseReused) {
+    db()->exec("
+      UPDATE crm.deal_site_release
+      SET status='DRAFT', project_root=:project_root, assets_path=:assets_path, prompt_md_path=:prompt_md_path, prompt_json_path=:prompt_json_path, updated_at=now()
+      WHERE id=:id
+    ", [
+      ':id' => $releaseId,
+      ':project_root' => $releaseRoot,
+      ':assets_path' => $assetsPath,
+      ':prompt_md_path' => $promptMdPath,
+      ':prompt_json_path' => $promptJsonPath,
+    ]);
+  } else {
+    $release = db()->one("
+      INSERT INTO crm.deal_site_release(
+        deal_id, version, status, project_root, assets_path, prompt_md_path, prompt_json_path, created_by, created_at, updated_at
+      )
+      VALUES(
+        :deal_id, :version, 'DRAFT', :project_root, :assets_path, :prompt_md_path, :prompt_json_path, :created_by, now(), now()
+      )
+      RETURNING id
+    ", [
+      ':deal_id' => $dealId,
+      ':version' => $version,
+      ':project_root' => $releaseRoot,
+      ':assets_path' => $assetsPath,
+      ':prompt_md_path' => $promptMdPath,
+      ':prompt_json_path' => $promptJsonPath,
+      ':created_by' => (string)($params['created_by'] ?? 'CLIENT_PORTAL'),
+    ]);
+    $releaseId = (string)($release['id'] ?? '');
+    if ($releaseId === '') {
+      return null;
+    }
   }
 
   $catalog = site24hResolveTemplateCatalog();
@@ -2307,7 +2499,7 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
     $variantRoot = $releaseRoot . '/' . $folderName;
     @mkdir($variantRoot, 0775, true);
     if ($sourceRoot !== '' && is_dir($sourceRoot)) {
-      site24hCopyDirectory($sourceRoot, $variantRoot);
+      site24hCopyIfMissingOrEmpty($sourceRoot, $variantRoot, $entryFile);
     }
 
     $previewUrl = site24hBuildPreviewUrl($orgSlug, $releaseLabel, strtolower($variantCode), $entryFile);
@@ -2380,7 +2572,7 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
     ]);
   }
 
-  if ($logoCount === 0) {
+  if ($logoCount === 0 && !is_file($assetsPath . '/logo_placeholder.svg')) {
     $placeholderFile = $assetsPath . '/logo_placeholder.svg';
     site24hWriteLogoPlaceholder($placeholderFile);
     db()->exec("
@@ -2393,27 +2585,59 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
     ]);
   }
 
-  @file_put_contents($manifestPath, json_encode([
+  $manualAssets = [];
+  $allAssets = [];
+  foreach (db()->all("SELECT asset_type, release_path FROM crm.deal_prompt_asset WHERE release_id=:rid ORDER BY created_at ASC", [':rid' => $releaseId]) as $assetRow) {
+    $assetPath = (string)($assetRow['release_path'] ?? '');
+    if ($assetPath === '') continue;
+    $allAssets[] = $assetPath;
+    if ((string)($assetRow['asset_type'] ?? '') === 'manual') {
+      $manualAssets[] = $assetPath;
+    }
+  }
+
+  $identityMarkdown = site24hBuildIdentityVisualMarkdown([
+    'organization_name' => $organizationName,
+    'prompt_json' => $promptJson,
+    'manual_assets' => $manualAssets,
+    'all_assets' => $allAssets,
+  ]);
+  if (is_array($promptJson) && trim((string)($promptJson['identity_markdown'] ?? '')) !== '') {
+    $identityMarkdown = (string)$promptJson['identity_markdown'];
+  }
+  if (!site24hWriteAtomic($identityPath, $identityMarkdown)) {
+    $fileWarnings[] = 'Falha ao salvar identidade_visual.md na raiz do cliente.';
+  }
+
+  if (!site24hWriteAtomic($manifestPath, json_encode([
     'dealId' => $dealId,
     'organizationId' => $organizationId,
     'organizationSlug' => $orgSlug,
     'releaseId' => $releaseId,
     'releaseVersion' => $version,
     'releaseLabel' => $releaseLabel,
+    'releaseReused' => $releaseReused,
     'createdAt' => date('c'),
     'variants' => $variants,
-  ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+  ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))) {
+    $fileWarnings[] = 'Falha ao salvar release_manifest.json.';
+  }
 
   return [
+    'releaseReused' => $releaseReused,
     'releaseId' => $releaseId,
     'releaseVersion' => $version,
     'releaseLabel' => $releaseLabel,
     'orgSlug' => $orgSlug,
+    'clientRoot' => $orgRoot,
     'releaseRoot' => $releaseRoot,
     'assetsPath' => $assetsPath,
     'promptMdPath' => $promptMdPath,
     'promptJsonPath' => $promptJsonPath,
+    'identityPath' => $identityPath,
     'manifestPath' => $manifestPath,
+    'variantDraftPaths' => $variantDraftPaths,
+    'fileWarnings' => $fileWarnings,
     'variants' => $variants,
   ];
 }
@@ -3568,6 +3792,15 @@ VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
     'email' => $d['email'],
   ]);
 
+  $variantPaths = ['v1' => null, 'v2' => null, 'v3' => null];
+  foreach ((array)($releaseInfo['variants'] ?? []) as $variantMeta) {
+    $code = strtolower((string)($variantMeta['variantCode'] ?? ''));
+    if (!in_array($code, ['v1', 'v2', 'v3'], true)) {
+      continue;
+    }
+    $variantPaths[$code] = (string)($variantMeta['folderPath'] ?? '');
+  }
+
   Response::json([
     'ok' => true,
     'signup_session_id' => $signupSessionId,
@@ -4438,6 +4671,7 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
   }
 
   $data['legal_name'] = $org['legal_name'];
+  $data['organization_slug'] = site24hBuildOrgSlug((string)$org['legal_name'], (string)$org['id']);
 
   $briefId = db()->one("INSERT INTO client.project_briefs(organization_id,objective,audience,differentials,services,cta_text,tone_of_voice,color_palette,visual_references,legal_content,integrations,domain_target,extra_requirements) VALUES(:o,:objective,:audience,:d,:s,:cta,:tone,:color,:vref,:legal,:int,:dom,:extra) RETURNING id", [
     ':o' => $org['id'],
@@ -4488,6 +4722,7 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     LIMIT 1
   ", [':oid' => $org['id']]);
   $releaseInfo = null;
+  $variantPaths = ['v1' => null, 'v2' => null, 'v3' => null];
   if ($deal && strtoupper((string)$deal['deal_type']) === 'HOSPEDAGEM') {
     $releaseInfo = site24hProvisionReleaseForBrief([
       'deal_id' => (string)$deal['id'],
@@ -4498,6 +4733,13 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
       'uploaded_files' => $uploadedFiles,
       'created_by' => 'CLIENT_PORTAL',
     ]);
+    foreach ((array)($releaseInfo['variants'] ?? []) as $variantMeta) {
+      $code = strtolower((string)($variantMeta['variantCode'] ?? ''));
+      if (!in_array($code, ['v1', 'v2', 'v3'], true)) {
+        continue;
+      }
+      $variantPaths[$code] = (string)($variantMeta['folderPath'] ?? '');
+    }
 
     moveDealOperationStage((string)$deal['id'], 'pre_prompt');
 
@@ -4515,6 +4757,31 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
       ':prompt_json' => json_encode($prompt['json'], JSON_UNESCAPED_UNICODE),
     ]);
 
+    $clientRoot = trim((string)($releaseInfo['clientRoot'] ?? ''));
+    if ($clientRoot !== '') {
+      $promptVersionPath = $clientRoot . '/prompt_v' . $nextVersion . '.md';
+      $promptMetaPath = $clientRoot . '/prompt_v' . $nextVersion . '_meta.json';
+      if (!site24hWriteAtomic($promptVersionPath, (string)$prompt['markdown'])) {
+        ($releaseInfo['fileWarnings'] ??= []);
+        $releaseInfo['fileWarnings'][] = 'Falha ao salvar arquivo versionado do prompt.';
+      }
+      if (!site24hWriteAtomic($promptMetaPath, json_encode([
+        'version' => $nextVersion,
+        'briefId' => $briefId,
+        'dealId' => $deal['id'],
+        'generatedAt' => date('c'),
+        'variantPromptFiles' => [
+          'V1' => $clientRoot . '/prompt_v1_draft.md',
+          'V2' => $clientRoot . '/prompt_v2_draft.md',
+          'V3' => $clientRoot . '/prompt_v3_draft.md',
+        ],
+        'hardBlockers' => (array)($prompt['json']['approvalRules']['hard_blockers'] ?? []),
+      ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))) {
+        ($releaseInfo['fileWarnings'] ??= []);
+        $releaseInfo['fileWarnings'][] = 'Falha ao salvar metadata versionada do prompt.';
+      }
+    }
+
     db()->exec("INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by) VALUES(:did,'FLOW_UPDATE',:content,:metadata,'CLIENT_PORTAL')", [
       ':did' => $deal['id'],
       ':content' => 'Briefing enviado pelo cliente e operação movida para Pré-prompt.',
@@ -4525,6 +4792,18 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
         'release_version' => $releaseInfo['releaseVersion'] ?? null,
       ], JSON_UNESCAPED_UNICODE),
     ]);
+
+    if (!empty($releaseInfo['fileWarnings']) && is_array($releaseInfo['fileWarnings'])) {
+      db()->exec("INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by) VALUES(:did,'FLOW_WARNING',:content,:metadata,'SYSTEM')", [
+        ':did' => $deal['id'],
+        ':content' => 'Provisionamento do briefing concluído com avisos de filesystem.',
+        ':metadata' => json_encode([
+          'warnings' => array_values($releaseInfo['fileWarnings']),
+          'release_id' => $releaseInfo['releaseId'] ?? null,
+          'release_version' => $releaseInfo['releaseVersion'] ?? null,
+        ], JSON_UNESCAPED_UNICODE),
+      ]);
+    }
   }
 
   Response::json([
@@ -4533,8 +4812,15 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     'prompt_json' => $prompt['json'],
     'prompt_text' => $prompt['text'],
     'prompt_markdown' => $prompt['markdown'],
+    'releaseReused' => $releaseInfo['releaseReused'] ?? false,
     'releaseId' => $releaseInfo['releaseId'] ?? null,
     'releaseVersion' => $releaseInfo['releaseVersion'] ?? null,
+    'releaseRoot' => $releaseInfo['releaseRoot'] ?? null,
+    'clientRoot' => $releaseInfo['clientRoot'] ?? null,
+    'identityPathRelease' => $releaseInfo['identityPath'] ?? null,
+    'identityPathRoot' => $releaseInfo['identityPath'] ?? null,
+    'fileWarnings' => $releaseInfo['fileWarnings'] ?? [],
+    'variantPaths' => $variantPaths,
   ], 201);
 });
 
