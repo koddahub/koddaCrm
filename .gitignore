@@ -1,3 +1,5 @@
 .env
 storage/postgres/
 storage/logs/*.log
+node_modules/
+apps/crm-next/node_modules/
