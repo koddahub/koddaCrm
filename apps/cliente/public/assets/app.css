@@ -895,6 +895,38 @@ body[data-page='dashboard'] .operation-history-head {
 body[data-page='dashboard'] .operation-history-item p {
   margin: 8px 0 0;
 }
+body[data-page='dashboard'] .publication-domain-response-card {
+  border-color: var(--dash-line);
+  background: color-mix(in srgb, var(--dash-surface) 96%, #000 4%);
+}
+body[data-page='dashboard'] .publication-domain-response-card .badge.text-bg-danger {
+  background-color: #b42318;
+}
+body[data-page='dashboard'] .publication-domain-modal {
+  width: min(760px, calc(100vw - 24px));
+}
+body[data-page='dashboard'] .publication-domain-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+body[data-page='dashboard'] .publication-domain-form-grid .form-col {
+  display: grid;
+  gap: 6px;
+}
+body[data-page='dashboard'] .publication-domain-form-grid .form-col.full {
+  grid-column: 1 / -1;
+}
+body[data-page='dashboard'] .publication-domain-form-grid label {
+  font-weight: 600;
+  color: var(--dash-text);
+}
+body[data-page='dashboard'] .publication-domain-form-grid small {
+  color: var(--dash-muted);
+}
+body[data-page='dashboard'] .publication-domain-modal .operation-actions {
+  justify-content: flex-end;
+}
 body[data-page='dashboard'][data-theme='dark'] .status-chip.status-completed,
 body[data-page='dashboard'][data-theme='dark'] .status-chip.status-resolvido {
   color: #76f2c3;

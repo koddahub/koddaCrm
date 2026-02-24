@@ -117,7 +117,7 @@
   border: 1px solid var(--bs-border-color);
   border-radius: var(--bs-border-radius);
   background: var(--bs-tertiary-bg);
-  padding: 0.75rem;
+  padding: 0.875rem;
   margin-bottom: 0.75rem;
 }
 
@@ -135,13 +135,19 @@
 
 .crm-operacao-modal .publication-request-actions {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+  grid-column: 1 / -1;
 }
 
 .crm-operacao-modal .publication-history-wrap table {
   min-width: 520px;
+}
+
+.crm-operacao-modal .publication-table td .badge {
+  min-width: 108px;
+  font-weight: 600;
 }
 
 .crm-operacao-modal .publication-table .proposal-row-actions .btn {
@@ -159,8 +165,28 @@
   color: #fff;
 }
 
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-dark {
+  color: #fff;
+  background: #111827;
+  border-color: #111827;
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-dark:hover,
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-dark:focus {
+  background: #030712;
+  border-color: #030712;
+}
+
 .crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-outline-warning {
-  color: #856404;
+  color: #8a5a00;
+  border-color: #d9b36b;
+  background: #fffdf7;
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-outline-primary {
+  color: #0b57d0;
+  border-color: #9ec0ff;
+  background: #f5f9ff;
 }
 
 .crm-operacao-modal .prompt-variant-tabs {
@@ -200,4 +226,41 @@
   height: 24px;
   border-radius: 999px;
   border: 1px solid var(--bs-border-color);
+}
+
+.crm-operacao-modal .publication-request-modal-content {
+  width: min(700px, calc(100vw - 24px));
+  padding: 1rem;
+}
+
+.crm-operacao-modal .publication-request-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.crm-operacao-modal .publication-request-modal-header h3 {
+  margin: 0;
+}
+
+.crm-operacao-modal .publication-request-modal-form .form-label {
+  font-weight: 600;
+  color: var(--bs-emphasis-color);
+}
+
+.crm-operacao-modal .publication-request-modal-form .form-control {
+  border-radius: var(--bs-border-radius);
+}
+
+.crm-operacao-modal .publication-request-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.crm-operacao-modal .publication-request-modal-footer .btn {
+  min-width: 124px;
 }

@@ -314,11 +314,13 @@ type OperationFlowData = {
       updatedAt: string;
     }>;
     domainApproval?: {
-      status: 'PENDING' | 'RECEIVED';
+      status: 'PENDING' | 'APPROVED' | 'REJECTED';
       domain: string | null;
+      suggestedDomain: string | null;
       requestedAt: string | null;
-      receivedAt: string | null;
+      respondedAt: string | null;
       requestId: string | null;
+      responseNote: string | null;
     };
     substeps: Array<{
       id: string;
@@ -468,6 +470,14 @@ function normalizeStatusBadge(status?: string | null) {
   return { label: value || 'Rascunho', className: 'status-neutral' };
 }
 
+function normalizePublicationSubstepStatus(status?: string | null) {
+  const value = String(status || '').toUpperCase();
+  if (value === 'COMPLETED') return { label: 'Concluída', badgeClass: 'text-bg-success' };
+  if (value === 'IN_PROGRESS') return { label: 'Em andamento', badgeClass: 'text-bg-warning' };
+  if (value === 'PENDING') return { label: 'Pendente', badgeClass: 'text-bg-secondary' };
+  return { label: value || 'Pendente', badgeClass: 'text-bg-secondary' };
+}
+
 function extractHexColors(input?: string | null) {
   const matches = String(input || '').match(/#[0-9a-fA-F]{6}/g) || [];
   const unique = Array.from(new Set(matches.map((item) => item.toUpperCase())));
@@ -584,10 +594,8 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [approvalSending, setApprovalSending] = useState(false);
   const [updatingSubstepId, setUpdatingSubstepId] = useState<string | null>(null);
   const [publicationRequestSending, setPublicationRequestSending] = useState(false);
-  const [publicationMonitorSending, setPublicationMonitorSending] = useState(false);
   const [publicationRequestModalOpen, setPublicationRequestModalOpen] = useState(false);
   const [publicationRequestFeedback, setPublicationRequestFeedback] = useState<{ type: 'success' | 'danger'; message: string } | null>(null);
-  const [publicationAutoMonitorTried, setPublicationAutoMonitorTried] = useState(false);
   const [publicationNoteModal, setPublicationNoteModal] = useState<{
     substepId: string;
     substepName: string;
@@ -633,6 +641,9 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   function openClientModal(modal: ClientModalKey, options?: { step?: string | null }) {
+    if (activeModal !== modal) {
+      resetNestedClientOverlays();
+    }
     setActiveModal(modal);
     if (modal === 'operacao' && options?.step) {
       setOperationStageTab(options.step);
@@ -886,6 +897,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
 
     if (activeModal !== modalFromQuery) {
+      resetNestedClientOverlays();
       setActiveModal(modalFromQuery);
     }
 
@@ -1149,29 +1161,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     await loadDeal();
   }
 
-  async function startPublicationMonitor() {
-    const domain = publicationRequestForm.domain.trim() || operationFlow?.publication?.domainApproval?.domain || '';
-    if (!domain) {
-      setNotice('Informe o domínio antes de iniciar o monitoramento.');
-      return;
-    }
-    setPublicationMonitorSending(true);
-    const res = await fetch(`/api/deals/${dealId}/publication/monitor/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain }),
-    });
-    const body = await res.json();
-    setPublicationMonitorSending(false);
-    if (!res.ok) {
-      setNotice(body.error || 'Falha ao iniciar monitoramento de domínio');
-      return;
-    }
-    setNotice(`Monitoramento iniciado para ${body.domain}.`);
-    await loadOperationFlow();
-    await loadDeal();
-  }
-
   async function sendTemplateForApproval(
     templateRevisionId?: string,
     releaseVersionOverride?: number | null,
@@ -1360,29 +1349,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   const publicationDomainApprovalStatus = String(operationFlow?.publication?.domainApproval?.status || '').toUpperCase();
-  const publicationDomainConfirmed = publicationDomainApprovalStatus === 'RECEIVED';
+  const publicationDomainApproved = publicationDomainApprovalStatus === 'APPROVED';
+  const publicationDomainRejected = publicationDomainApprovalStatus === 'REJECTED';
   const publicationDomainValue =
     publicationRequestForm.domain
     || operationFlow?.publication?.domainApproval?.domain
     || data?.organization?.domain
     || '';
-  const publicationHasCheckForDomain = Boolean(
-    publicationDomainValue
-    && (operationFlow?.publication?.checks || []).some((check) => String(check.targetDomain || '').toLowerCase() === publicationDomainValue.toLowerCase()),
-  );
-
-  useEffect(() => {
-    if (!canShowClientTabs) return;
-    if (!publicationDomainConfirmed || publicationHasCheckForDomain || publicationAutoMonitorTried) return;
-    setPublicationAutoMonitorTried(true);
-    startPublicationMonitor();
-  }, [canShowClientTabs, publicationDomainConfirmed, publicationHasCheckForDomain, publicationAutoMonitorTried]);
-
-  useEffect(() => {
-    if (!publicationDomainConfirmed) {
-      setPublicationAutoMonitorTried(false);
-    }
-  }, [publicationDomainConfirmed]);
+  const publicationSuggestedDomain = operationFlow?.publication?.domainApproval?.suggestedDomain || '';
 
   if (loading) {
     return <section className="crm-v2-panel"><p>Carregando área do cliente/lead...</p></section>;
@@ -1393,7 +1367,15 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   const operationTabs = operationFlow?.operation?.stageTabs || [];
+  const activeOperationStageCode = operationFlow?.operation?.activeStageCode || operationTabs[0]?.code || null;
   const publicationReady = operationFlow?.publication?.summary?.ready || false;
+  const publishedByChecks = Boolean(
+    (operationFlow?.publication?.checks || []).some((check) => check.matches || Number(check.lastHttpStatus || 0) === 200),
+  );
+  const publishedByOperation = String(activeOperationStageCode || '').toLowerCase() === 'publicado'
+    || (operationFlow?.operation?.history || []).some((op) => String(op.stageCode || '').toLowerCase() === 'publicado');
+  const publishedDetected = publishedByChecks || publishedByOperation;
+  const publicationReadyEffective = publicationReady || publishedDetected;
   const releaseOptions = operationFlow?.releases || [];
   const selectedRelease =
     releaseOptions.find((item) => String(item.version) === String(templateForm.releaseVersion || '')) ||
@@ -1422,7 +1404,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     { key: 'atividades', label: 'Atividades', icon: 'bi-journal-text' },
     { key: 'tickets', label: 'Tickets', icon: 'bi-ticket-detailed' },
   ];
-  const activeOperationStageCode = operationFlow?.operation?.activeStageCode || operationTabs[0]?.code || null;
   const completedOperationStageCodes = new Set(
     (operationFlow?.operation?.history || [])
       .filter((item) => String(item.status || '').toUpperCase() === 'COMPLETED')
@@ -1440,7 +1421,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   if (promptStatus === 'APPROVED') inferredCompletedOperationStageCodes.add('pre_prompt');
   if (operationFlow?.template?.latest) inferredCompletedOperationStageCodes.add('template_v1');
   if (approvalStatus === 'APPROVED') inferredCompletedOperationStageCodes.add('aprovacao_cliente');
-  if (publicationReady) inferredCompletedOperationStageCodes.add('publicacao');
+  if (publicationReadyEffective) inferredCompletedOperationStageCodes.add('publicacao');
+  if (publishedDetected) inferredCompletedOperationStageCodes.add('publicado');
+  if (publishedDetected) {
+    operationTabs.forEach((item) => inferredCompletedOperationStageCodes.add(item.code));
+  }
   const doneOperationCount = operationTabs.filter((item) => inferredCompletedOperationStageCodes.has(item.code)).length;
   const operationProgressPercent = operationTabs.length > 0
     ? Math.max(0, Math.min(100, Math.round((doneOperationCount / operationTabs.length) * 100)))
@@ -1457,7 +1442,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const canAdvanceOperationStage = Boolean(nextOperationStage) && (() => {
     if (operationStageTab === 'pre_prompt') return promptStatus === 'APPROVED';
     if (operationStageTab === 'aprovacao_cliente') return approvalStatus === 'APPROVED';
-    if (operationStageTab === 'publicacao') return publicationReady;
+    if (operationStageTab === 'publicacao') return publicationReadyEffective;
     return true;
   })();
   const canReturnOperationStage = Boolean(previousOperationStage);
@@ -2555,8 +2540,8 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     </div>
                     <div>
                       <label>Status cliente</label>
-                      <strong className={publicationDomainConfirmed ? 'text-success' : 'text-warning'}>
-                        {publicationDomainConfirmed ? 'Confirmado no portal' : 'Aguardando confirmação'}
+                      <strong className={publicationDomainApproved ? 'text-success' : (publicationDomainRejected ? 'text-danger' : 'text-warning')}>
+                        {publicationDomainApproved ? 'Aprovado pelo cliente' : (publicationDomainRejected ? 'Rejeitado (com sugestão)' : 'Aguardando resposta')}
                       </strong>
                     </div>
                     <div>
@@ -2564,8 +2549,16 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       <strong>{dateTime(operationFlow?.publication?.domainApproval?.requestedAt || null)}</strong>
                     </div>
                     <div>
-                      <label>Confirmado em</label>
-                      <strong>{dateTime(operationFlow?.publication?.domainApproval?.receivedAt || null)}</strong>
+                      <label>Respondido em</label>
+                      <strong>{dateTime(operationFlow?.publication?.domainApproval?.respondedAt || null)}</strong>
+                    </div>
+                    <div>
+                      <label>Domínio sugerido (cliente)</label>
+                      <strong>{publicationSuggestedDomain || '-'}</strong>
+                    </div>
+                    <div>
+                      <label>Observação do cliente</label>
+                      <strong>{operationFlow?.publication?.domainApproval?.responseNote || '-'}</strong>
                     </div>
                     <div className="publication-request-actions">
                       <button
@@ -2574,14 +2567,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                         onClick={() => setPublicationRequestModalOpen(true)}
                       >
                         Solicitar aprovação do domínio
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={startPublicationMonitor}
-                        disabled={publicationMonitorSending || !publicationDomainValue}
-                      >
-                        {publicationMonitorSending ? 'Iniciando monitor...' : 'Iniciar monitoramento do domínio'}
                       </button>
                     </div>
                   </div>
@@ -2624,7 +2609,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     </div>
                     <div>
                       <label>Estado</label>
-                      <strong>{publicationReady ? 'Publicando (monitor ativo)' : 'Checklist em andamento'}</strong>
+                      <strong>{publishedDetected ? 'Publicado' : (publicationReadyEffective ? 'Publicando (monitor ativo)' : 'Checklist em andamento')}</strong>
                     </div>
                   </div>
                   <div className="table-wrap publication-table" style={{ marginTop: 12 }}>
@@ -2642,7 +2627,12 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                         {(operationFlow?.publication?.substeps || []).map((substep) => (
                           <tr key={substep.id}>
                             <td>{substep.substepName}</td>
-                            <td>{substep.status}</td>
+                            <td>
+                              {(() => {
+                                const normalized = normalizePublicationSubstepStatus(substep.status);
+                                return <span className={`badge ${normalized.badgeClass}`}>{normalized.label}</span>;
+                              })()}
+                            </td>
                             <td>{substep.owner || '-'}</td>
                             <td>{substep.notes || '-'}</td>
                             <td>
@@ -2657,7 +2647,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                                 </button>
                                 <button
                                   type="button"
-                                  className="btn btn-success btn-sm"
+                                  className="btn btn-dark btn-sm"
                                   onClick={() => updatePublicationSubstep(substep.id, { status: 'COMPLETED' })}
                                   disabled={updatingSubstepId === substep.id}
                                 >
@@ -3003,52 +2993,68 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       {publicationRequestModalOpen ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Solicitar aprovação de domínio">
           <div className="crm-v2-modal-backdrop" />
-          <div className="crm-v2-modal-content">
-            <header>
-              <h3>Solicitar aprovação do domínio</h3>
-              <button type="button" onClick={() => setPublicationRequestModalOpen(false)}>
+          <div className="crm-v2-modal-content publication-request-modal-content">
+            <header className="publication-request-modal-header">
+              <div>
+                <h3>Solicitar aprovação do domínio</h3>
+                <p className="mb-0 text-body-secondary">Envie ao cliente os dados para validar a publicação final.</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm"
+                aria-label="Fechar modal de solicitação de domínio"
+                onClick={() => setPublicationRequestModalOpen(false)}
+              >
                 <i className="bi bi-x-lg" aria-hidden="true" />
               </button>
             </header>
-            <div className="publication-request-grid">
-              <div>
-                <label>Domínio para publicação</label>
+            <form
+              className="publication-request-modal-form row g-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sendPublicationRequest();
+              }}
+            >
+              <div className="col-12 col-md-6">
+                <label className="form-label mb-1">Domínio para publicação</label>
                 <input
+                  className="form-control"
                   value={publicationRequestForm.domain}
                   onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, domain: e.target.value }))}
                   placeholder="exemplo.com.br"
                 />
               </div>
-              <div>
-                <label>Prazo para resposta</label>
+              <div className="col-12 col-md-6">
+                <label className="form-label mb-1">Prazo para resposta</label>
                 <input
                   type="datetime-local"
+                  className="form-control"
                   value={publicationRequestForm.dueAt}
                   onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, dueAt: e.target.value }))}
                 />
               </div>
-              <div className="publication-request-message">
-                <label>Mensagem para o cliente</label>
+              <div className="col-12">
+                <label className="form-label mb-1">Mensagem para o cliente</label>
                 <textarea
                   rows={4}
+                  className="form-control"
                   value={publicationRequestForm.message}
                   onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, message: e.target.value }))}
                 />
               </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setPublicationRequestModalOpen(false)}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={sendPublicationRequest}
-                disabled={publicationRequestSending}
-              >
-                {publicationRequestSending ? 'Enviando...' : 'Confirmar envio'}
-              </button>
-            </div>
+              <div className="col-12 publication-request-modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={() => setPublicationRequestModalOpen(false)}>
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={publicationRequestSending}
+                >
+                  {publicationRequestSending ? 'Enviando...' : 'Confirmar envio'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}

@@ -12,6 +12,17 @@ export async function GET(req: NextRequest) {
   const now = new Date();
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const eligibleClosedHostingExpr = `
+    d.deal_type = 'HOSPEDAGEM'
+    AND (
+      d.lifecycle_status = 'CLIENT'
+      OR ps.code IN ('fechado_ganho', 'assinatura_ativa_ganho')
+      OR (
+        d.is_closed = true
+        AND coalesce(ps.code, '') NOT IN ('perdido', 'perdido_abandonado')
+      )
+    )
+  `;
 
   const [
     leads24h,
@@ -32,17 +43,56 @@ export async function GET(req: NextRequest) {
     prisma.deal.count({ where: { dealType: 'HOSPEDAGEM', lifecycleStatus: 'CLIENT', updatedAt: { gte: weekAgo } } }),
     prisma.deal.count({ where: { dealType: 'PROJETO_AVULSO', lifecycleStatus: 'CLIENT', updatedAt: { gte: weekAgo } } }),
     prisma.deal.count({ where: { lifecycleStatus: 'LOST', updatedAt: { gte: weekAgo } } }),
-    prisma.$queryRaw<Array<{ ativos: number; atrasados: number; inativos: number; fantasma: number }>>`
-      SELECT
-        COUNT(*) FILTER (WHERE coalesce(c.class_status, 'ATIVO') = 'ATIVO' AND c.ghosted_at IS NULL)::int AS ativos,
-        COUNT(*) FILTER (WHERE c.class_status = 'ATRASADO' AND c.ghosted_at IS NULL)::int AS atrasados,
-        COUNT(*) FILTER (WHERE c.class_status = 'INATIVO' AND c.ghosted_at IS NULL)::int AS inativos,
-        COUNT(*) FILTER (WHERE c.ghosted_at IS NOT NULL)::int AS fantasma
-      FROM crm.deal d
-      LEFT JOIN crm.client_billing_classification c ON c.deal_id = d.id
-      WHERE d.deal_type = 'HOSPEDAGEM'
-        AND d.lifecycle_status = 'CLIENT'
-    `,
+    prisma.$queryRawUnsafe<Array<{ ativos: number; atrasados: number; inativos: number; fantasma: number }>>(
+      `
+        SELECT
+          COUNT(*) FILTER (
+            WHERE (
+              CASE
+                WHEN upper(coalesce(s.status::text, '')) = 'ACTIVE' THEN 'ATIVO'
+                WHEN upper(coalesce(s.status::text, '')) = 'OVERDUE' THEN 'ATRASADO'
+                WHEN upper(coalesce(s.status::text, '')) IN ('CANCELED', 'INACTIVE') THEN 'INATIVO'
+                ELSE coalesce(c.class_status, 'ATIVO')
+              END
+            ) = 'ATIVO'
+            AND c.ghosted_at IS NULL
+          )::int AS ativos,
+          COUNT(*) FILTER (
+            WHERE (
+              CASE
+                WHEN upper(coalesce(s.status::text, '')) = 'ACTIVE' THEN 'ATIVO'
+                WHEN upper(coalesce(s.status::text, '')) = 'OVERDUE' THEN 'ATRASADO'
+                WHEN upper(coalesce(s.status::text, '')) IN ('CANCELED', 'INACTIVE') THEN 'INATIVO'
+                ELSE coalesce(c.class_status, 'ATIVO')
+              END
+            ) = 'ATRASADO'
+            AND c.ghosted_at IS NULL
+          )::int AS atrasados,
+          COUNT(*) FILTER (
+            WHERE (
+              CASE
+                WHEN upper(coalesce(s.status::text, '')) = 'ACTIVE' THEN 'ATIVO'
+                WHEN upper(coalesce(s.status::text, '')) = 'OVERDUE' THEN 'ATRASADO'
+                WHEN upper(coalesce(s.status::text, '')) IN ('CANCELED', 'INACTIVE') THEN 'INATIVO'
+                ELSE coalesce(c.class_status, 'ATIVO')
+              END
+            ) = 'INATIVO'
+            AND c.ghosted_at IS NULL
+          )::int AS inativos,
+          COUNT(*) FILTER (WHERE c.ghosted_at IS NOT NULL)::int AS fantasma
+        FROM crm.deal d
+        LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
+        LEFT JOIN crm.client_billing_classification c ON c.deal_id = d.id
+        LEFT JOIN LATERAL (
+          SELECT s1.status
+          FROM client.subscriptions s1
+          WHERE s1.organization_id = d.organization_id
+          ORDER BY s1.created_at DESC
+          LIMIT 1
+        ) s ON true
+        WHERE ${eligibleClosedHostingExpr}
+      `
+    ),
     prisma.dealOperation.count({ where: { status: 'ACTIVE' } }),
     prisma.deal.count({ where: { lifecycleStatus: { not: 'CLIENT' }, slaDeadline: { lt: now } } }),
     prisma.ticketQueue.count({ where: { status: { in: ['NEW', 'OPEN', 'PENDING'] } } }),

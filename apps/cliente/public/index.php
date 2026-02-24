@@ -55,6 +55,20 @@ function boolInput(mixed $v): bool {
   return in_array((string)$v, ['1','true','on','yes','sim'], true);
 }
 
+function normalizeDomainInput(?string $value): string {
+  $domain = strtolower(trim((string)$value));
+  $domain = preg_replace('#^https?://#i', '', $domain) ?? $domain;
+  $domain = preg_replace('#/.*$#', '', $domain) ?? $domain;
+  return trim($domain, " \t\n\r\0\x0B.");
+}
+
+function isValidDomainName(string $domain): bool {
+  if ($domain === '' || strlen($domain) > 253) {
+    return false;
+  }
+  return (bool)preg_match('/^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain);
+}
+
 function getClientIp(): string {
   return (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown');
 }
@@ -1303,7 +1317,13 @@ function renderDashboard(?string $notice = null): string {
     SELECT activity_type, content, metadata, created_at
     FROM crm.deal_activity
     WHERE deal_id=:did
-      AND activity_type IN ('CLIENT_APPROVAL_REQUESTED','CLIENT_REQUESTED_CHANGES','CLIENT_APPROVED')
+      AND activity_type IN (
+        'CLIENT_APPROVAL_REQUESTED',
+        'CLIENT_REQUESTED_CHANGES',
+        'CLIENT_APPROVED',
+        'CLIENT_PUBLICATION_DOMAIN_APPROVED',
+        'CLIENT_PUBLICATION_DOMAIN_REJECTED'
+      )
     ORDER BY created_at DESC
     LIMIT 20
   ", [':did' => $operationDeal['id']]) : [];
@@ -1331,6 +1351,78 @@ function renderDashboard(?string $notice = null): string {
       'items' => array_values(array_filter(array_map(static fn($item) => trim((string)$item), is_array($requestItemsRaw) ? $requestItemsRaw : []))),
     ];
   }
+  $operationPublicationRequests = array_values(array_filter($operationPromptRequests, static function(array $item): bool {
+    $subject = strtolower((string)($item['subject'] ?? ''));
+    if (str_contains($subject, 'domínio/publicação') || str_contains($subject, 'dominio/publicacao')) {
+      return true;
+    }
+    foreach ((array)($item['items'] ?? []) as $entry) {
+      $needle = strtolower((string)$entry);
+      if (str_contains($needle, 'domínio para publicação') || str_contains($needle, 'dominio para publicacao')) {
+        return true;
+      }
+    }
+    return false;
+  }));
+  $operationPublicationLatestRequest = $operationPublicationRequests[0] ?? null;
+  $operationPublicationLatestRequestDomain = null;
+  if ($operationPublicationLatestRequest) {
+    foreach ((array)($operationPublicationLatestRequest['items'] ?? []) as $entry) {
+      $entryRaw = (string)$entry;
+      if (stripos($entryRaw, 'domínio para publicação') !== false || stripos($entryRaw, 'dominio para publicacao') !== false) {
+        $parts = explode(':', $entryRaw, 2);
+        $operationPublicationLatestRequestDomain = isset($parts[1]) ? trim((string)$parts[1]) : null;
+        break;
+      }
+    }
+    if ($operationPublicationLatestRequestDomain === null) {
+      if (preg_match('/[a-z0-9.-]+\.[a-z]{2,}/i', (string)($operationPublicationLatestRequest['message'] ?? ''), $m)) {
+        $operationPublicationLatestRequestDomain = trim((string)($m[0] ?? ''));
+      }
+    }
+  }
+  $operationPublicationResponseRows = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->all("
+    SELECT activity_type, metadata, created_at
+    FROM crm.deal_activity
+    WHERE deal_id=:did
+      AND activity_type IN ('CLIENT_PUBLICATION_DOMAIN_APPROVED', 'CLIENT_PUBLICATION_DOMAIN_REJECTED')
+    ORDER BY created_at DESC
+    LIMIT 20
+  ", [':did' => $operationDeal['id']]) : [];
+  $operationPublicationLatestResponse = $operationPublicationResponseRows[0] ?? null;
+  $operationPublicationResponseMeta = [];
+  if ($operationPublicationLatestResponse) {
+    $metaRaw = $operationPublicationLatestResponse['metadata'] ?? null;
+    if (is_string($metaRaw)) {
+      $metaDecoded = json_decode($metaRaw, true);
+      if (is_array($metaDecoded)) {
+        $operationPublicationResponseMeta = $metaDecoded;
+      }
+    } elseif (is_array($metaRaw)) {
+      $operationPublicationResponseMeta = $metaRaw;
+    }
+  }
+  $operationPublicationDecisionStatus = 'PENDING';
+  if ($operationPublicationLatestResponse) {
+    $activityType = strtoupper((string)($operationPublicationLatestResponse['activity_type'] ?? ''));
+    if ($activityType === 'CLIENT_PUBLICATION_DOMAIN_APPROVED') {
+      $operationPublicationDecisionStatus = 'APPROVED';
+    } elseif ($activityType === 'CLIENT_PUBLICATION_DOMAIN_REJECTED') {
+      $operationPublicationDecisionStatus = 'REJECTED';
+    }
+  } elseif ($operationPublicationLatestRequest) {
+    $requestStatus = strtoupper((string)($operationPublicationLatestRequest['status'] ?? ''));
+    if ($requestStatus === 'RECEIVED') {
+      $operationPublicationDecisionStatus = 'APPROVED';
+    }
+  }
+  $operationPublicationApprovedDomain = trim((string)($operationPublicationResponseMeta['approved_domain'] ?? $operationPublicationResponseMeta['domain'] ?? ''));
+  $operationPublicationSuggestedDomain = trim((string)($operationPublicationResponseMeta['suggested_domain'] ?? $operationPublicationResponseMeta['suggestedDomain'] ?? ''));
+  $operationPublicationResponseNote = trim((string)($operationPublicationResponseMeta['note'] ?? $operationPublicationResponseMeta['response_note'] ?? ''));
+  $operationPublicationRequestId = trim((string)($operationPublicationLatestRequest['id'] ?? ''));
+  $operationPublicationRespondedAt = $operationPublicationLatestResponse['created_at'] ?? null;
+  $operationPublicationDomainForDisplay = $operationPublicationLatestRequestDomain
+    ?: ($operationPublicationApprovedDomain !== '' ? $operationPublicationApprovedDomain : ((string)($org['domain'] ?? '')));
   $operationHistory = [];
   $hasApproveAfterByIndex = [];
   foreach ($operationActivityRows as $idx => $row) {
@@ -1373,6 +1465,14 @@ function renderDashboard(?string $notice = null): string {
       $kind = 'Envio para aprovação';
       $status = 'enviado';
       $statusLabel = 'Enviado';
+    } elseif ($type === 'CLIENT_PUBLICATION_DOMAIN_APPROVED') {
+      $kind = 'Publicação (domínio)';
+      $status = 'resolvido';
+      $statusLabel = 'Aprovado';
+    } elseif ($type === 'CLIENT_PUBLICATION_DOMAIN_REJECTED') {
+      $kind = 'Publicação (domínio)';
+      $status = 'em_andamento';
+      $statusLabel = 'Rejeitado';
     }
     $description = trim((string)($meta['descricao'] ?? $meta['note'] ?? $row['content'] ?? ''));
     if ($description === '') {
@@ -1939,6 +2039,73 @@ function renderDashboard(?string $notice = null): string {
                             </div>
                           </div>
                         </div>
+                        <?php if (!empty($operationPublicationLatestRequest)): ?>
+                        <?php
+                          $publicationBadgeClass = 'text-bg-secondary';
+                          $publicationBadgeLabel = 'Pendente';
+                          if ($operationPublicationDecisionStatus === 'APPROVED') {
+                            $publicationBadgeClass = 'text-bg-success';
+                            $publicationBadgeLabel = 'Respondida: Aprovado';
+                          } elseif ($operationPublicationDecisionStatus === 'REJECTED') {
+                            $publicationBadgeClass = 'text-bg-danger';
+                            $publicationBadgeLabel = 'Respondida: Rejeitado';
+                          }
+                          $canRespondPublicationRequest = $operationPublicationDecisionStatus === 'PENDING';
+                        ?>
+                        <div class="card border mt-3 publication-domain-response-card">
+                          <div class="card-body py-3">
+                            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+                              <div>
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Solicitação de domínio</div>
+                                <div class="fw-semibold"><?= h((string)($operationPublicationLatestRequest['subject'] ?? 'Aprovação de domínio/publicação')) ?></div>
+                              </div>
+                              <span class="badge <?= h($publicationBadgeClass) ?>"><?= h($publicationBadgeLabel) ?></span>
+                            </div>
+                            <div class="row g-2">
+                              <div class="col-12 col-md-6">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Domínio solicitado</div>
+                                <div class="fw-semibold"><?= h($operationPublicationDomainForDisplay !== '' ? $operationPublicationDomainForDisplay : 'Não informado') ?></div>
+                              </div>
+                              <div class="col-12 col-md-6">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Respondido em</div>
+                                <div class="fw-semibold"><?= h(!empty($operationPublicationRespondedAt) ? date('d/m/Y H:i', strtotime((string)$operationPublicationRespondedAt)) : 'Aguardando resposta') ?></div>
+                              </div>
+                              <?php if ($operationPublicationDecisionStatus === 'REJECTED'): ?>
+                              <div class="col-12 col-md-6">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Domínio sugerido pelo cliente</div>
+                                <div class="fw-semibold"><?= h($operationPublicationSuggestedDomain !== '' ? $operationPublicationSuggestedDomain : 'Não informado') ?></div>
+                              </div>
+                              <?php endif; ?>
+                              <?php if ($operationPublicationDecisionStatus === 'APPROVED'): ?>
+                              <div class="col-12 col-md-6">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Domínio aprovado</div>
+                                <div class="fw-semibold"><?= h($operationPublicationApprovedDomain !== '' ? $operationPublicationApprovedDomain : ((string)($org['domain'] ?? 'Não informado'))) ?></div>
+                              </div>
+                              <?php endif; ?>
+                              <?php if ($operationPublicationResponseNote !== ''): ?>
+                              <div class="col-12">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Observação</div>
+                                <div class="fw-semibold"><?= h($operationPublicationResponseNote) ?></div>
+                              </div>
+                              <?php endif; ?>
+                            </div>
+                            <div class="alert hidden mt-3" id="portalPublicationNotice"></div>
+                            <?php if ($canRespondPublicationRequest): ?>
+                            <div class="mt-3 d-flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                class="btn btn-primary"
+                                id="portalPublicationRespondBtn"
+                                data-request-id="<?= h($operationPublicationRequestId) ?>"
+                                data-request-domain="<?= h((string)($operationPublicationDomainForDisplay ?? '')) ?>"
+                              >
+                                Responder solicitação de domínio
+                              </button>
+                            </div>
+                            <?php endif; ?>
+                          </div>
+                        </div>
+                        <?php endif; ?>
                       </div>
                     </div>
                   <?php endif; ?>
@@ -2055,6 +2222,44 @@ function renderDashboard(?string $notice = null): string {
               <div class="operation-actions">
                 <button type="button" class="btn btn-ghost" id="portalChangesCancelBtn">Cancelar</button>
                 <button type="submit" class="btn btn-primary" id="portalChangesSubmitBtn" disabled>Enviar solicitação</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="portal-modal hidden" id="portalPublicationDomainModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog publication-domain-modal">
+            <header class="portal-modal-header">
+              <h3>Responder solicitação de domínio</h3>
+              <button type="button" class="icon-btn" id="portalPublicationDomainCloseBtn" aria-label="Fechar">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </header>
+            <form id="portalPublicationDomainForm">
+              <input type="hidden" name="request_id" id="portalPublicationRequestId" value="">
+              <div class="publication-domain-form-grid">
+                <div class="form-col full">
+                  <label for="portalPublicationAction">Ação *</label>
+                  <select id="portalPublicationAction" name="action" required>
+                    <option value="approve">Aprovar domínio</option>
+                    <option value="reject">Rejeitar e sugerir domínio</option>
+                  </select>
+                </div>
+                <div class="form-col full">
+                  <label for="portalPublicationDomain">Domínio</label>
+                  <input id="portalPublicationDomain" name="domain" placeholder="exemplo.com.br" autocomplete="off">
+                  <small id="portalPublicationDomainHint" class="text-body-secondary">Opcional para aprovação. Obrigatório ao rejeitar.</small>
+                </div>
+                <div class="form-col full">
+                  <label for="portalPublicationNote">Observação</label>
+                  <textarea id="portalPublicationNote" name="note" rows="4" maxlength="1000" placeholder="Descreva o contexto para o time da KoddaHub."></textarea>
+                </div>
+              </div>
+              <div class="alert hidden mt-2" id="portalPublicationDomainNotice"></div>
+              <div class="operation-actions mt-3">
+                <button type="button" class="btn btn-ghost" id="portalPublicationDomainCancelBtn">Cancelar</button>
+                <button type="submit" class="btn btn-primary" id="portalPublicationDomainSubmitBtn">Confirmar resposta</button>
               </div>
             </form>
           </div>
@@ -6054,6 +6259,169 @@ $router->post('/api/portal/approval/current/request-changes', function(Request $
     'ticket' => '#' . $ticketCode,
     'created_at' => date('c'),
     'sla_hint' => '24h para resposta',
+  ]);
+});
+
+$router->post('/api/portal/publication/domain/respond', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não encontrada.'], 404);
+    return;
+  }
+
+  $requestId = trim((string)($request->input('request_id', '')));
+  $action = strtolower(trim((string)($request->input('action', ''))));
+  $note = trim((string)($request->input('note', '')));
+  $domainRaw = trim((string)($request->input('domain', '')));
+  $domain = normalizeDomainInput($domainRaw);
+
+  if ($requestId === '') {
+    Response::json(['error' => 'Solicitação inválida.'], 422);
+    return;
+  }
+  if (!in_array($action, ['approve', 'reject'], true)) {
+    Response::json(['error' => 'Ação inválida.'], 422);
+    return;
+  }
+  if ($action === 'reject' && $domain === '') {
+    Response::json(['error' => 'Informe o domínio sugerido para rejeição.'], 422);
+    return;
+  }
+  if ($domain !== '' && !isValidDomainName($domain)) {
+    Response::json(['error' => 'Domínio inválido. Informe no formato exemplo.com.br'], 422);
+    return;
+  }
+
+  $ctx = db()->one("
+    SELECT
+      pr.id::text AS request_id,
+      pr.deal_id::text AS deal_id,
+      pr.status AS request_status,
+      pr.subject,
+      pr.request_items,
+      pr.message,
+      d.organization_id::text AS organization_id,
+      org.domain AS organization_domain,
+      tr.id::text AS template_revision_id,
+      tr.source_hash
+    FROM crm.deal_prompt_request pr
+    JOIN crm.deal d ON d.id = pr.deal_id
+    JOIN client.organizations org ON org.id = d.organization_id
+    LEFT JOIN LATERAL (
+      SELECT id, source_hash
+      FROM crm.deal_template_revision
+      WHERE deal_id = d.id
+      ORDER BY version DESC, created_at DESC
+      LIMIT 1
+    ) tr ON true
+    WHERE pr.id = CAST(:request_id AS uuid)
+      AND d.organization_id = CAST(:org_id AS uuid)
+    LIMIT 1
+  ", [
+    ':request_id' => $requestId,
+    ':org_id' => $orgId,
+  ]);
+  if (!$ctx) {
+    Response::json(['error' => 'Solicitação não encontrada para sua organização.'], 404);
+    return;
+  }
+
+  $requestItemsRaw = $ctx['request_items'] ?? [];
+  if (is_string($requestItemsRaw)) {
+    $requestItemsDecoded = json_decode($requestItemsRaw, true);
+    $requestItemsRaw = is_array($requestItemsDecoded) ? $requestItemsDecoded : [];
+  }
+  $requestItemsText = strtolower(implode(' | ', array_map(static fn($item) => (string)$item, is_array($requestItemsRaw) ? $requestItemsRaw : [])));
+  $subjectText = strtolower((string)($ctx['subject'] ?? ''));
+  $isPublicationRequest = str_contains($subjectText, 'domínio/publicação')
+    || str_contains($subjectText, 'dominio/publicacao')
+    || str_contains($requestItemsText, 'domínio para publicação')
+    || str_contains($requestItemsText, 'dominio para publicacao');
+  if (!$isPublicationRequest) {
+    Response::json(['error' => 'A solicitação informada não pertence ao fluxo de publicação.'], 422);
+    return;
+  }
+
+  $requestStatus = strtoupper((string)($ctx['request_status'] ?? ''));
+  if (!in_array($requestStatus, ['SENT', 'PENDING', 'OPEN', 'RECEIVED'], true)) {
+    Response::json(['error' => 'A solicitação não está disponível para resposta.'], 409);
+    return;
+  }
+
+  db()->exec("
+    UPDATE crm.deal_prompt_request
+    SET status='RECEIVED', updated_at=now()
+    WHERE id=CAST(:request_id AS uuid)
+  ", [':request_id' => $requestId]);
+
+  $activityType = $action === 'approve'
+    ? 'CLIENT_PUBLICATION_DOMAIN_APPROVED'
+    : 'CLIENT_PUBLICATION_DOMAIN_REJECTED';
+  $metadata = [
+    'request_id' => $requestId,
+    'action' => $action,
+    'approved_domain' => $action === 'approve' ? ($domain !== '' ? $domain : normalizeDomainInput((string)($ctx['organization_domain'] ?? ''))) : null,
+    'suggested_domain' => $action === 'reject' ? $domain : null,
+    'note' => $note !== '' ? $note : null,
+    'responded_at' => date('c'),
+    'origin' => 'portal_dashboard',
+  ];
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(CAST(:deal_id AS uuid), :activity_type, :content, CAST(:metadata AS jsonb), 'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':activity_type' => $activityType,
+    ':content' => $action === 'approve'
+      ? 'Cliente aprovou domínio para publicação.'
+      : 'Cliente rejeitou domínio e enviou sugestão.',
+    ':metadata' => json_encode($metadata, JSON_UNESCAPED_UNICODE),
+  ]);
+
+  if ($action === 'approve') {
+    $approvedDomain = $domain !== '' ? $domain : normalizeDomainInput((string)($ctx['organization_domain'] ?? ''));
+    if ($approvedDomain !== '' && isValidDomainName($approvedDomain)) {
+      db()->exec("
+        UPDATE client.organizations
+        SET domain=:domain, updated_at=now()
+        WHERE id=CAST(:org_id AS uuid)
+      ", [
+        ':domain' => $approvedDomain,
+        ':org_id' => $orgId,
+      ]);
+      $checkExists = db()->one("
+        SELECT id::text AS id
+        FROM crm.deal_publish_check
+        WHERE deal_id=CAST(:deal_id AS uuid)
+          AND COALESCE(target_domain, '') = :domain
+        ORDER BY checked_at DESC
+        LIMIT 1
+      ", [
+        ':deal_id' => $ctx['deal_id'],
+        ':domain' => $approvedDomain,
+      ]);
+      if (!$checkExists) {
+        db()->exec("
+          INSERT INTO crm.deal_publish_check(deal_id, template_revision_id, target_domain, expected_hash, matches, checked_at)
+          VALUES(CAST(:deal_id AS uuid), :template_revision_id, :target_domain, :expected_hash, false, now())
+        ", [
+          ':deal_id' => $ctx['deal_id'],
+          ':template_revision_id' => !empty($ctx['template_revision_id']) ? $ctx['template_revision_id'] : null,
+          ':target_domain' => $approvedDomain,
+          ':expected_hash' => !empty($ctx['source_hash']) ? $ctx['source_hash'] : null,
+        ]);
+      }
+    }
+  }
+
+  Response::json([
+    'ok' => true,
+    'action' => $action,
+    'domain' => $domain !== '' ? $domain : null,
+    'request_id' => $requestId,
   ]);
 });
 

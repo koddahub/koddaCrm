@@ -102,7 +102,7 @@ export async function ensureDealOperation(
     }
 
     if (deal.dealType !== 'HOSPEDAGEM') return null;
-    const [latestApproval, latestTemplate, latestActivity, latestPromptRevision] = await Promise.all([
+    const [latestApproval, latestTemplate, latestActivity, latestPromptRevision, latestPublishCheck] = await Promise.all([
       tx.dealClientApproval.findFirst({
         where: { dealId: deal.id },
         orderBy: { createdAt: 'desc' },
@@ -126,11 +126,20 @@ export async function ensureDealOperation(
         orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
         select: { id: true },
       }),
+      tx.dealPublishCheck.findFirst({
+        where: { dealId: deal.id },
+        orderBy: { checkedAt: 'desc' },
+        select: { matches: true, lastHttpStatus: true },
+      }),
     ]);
 
     const approvalStatus = String(latestApproval?.status || '').toUpperCase();
     const templateStatus = String(latestTemplate?.status || '').toUpperCase();
     const activityType = String(latestActivity?.activityType || '').toUpperCase();
+
+    if (latestPublishCheck?.matches || Number(latestPublishCheck?.lastHttpStatus || 0) === 200) {
+      return 'publicado';
+    }
 
     if (
       approvalStatus === 'APPROVED'

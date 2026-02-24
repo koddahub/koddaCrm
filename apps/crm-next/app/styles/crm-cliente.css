@@ -40,11 +40,12 @@
 .deal-detail-wrapper .modal {
   --bs-modal-zindex: 1080;
   background: rgba(15, 23, 42, 0.32);
+  isolation: isolate;
 }
 
 .deal-detail-wrapper .modal .modal-dialog {
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 .deal-detail-wrapper .modal-header,

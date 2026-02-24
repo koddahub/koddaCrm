@@ -336,14 +336,54 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const fromMessage = String(latestPublicationRequest.message || '').match(/[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] || '';
     return fromMessage || null;
   })();
+  const publicationDecisionActivities = deal.activities.filter((item) => (
+    item.activityType === 'CLIENT_PUBLICATION_DOMAIN_APPROVED'
+    || item.activityType === 'CLIENT_PUBLICATION_DOMAIN_REJECTED'
+  ));
+  const latestPublicationDecision = publicationDecisionActivities[0] || null;
+  const latestPublicationDecisionMeta = (() => {
+    const raw = latestPublicationDecision?.metadata;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    return raw as Record<string, unknown>;
+  })();
+  const decisionRequestId = String(latestPublicationDecisionMeta.request_id || latestPublicationDecisionMeta.requestId || '').trim() || null;
+  const decisionDomain = String(
+    latestPublicationDecisionMeta.approved_domain
+    || latestPublicationDecisionMeta.domain
+    || '',
+  ).trim() || null;
+  const decisionSuggestedDomain = String(
+    latestPublicationDecisionMeta.suggested_domain
+    || latestPublicationDecisionMeta.suggestedDomain
+    || '',
+  ).trim() || null;
+  const decisionResponseNote = String(
+    latestPublicationDecisionMeta.note
+    || latestPublicationDecisionMeta.response_note
+    || latestPublicationDecisionMeta.responseNote
+    || '',
+  ).trim() || null;
+  const fallbackRequestReceived = String(latestPublicationRequest?.status || '').toUpperCase() === 'RECEIVED';
+  const publicationDecisionStatus = (() => {
+    if (!latestPublicationDecision) return fallbackRequestReceived ? 'APPROVED' : 'PENDING';
+    if (latestPublicationDecision.activityType === 'CLIENT_PUBLICATION_DOMAIN_APPROVED') return 'APPROVED';
+    if (latestPublicationDecision.activityType === 'CLIENT_PUBLICATION_DOMAIN_REJECTED') return 'REJECTED';
+    return fallbackRequestReceived ? 'APPROVED' : 'PENDING';
+  })();
   const publicationDomainApproval = {
-    status: String(latestPublicationRequest?.status || '').toUpperCase() === 'RECEIVED' ? 'RECEIVED' : 'PENDING',
-    domain: latestPublicationRequestDomain || deal.organization?.domain || null,
+    status: publicationDecisionStatus as 'PENDING' | 'APPROVED' | 'REJECTED',
+    domain: (
+      publicationDecisionStatus === 'APPROVED'
+        ? (decisionDomain || latestPublicationRequestDomain || deal.organization?.domain || null)
+        : (latestPublicationRequestDomain || deal.organization?.domain || null)
+    ),
+    suggestedDomain: publicationDecisionStatus === 'REJECTED' ? (decisionSuggestedDomain || latestPublicationRequestDomain || null) : null,
     requestedAt: latestPublicationRequest?.createdAt || null,
-    receivedAt: String(latestPublicationRequest?.status || '').toUpperCase() === 'RECEIVED'
-      ? (latestPublicationRequest?.updatedAt || null)
-      : null,
-    requestId: latestPublicationRequest?.id || null,
+    respondedAt: latestPublicationDecision
+      ? latestPublicationDecision.createdAt.toISOString()
+      : (fallbackRequestReceived ? latestPublicationRequest?.updatedAt || null : null),
+    requestId: decisionRequestId || latestPublicationRequest?.id || null,
+    responseNote: decisionResponseNote,
   };
 
   return NextResponse.json({

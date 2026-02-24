@@ -528,8 +528,13 @@ function syncClientBillingClassification(string $logFile): void
             d.subscription_id,
             coalesce(d.contact_name, d.title, '') AS contact_name
         FROM crm.deal d
+        LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
         WHERE d.deal_type='HOSPEDAGEM'
-          AND d.lifecycle_status='CLIENT'
+          AND (
+            d.lifecycle_status='CLIENT'
+            OR ps.code IN ('fechado_ganho','assinatura_ativa_ganho')
+            OR (d.is_closed = true AND coalesce(ps.code,'') NOT IN ('perdido','perdido_abandonado'))
+          )
         ORDER BY d.updated_at DESC
         LIMIT 2000
     ");

@@ -1003,8 +1003,22 @@
     const portalDescricaoCounterFill = $('#portalDescricaoCounterFill');
     const portalChangesSubmitBtn = $('#portalChangesSubmitBtn');
     const portalChangesNotice = $('#portalChangesNotice');
+    const portalPublicationNotice = $('#portalPublicationNotice');
+    const portalPublicationRespondBtn = $('#portalPublicationRespondBtn');
+    const portalPublicationDomainModal = $('#portalPublicationDomainModal');
+    const portalPublicationDomainForm = $('#portalPublicationDomainForm');
+    const portalPublicationRequestId = $('#portalPublicationRequestId');
+    const portalPublicationAction = $('#portalPublicationAction');
+    const portalPublicationDomain = $('#portalPublicationDomain');
+    const portalPublicationDomainHint = $('#portalPublicationDomainHint');
+    const portalPublicationNote = $('#portalPublicationNote');
+    const portalPublicationDomainNotice = $('#portalPublicationDomainNotice');
+    const portalPublicationDomainSubmitBtn = $('#portalPublicationDomainSubmitBtn');
+    const portalPublicationDomainCancelBtn = $('#portalPublicationDomainCancelBtn');
+    const portalPublicationDomainCloseBtn = $('#portalPublicationDomainCloseBtn');
     let portalApproveSending = false;
     let portalChangesSending = false;
+    let portalPublicationSending = false;
 
     const openPortalModal = (el) => {
       if (!el) return;
@@ -1027,6 +1041,60 @@
       portalChangesNotice.textContent = '';
       portalChangesNotice.classList.add('hidden');
       portalChangesNotice.classList.remove('ok', 'err');
+    };
+    const setPortalPublicationNotice = (msg, ok = false) => {
+      if (!portalPublicationNotice) return;
+      portalPublicationNotice.textContent = msg || '';
+      portalPublicationNotice.classList.remove('hidden', 'ok', 'err');
+      portalPublicationNotice.classList.add(ok ? 'ok' : 'err');
+    };
+    const setPortalPublicationDomainNotice = (msg, ok = false) => {
+      if (!portalPublicationDomainNotice) return;
+      portalPublicationDomainNotice.textContent = msg || '';
+      portalPublicationDomainNotice.classList.remove('hidden', 'ok', 'err');
+      portalPublicationDomainNotice.classList.add(ok ? 'ok' : 'err');
+    };
+    const clearPortalPublicationDomainNotice = () => {
+      if (!portalPublicationDomainNotice) return;
+      portalPublicationDomainNotice.textContent = '';
+      portalPublicationDomainNotice.classList.add('hidden');
+      portalPublicationDomainNotice.classList.remove('ok', 'err');
+    };
+    const sanitizeDomainInput = (value) => {
+      return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//i, '')
+        .replace(/\/.*$/, '')
+        .replace(/\.$/, '');
+    };
+    const isDomainValid = (value) => /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(String(value || ''));
+    const syncPublicationActionUi = () => {
+      const action = String(portalPublicationAction?.value || 'approve');
+      if (!portalPublicationDomain || !portalPublicationDomainHint) return;
+      const required = action === 'reject';
+      portalPublicationDomain.required = required;
+      portalPublicationDomainHint.textContent = required
+        ? 'Obrigatório ao rejeitar. Informe o domínio sugerido.'
+        : 'Opcional para aprovação. Se vazio, manteremos o domínio atual.';
+    };
+    const openPublicationDomainModal = () => {
+      if (!portalPublicationDomainModal) return;
+      const requestId = portalPublicationRespondBtn?.dataset?.requestId || '';
+      const requestDomain = portalPublicationRespondBtn?.dataset?.requestDomain || '';
+      if (portalPublicationRequestId) portalPublicationRequestId.value = requestId;
+      if (portalPublicationDomain) portalPublicationDomain.value = requestDomain;
+      if (portalPublicationAction) portalPublicationAction.value = 'approve';
+      if (portalPublicationNote) portalPublicationNote.value = '';
+      clearPortalPublicationDomainNotice();
+      syncPublicationActionUi();
+      openPortalModal(portalPublicationDomainModal);
+      portalPublicationAction?.focus();
+    };
+    const closePublicationDomainModal = () => {
+      closePortalModal(portalPublicationDomainModal);
+      portalPublicationDomainSubmitBtn?.removeAttribute('disabled');
+      portalPublicationSending = false;
     };
     const updatePortalDescricaoCounter = () => {
       if (!portalDescricaoAjuste || !portalDescricaoCounter || !portalDescricaoCounterFill || !portalChangesSubmitBtn) return;
@@ -1116,6 +1184,75 @@
       } finally {
         portalChangesSending = false;
         updatePortalDescricaoCounter();
+      }
+    });
+
+    portalPublicationRespondBtn?.addEventListener('click', () => {
+      setPortalPublicationNotice('', true);
+      portalPublicationNotice?.classList.add('hidden');
+      openPublicationDomainModal();
+    });
+    portalPublicationDomainCancelBtn?.addEventListener('click', closePublicationDomainModal);
+    portalPublicationDomainCloseBtn?.addEventListener('click', closePublicationDomainModal);
+    portalPublicationAction?.addEventListener('change', syncPublicationActionUi);
+    portalPublicationDomainForm?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (portalPublicationSending) return;
+      clearPortalPublicationDomainNotice();
+
+      const requestId = String(portalPublicationRequestId?.value || '').trim();
+      const action = String(portalPublicationAction?.value || '').trim().toLowerCase();
+      const note = String(portalPublicationNote?.value || '').trim();
+      const domain = sanitizeDomainInput(portalPublicationDomain?.value || '');
+      if (!requestId) {
+        setPortalPublicationDomainNotice('Solicitação inválida para resposta.', false);
+        return;
+      }
+      if (!['approve', 'reject'].includes(action)) {
+        setPortalPublicationDomainNotice('Ação inválida.', false);
+        return;
+      }
+      if (action === 'reject' && !domain) {
+        setPortalPublicationDomainNotice('Informe o domínio sugerido para rejeitar.', false);
+        portalPublicationDomain?.focus();
+        return;
+      }
+      if (domain && !isDomainValid(domain)) {
+        setPortalPublicationDomainNotice('Domínio inválido. Use o formato exemplo.com.br', false);
+        portalPublicationDomain?.focus();
+        return;
+      }
+
+      portalPublicationSending = true;
+      portalPublicationDomainSubmitBtn?.setAttribute('disabled', 'disabled');
+      try {
+        const res = await apiFetch('/api/portal/publication/domain/respond', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            request_id: requestId,
+            action,
+            domain: domain || null,
+            note: note || null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Não foi possível registrar sua resposta.');
+        }
+        closePublicationDomainModal();
+        setPortalPublicationNotice(
+          action === 'approve'
+            ? 'Domínio aprovado com sucesso. O monitoramento foi iniciado automaticamente.'
+            : 'Rejeição enviada com domínio sugerido. A equipe KoddaHub irá revisar.',
+          true,
+        );
+        setTimeout(() => window.location.reload(), 900);
+      } catch (err) {
+        setPortalPublicationDomainNotice(err?.message || 'Erro ao enviar resposta de domínio.', false);
+      } finally {
+        portalPublicationSending = false;
+        portalPublicationDomainSubmitBtn?.removeAttribute('disabled');
       }
     });
 

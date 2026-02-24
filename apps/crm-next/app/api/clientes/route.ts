@@ -23,9 +23,27 @@ export async function GET(req: NextRequest) {
   }
 
   const params: Array<string | number> = [];
+  const effectiveStatusExpr = `
+    CASE
+      WHEN upper(coalesce(s.status::text, '')) = 'ACTIVE' THEN 'ATIVO'
+      WHEN upper(coalesce(s.status::text, '')) = 'OVERDUE' THEN 'ATRASADO'
+      WHEN upper(coalesce(s.status::text, '')) IN ('CANCELED', 'INACTIVE') THEN 'INATIVO'
+      ELSE coalesce(c.class_status, 'ATIVO')
+    END
+  `;
+  const eligibleClosedHostingExpr = `
+    d.deal_type = 'HOSPEDAGEM'
+    AND (
+      d.lifecycle_status = 'CLIENT'
+      OR ps.code IN ('fechado_ganho', 'assinatura_ativa_ganho')
+      OR (
+        d.is_closed = true
+        AND coalesce(ps.code, '') NOT IN ('perdido', 'perdido_abandonado')
+      )
+    )
+  `;
   const whereParts: string[] = [
-    `d.deal_type = 'HOSPEDAGEM'`,
-    `d.lifecycle_status = 'CLIENT'`,
+    eligibleClosedHostingExpr,
   ];
 
   if (isGhost) {
@@ -33,7 +51,7 @@ export async function GET(req: NextRequest) {
   } else {
     params.push(statusParam);
     whereParts.push(`c.ghosted_at IS NULL`);
-    whereParts.push(`coalesce(c.class_status, 'ATIVO') = $${params.length}`);
+    whereParts.push(`${effectiveStatusExpr} = $${params.length}`);
   }
 
   if (search !== '') {
@@ -56,7 +74,15 @@ export async function GET(req: NextRequest) {
     `
       SELECT COUNT(*)::int AS total
       FROM crm.deal d
+      LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
       LEFT JOIN crm.client_billing_classification c ON c.deal_id = d.id
+      LEFT JOIN LATERAL (
+        SELECT s1.status
+        FROM client.subscriptions s1
+        WHERE s1.organization_id = d.organization_id
+        ORDER BY s1.created_at DESC
+        LIMIT 1
+      ) s ON true
       WHERE ${whereSql}
     `,
     ...params
@@ -100,7 +126,7 @@ export async function GET(req: NextRequest) {
         d.product_code,
         d.value_cents,
         d.updated_at,
-        coalesce(c.class_status, 'ATIVO') AS class_status,
+        ${effectiveStatusExpr} AS class_status,
         coalesce(c.days_late, 0) AS days_late,
         c.last_payment_status,
         c.reference_due_date,
@@ -109,9 +135,10 @@ export async function GET(req: NextRequest) {
         c.ticket_id::text AS ticket_id,
         tq.sla_deadline
       FROM crm.deal d
+      LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
       LEFT JOIN crm.client_billing_classification c ON c.deal_id = d.id
       LEFT JOIN LATERAL (
-        SELECT s1.next_due_date
+        SELECT s1.status, s1.next_due_date
         FROM client.subscriptions s1
         WHERE s1.organization_id = d.organization_id
         ORDER BY s1.created_at DESC
@@ -135,11 +162,18 @@ export async function GET(req: NextRequest) {
 
   const countsRows = await prisma.$queryRawUnsafe<Array<{ class_status: string; total: number }>>(
     `
-      SELECT coalesce(c.class_status, 'ATIVO') AS class_status, COUNT(*)::int AS total
+      SELECT ${effectiveStatusExpr} AS class_status, COUNT(*)::int AS total
       FROM crm.deal d
+      LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
       LEFT JOIN crm.client_billing_classification c ON c.deal_id = d.id
-      WHERE d.deal_type='HOSPEDAGEM'
-        AND d.lifecycle_status='CLIENT'
+      LEFT JOIN LATERAL (
+        SELECT s1.status
+        FROM client.subscriptions s1
+        WHERE s1.organization_id = d.organization_id
+        ORDER BY s1.created_at DESC
+        LIMIT 1
+      ) s ON true
+      WHERE ${eligibleClosedHostingExpr}
         AND c.ghosted_at IS NULL
       GROUP BY 1
     `
@@ -148,9 +182,9 @@ export async function GET(req: NextRequest) {
     `
       SELECT COUNT(*)::int AS total
       FROM crm.deal d
+      LEFT JOIN crm.pipeline_stage ps ON ps.id = d.stage_id
       JOIN crm.client_billing_classification c ON c.deal_id = d.id
-      WHERE d.deal_type='HOSPEDAGEM'
-        AND d.lifecycle_status='CLIENT'
+      WHERE ${eligibleClosedHostingExpr}
         AND c.ghosted_at IS NOT NULL
     `
   );
