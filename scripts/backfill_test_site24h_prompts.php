@@ -441,7 +441,7 @@ function ensureReleaseAndVariants(string $dealId, string $orgId, string $orgName
         $releaseId = (string)($row['id'] ?? '');
     }
 
-    $libraryRoot = rtrim((string)(getenv('SITE24H_TEMPLATE_LIBRARY_ROOT') ?: '/home/server/projects/projero-area-cliente/storage/site-models'), '/');
+    $libraryRoot = rtrim((string)(getenv('SITE24H_TEMPLATE_LIBRARY_ROOT') ?: '/home/server/projects/projeto-area-cliente/storage/site-models'), '/');
     $models = [
         'V1' => ['folder' => 'modelo_v1', 'source' => $libraryRoot . '/template_v1_institucional_1pagina', 'entry' => 'index.html'],
         'V2' => ['folder' => 'modelo_v2', 'source' => $libraryRoot . '/template_v2_institucional_3paginas', 'entry' => 'index.html'],

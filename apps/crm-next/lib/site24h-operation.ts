@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 
 export const SITE24H_TEMPLATE_LIBRARY_ROOT =
   process.env.SITE24H_TEMPLATE_LIBRARY_ROOT ||
-  '/home/server/projects/projero-area-cliente/storage/site-models';
+  '/home/server/projects/projeto-area-cliente/storage/site-models';
 
 export const PUBLICATION_SUBSTEPS = [
   { code: 'dominio_decisao', name: 'Domínio já existe / precisa contratar', order: 1, required: true },

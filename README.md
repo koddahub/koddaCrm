@@ -9,7 +9,7 @@ Estrutura local para:
 ## Subida local
 
 ```bash
-cd /home/server/projects/projero-area-cliente
+cd /home/server/projects/projeto-area-cliente
 cp .env.example .env
 ./scripts/up.sh
 # ou manual: CLIENT_PORT=8081 CRM_PORT=8082 docker compose up -d --build

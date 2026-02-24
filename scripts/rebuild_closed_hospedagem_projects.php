@@ -803,7 +803,7 @@ function main(): int {
     $removedDirs = wipeClientRoot($root);
     ensureDir($root);
 
-    $libraryRoot = (string)(getenv('SITE24H_TEMPLATE_LIBRARY_ROOT') ?: '/home/server/projects/projero-area-cliente/storage/site-models');
+    $libraryRoot = (string)(getenv('SITE24H_TEMPLATE_LIBRARY_ROOT') ?: '/home/server/projects/projeto-area-cliente/storage/site-models');
     if (!is_dir($libraryRoot)) {
         throw new RuntimeException('Biblioteca de templates não encontrada: ' . $libraryRoot);
     }

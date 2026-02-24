@@ -406,7 +406,7 @@ final class PromptBuilderV2
         $lines[] = 'Objetivo disso: o produto real para operacao/IA e a pasta de trabalho. O CRM orquestra e registra.';
         $lines[] = '';
         $lines[] = '### 4) O que sao os modelos (templates) e como eles entram na pasta do cliente';
-        $lines[] = 'Existe uma biblioteca fixa de templates base (white-label) em: `/home/server/projects/projero-area-cliente/storage/site-models/`.';
+        $lines[] = 'Existe uma biblioteca fixa de templates base (white-label) em: `/home/server/projects/projeto-area-cliente/storage/site-models/`.';
         $lines[] = 'No onboarding, esses templates sao copiados para a pasta do cliente dentro de `releases/v1/`, para nao misturar clientes e nao alterar a biblioteca base.';
         $lines[] = '';
         $lines[] = '- Biblioteca base:';
