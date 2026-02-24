@@ -1571,6 +1571,132 @@ body[data-page='dashboard'] .file-uploader-meta {
 }
 
 /* ==========================================================================
+   Dashboard UX upgrades (Chamados, Planos, Pagamentos, Perfil)
+   ========================================================================== */
+body[data-page='dashboard'] .portal-toast-container {
+  z-index: 1200;
+}
+
+body[data-page='dashboard'] .portal-card .alert {
+  border-radius: 10px;
+  font-size: .9rem;
+}
+
+body[data-page='dashboard'] .empty-state {
+  border: 1px dashed var(--dash-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dash-surface) 96%, #000 4%);
+  color: var(--dash-text-soft);
+}
+
+body[data-page='dashboard'] .portal-protocol-card {
+  border: 1px solid var(--dash-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dash-surface) 95%, #000 5%);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+body[data-page='dashboard'] .portal-protocol-head {
+  font-weight: 700;
+  color: var(--dash-text);
+}
+
+body[data-page='dashboard'] .portal-protocol-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 110px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+body[data-page='dashboard'] .portal-protocol-row span {
+  font-size: .76rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--dash-muted);
+}
+
+body[data-page='dashboard'] .portal-protocol-row code {
+  color: var(--dash-text);
+  background: color-mix(in srgb, var(--dash-surface) 86%, #000 14%);
+  border: 1px solid var(--dash-line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  overflow-x: auto;
+}
+
+body[data-page='dashboard'] .table.table-hover tbody tr:hover {
+  background: color-mix(in srgb, var(--dash-surface) 90%, #3b82f6 10%);
+}
+
+body[data-page='dashboard'] .table .badge {
+  font-size: .73rem;
+  letter-spacing: .01em;
+}
+
+body[data-page='dashboard'] .table td.text-end {
+  text-align: right;
+}
+
+body[data-page='dashboard'] .plan-tile.is-current {
+  border-color: rgba(16, 185, 129, .45);
+}
+
+body[data-page='dashboard'] .plan-tile.is-selected {
+  border-color: rgba(59, 130, 246, .65);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, .16);
+}
+
+body[data-page='dashboard'] .plan-pick-btn {
+  width: 100%;
+}
+
+body[data-page='dashboard'] .form-text {
+  color: var(--dash-muted);
+}
+
+body[data-page='dashboard'] .btn-outline-secondary,
+body[data-page='dashboard'] .btn-outline-primary,
+body[data-page='dashboard'] .btn-outline-danger {
+  border-width: 1px;
+}
+
+body[data-page='dashboard'][data-theme='dark'] .btn-outline-secondary {
+  color: #d7e5f4;
+  border-color: rgba(173, 196, 224, .45);
+}
+
+body[data-page='dashboard'][data-theme='dark'] .btn-outline-primary {
+  color: #bcd6fb;
+  border-color: rgba(96, 165, 250, .56);
+}
+
+body[data-page='dashboard'][data-theme='dark'] .btn-outline-danger {
+  color: #ffc0c0;
+  border-color: rgba(248, 113, 113, .55);
+}
+
+body[data-page='dashboard'] .form-control.is-invalid,
+body[data-page='dashboard'] .form-select.is-invalid {
+  border-color: #dc3545;
+}
+
+@media (max-width: 768px) {
+  body[data-page='dashboard'] .portal-protocol-row {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page='dashboard'] .portal-protocol-row button {
+    width: 100%;
+  }
+
+  body[data-page='dashboard'] .table td.text-end {
+    text-align: right;
+  }
+}
+
+/* ==========================================================================
    Dashboard Mobile Responsivo (<=768px)
    ========================================================================== */
 @media (max-width: 768px) {

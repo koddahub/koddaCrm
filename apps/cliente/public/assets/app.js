@@ -178,7 +178,120 @@
     if (csrfToken && !headers.has('X-CSRF-Token')) {
       headers.set('X-CSRF-Token', csrfToken);
     }
-    return fetch(url, { ...options, headers });
+    if (!headers.has('X-Request-Id')) {
+      headers.set('X-Request-Id', generateRequestId());
+    }
+    return fetch(url, { credentials: 'same-origin', ...options, headers });
+  }
+
+  function generateRequestId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `req-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+
+  function setButtonLoading(button, isLoading) {
+    if (!button) return;
+    const spinner = button.querySelector('.spinner-border');
+    const label = button.querySelector('.btn-label');
+    if (isLoading) {
+      button.setAttribute('disabled', 'disabled');
+      spinner?.classList.remove('d-none');
+      label?.setAttribute('aria-hidden', 'true');
+      return;
+    }
+    button.removeAttribute('disabled');
+    spinner?.classList.add('d-none');
+    label?.removeAttribute('aria-hidden');
+  }
+
+  function setInlineAlert(container, type, message) {
+    if (!container) return;
+    if (!message) {
+      container.textContent = '';
+      container.classList.add('d-none');
+      container.classList.remove('alert-success', 'alert-danger', 'alert-warning', 'alert-info');
+      return;
+    }
+    const mapped = type === 'success'
+      ? 'alert-success'
+      : (type === 'warning' ? 'alert-warning' : (type === 'info' ? 'alert-info' : 'alert-danger'));
+    container.textContent = String(message || '');
+    container.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning', 'alert-info');
+    container.classList.add(mapped);
+  }
+
+  function normalizeProtocol(data = {}) {
+    const actionId = String(data?.action_id || '').trim();
+    const requestId = String(data?.request_id || '').trim();
+    if (!actionId && !requestId) return null;
+    return { actionId, requestId };
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function renderProtocol(container, protocol, title = 'Protocolo da solicitação') {
+    if (!container) return;
+    if (!protocol) {
+      container.classList.add('d-none');
+      container.innerHTML = '';
+      return;
+    }
+    const actionId = protocol.actionId || '-';
+    const requestId = protocol.requestId || '-';
+    container.innerHTML = `
+      <div class="portal-protocol-head">${escapeHtml(title)}</div>
+      <div class="portal-protocol-row"><span>action_id</span><code>${escapeHtml(actionId)}</code><button type="button" class="btn btn-outline-secondary btn-sm" data-copy-value="${escapeHtml(actionId)}" ${actionId === '-' ? 'disabled' : ''}>Copiar</button></div>
+      <div class="portal-protocol-row"><span>request_id</span><code>${escapeHtml(requestId)}</code><button type="button" class="btn btn-outline-secondary btn-sm" data-copy-value="${escapeHtml(requestId)}" ${requestId === '-' ? 'disabled' : ''}>Copiar</button></div>
+    `;
+    container.classList.remove('d-none');
+  }
+
+  function showToast(type, title, message) {
+    const host = $('#portalToastContainer');
+    if (!host) return;
+    const colorClass = type === 'success'
+      ? 'text-bg-success'
+      : (type === 'warning' ? 'text-bg-warning' : (type === 'info' ? 'text-bg-info' : 'text-bg-danger'));
+    const toast = document.createElement('div');
+    toast.className = `toast align-items-center border-0 ${colorClass} show`;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.setAttribute('aria-atomic', 'true');
+    toast.innerHTML = `
+      <div class="d-flex">
+        <div class="toast-body">
+          <strong class="me-2">${escapeHtml(title || 'Aviso')}</strong>${escapeHtml(message || '')}
+        </div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" aria-label="Fechar"></button>
+      </div>
+    `;
+    const closeBtn = $('.btn-close', toast);
+    closeBtn?.addEventListener('click', () => toast.remove());
+    host.appendChild(toast);
+    window.setTimeout(() => {
+      toast.classList.remove('show');
+      window.setTimeout(() => toast.remove(), 200);
+    }, 5200);
+  }
+
+  async function copyText(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function setNotice(message, type = 'err') {
@@ -930,54 +1043,50 @@
     initDashboardTheme();
     initNavigation();
 
-    const ticketForm = $('#ticketForm');
-    ticketForm?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const body = Object.fromEntries(new FormData(ticketForm).entries());
-      const r = await apiFetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const d = await r.json();
-      if (!r.ok) {
-        setPortalNotice(d.error || 'Erro ao abrir chamado', 'err');
-        return;
+    const featurePlanChangeWebhookConfirmed = document.body?.dataset?.featurePlanChangeWebhookConfirmed === '1';
+    const featureCancelSubscription = document.body?.dataset?.featureCancelSubscription === '1';
+    const parseApiJson = async (response) => {
+      try {
+        return await response.json();
+      } catch (_) {
+        return {};
       }
-      setPortalNotice('Chamado criado com sucesso.', 'ok');
-      setTimeout(() => location.reload(), 700);
-    });
+    };
+
+    const ticketForm = $('#ticketForm');
+    const ticketSubmitBtn = $('#ticketSubmitBtn');
+    const ticketInlineNotice = $('#ticketInlineNotice');
 
     const planForm = $('#planForm');
-    planForm?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const body = Object.fromEntries(new FormData(planForm).entries());
-      const r = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(body.asaas_subscription_id) + '/change-plan', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-      });
-      const d = await r.json();
-      if (!r.ok) {
-        setPortalNotice(d.error || 'Erro ao solicitar troca', 'err');
-        return;
-      }
-      setPortalNotice('Solicitação de troca de plano enviada.', 'ok');
-    });
+    const planSubmitBtn = $('#planSubmitBtn');
+    const planCodeSelect = $('#planCodeSelect');
+    const planReason = $('#planReason');
+    const planInlineNotice = $('#planInlineNotice');
+    const planProtocolCard = $('#planProtocolCard');
+    const planJustificationCounter = $('#planJustificationCounter');
+    const planCurrentCode = (planForm?.dataset?.currentPlan || '').trim().toLowerCase();
+    const planPickButtons = $$('.plan-pick-btn');
+    const planTiles = $$('.plan-tile[data-plan-code]');
+    const planChangeConfirmModal = $('#planChangeConfirmModal');
+    const planChangeConfirmText = $('#planChangeConfirmText');
+    const planChangeConfirmNotice = $('#planChangeConfirmNotice');
+    const planChangeConfirmSubmitBtn = $('#planChangeConfirmSubmitBtn');
+    const planChangeConfirmCancelBtn = $('#planChangeConfirmCancelBtn');
+    const planChangeConfirmCloseBtn = $('#planChangeConfirmCloseBtn');
+    let planSubmitInFlight = false;
 
-    $('#retryPaymentBtn')?.addEventListener('click', async () => {
-      const sid = $('#retryPaymentBtn')?.dataset?.subscriptionId;
-      if (!sid) return;
-      const r = await apiFetch('/api/billing/subscriptions/' + encodeURIComponent(sid) + '/retry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-      const d = await r.json();
-      if (!r.ok) {
-        setPortalNotice(d.error || 'Não foi possível abrir a cobrança.', 'err');
-        return;
-      }
-      if (d.payment_redirect_url) {
-        window.open(d.payment_redirect_url, '_blank', 'noopener,noreferrer');
-        return;
-      }
-      setPortalNotice('Nenhuma cobrança pendente encontrada no momento.', 'err');
-    });
+    const retryPaymentBtn = $('#retryPaymentBtn');
+    const updateCardBtn = $('#updateCardBtn');
+    const paymentInlineNotice = $('#paymentInlineNotice');
+    const paymentProtocolCard = $('#paymentProtocolCard');
+
+    const cancelSubscriptionBtn = $('#cancelSubscriptionBtn');
+    const cancelSubscriptionModal = $('#cancelSubscriptionModal');
+    const cancelSubscriptionForm = $('#cancelSubscriptionForm');
+    const cancelSubscriptionNotice = $('#cancelSubscriptionNotice');
+    const cancelSubscriptionSubmitBtn = $('#cancelSubscriptionSubmitBtn');
+    const cancelSubscriptionCancelBtn = $('#cancelSubscriptionCancelBtn');
+    const cancelSubscriptionCloseBtn = $('#cancelSubscriptionCloseBtn');
 
     const portalApprovalNotice = $('#portalApprovalNotice');
     const setPortalApprovalNotice = (msg, ok = false) => {
@@ -1107,6 +1216,381 @@
       portalDescricaoCounter.classList.toggle('text-success', valid);
       portalDescricaoCounter.classList.toggle('text-danger', !valid);
     };
+
+    const pendingPlanStorageKey = (() => {
+      const sid = String(planForm?.querySelector('[name="asaas_subscription_id"]')?.value || '').trim();
+      return sid ? `portal_plan_change_pending_${sid}` : '';
+    })();
+    const planNameMap = {
+      basic: 'Básico',
+      profissional: 'Profissional',
+      pro: 'Pro',
+    };
+    const syncPlanTiles = () => {
+      const selected = String(planCodeSelect?.value || '').toLowerCase();
+      planTiles.forEach((tile) => {
+        tile.classList.toggle('is-selected', tile.dataset.planCode === selected);
+      });
+    };
+    const syncPlanCounter = () => {
+      if (!planReason || !planJustificationCounter) return;
+      const len = String(planReason.value || '').length;
+      planJustificationCounter.textContent = `${len} / 500`;
+    };
+    const readPendingPlanChange = () => {
+      if (!pendingPlanStorageKey) return null;
+      try {
+        const raw = localStorage.getItem(pendingPlanStorageKey);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const writePendingPlanChange = (payload) => {
+      if (!pendingPlanStorageKey) return;
+      try {
+        localStorage.setItem(pendingPlanStorageKey, JSON.stringify(payload));
+      } catch (_) {}
+    };
+    const clearPendingPlanChange = () => {
+      if (!pendingPlanStorageKey) return;
+      try {
+        localStorage.removeItem(pendingPlanStorageKey);
+      } catch (_) {}
+    };
+    const applyPendingPlanUi = () => {
+      if (!planSubmitBtn || !featurePlanChangeWebhookConfirmed) return;
+      const pending = readPendingPlanChange();
+      if (!pending) return;
+      const requested = String(pending?.requested_plan_code || '').toLowerCase();
+      if (requested && requested === planCurrentCode) {
+        clearPendingPlanChange();
+        return;
+      }
+      planSubmitBtn.setAttribute('disabled', 'disabled');
+      setInlineAlert(planInlineNotice, 'warning', `Solicitação de troca para ${planNameMap[requested] || requested.toUpperCase()} já enviada e aguardando confirmação do ASAAS.`);
+      renderProtocol(planProtocolCard, normalizeProtocol(pending), 'Protocolo pendente');
+    };
+
+    if (!document.body.dataset.portalCopyBound) {
+      document.body.dataset.portalCopyBound = '1';
+      document.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const trigger = target.closest('[data-copy-target], [data-copy-value]');
+        if (!(trigger instanceof HTMLElement)) return;
+        const copyValue = String(trigger.getAttribute('data-copy-value') || '').trim();
+        const copyTargetId = String(trigger.getAttribute('data-copy-target') || '').trim();
+        let value = copyValue;
+        if (!value && copyTargetId) {
+          const copySource = document.getElementById(copyTargetId);
+          value = String(copySource?.textContent || '').trim();
+        }
+        if (!value || value === 'N/D' || value === '-') return;
+        const copied = await copyText(value);
+        showToast(copied ? 'success' : 'danger', copied ? 'Copiado' : 'Falha ao copiar', copied ? 'Código copiado para a área de transferência.' : 'Não foi possível copiar agora.');
+      });
+    }
+
+    planPickButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!planCodeSelect) return;
+        const nextPlan = String(btn.dataset.planCode || '').toLowerCase();
+        if (!nextPlan) return;
+        planCodeSelect.value = nextPlan;
+        syncPlanTiles();
+        planCodeSelect.focus();
+      });
+    });
+
+    planCodeSelect?.addEventListener('change', syncPlanTiles);
+    planReason?.addEventListener('input', syncPlanCounter);
+    syncPlanTiles();
+    syncPlanCounter();
+    applyPendingPlanUi();
+
+    ticketForm?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setInlineAlert(ticketInlineNotice, '', '');
+      const body = Object.fromEntries(new FormData(ticketForm).entries());
+      const subject = String(body.subject || '').trim();
+      const description = String(body.description || '').trim();
+      if (subject.length < 3) {
+        setInlineAlert(ticketInlineNotice, 'danger', 'Informe um assunto com no mínimo 3 caracteres.');
+        $('#ticketSubject')?.focus();
+        return;
+      }
+      if (description.length < 10) {
+        setInlineAlert(ticketInlineNotice, 'danger', 'A descrição precisa ter no mínimo 10 caracteres.');
+        $('#ticketDescription')?.focus();
+        return;
+      }
+      setButtonLoading(ticketSubmitBtn, true);
+      try {
+        const response = await apiFetch('/api/tickets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok) {
+          const msg = data.error || 'Erro ao abrir chamado.';
+          setInlineAlert(ticketInlineNotice, 'danger', msg);
+          setPortalNotice(msg, 'err');
+          return;
+        }
+        const protocol = String(data.ticket_id || '').trim();
+        const successText = protocol ? `Chamado aberto com sucesso. Protocolo: ${protocol}` : 'Chamado aberto com sucesso.';
+        setInlineAlert(ticketInlineNotice, 'success', successText);
+        showToast('success', 'Chamado aberto', protocol ? `Protocolo ${protocol}` : 'Solicitação registrada com sucesso.');
+        setPortalNotice(successText, 'ok');
+        ticketForm.reset();
+        window.setTimeout(() => window.location.reload(), 900);
+      } finally {
+        setButtonLoading(ticketSubmitBtn, false);
+      }
+    });
+
+    const executePlanChange = async () => {
+      if (!planForm || !planCodeSelect || planSubmitInFlight) return;
+      setInlineAlert(planInlineNotice, '', '');
+      setInlineAlert(planChangeConfirmNotice, '', '');
+      const body = Object.fromEntries(new FormData(planForm).entries());
+      const sid = String(body.asaas_subscription_id || '').trim();
+      const nextPlanCode = String(body.plan_code || '').trim().toLowerCase();
+      const customValueRaw = String(body.custom_value || '').trim();
+      if (!sid) {
+        setInlineAlert(planInlineNotice, 'danger', 'Assinatura não encontrada para troca de plano.');
+        return;
+      }
+      if (!nextPlanCode) {
+        setInlineAlert(planInlineNotice, 'danger', 'Selecione o plano desejado.');
+        return;
+      }
+      if (nextPlanCode === planCurrentCode && !customValueRaw) {
+        setInlineAlert(planInlineNotice, 'warning', 'O plano selecionado já é o plano atual.');
+        return;
+      }
+
+      planSubmitInFlight = true;
+      setButtonLoading(planSubmitBtn, true);
+      setButtonLoading(planChangeConfirmSubmitBtn, true);
+      try {
+        const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await parseApiJson(response);
+        const protocol = normalizeProtocol(data);
+        renderProtocol(planProtocolCard, protocol, 'Protocolo da troca de plano');
+        if (!response.ok) {
+          const errMsg = `${data.error || 'Não foi possível enviar a solicitação de troca.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          setInlineAlert(planInlineNotice, 'danger', errMsg);
+          setInlineAlert(planChangeConfirmNotice, 'danger', errMsg);
+          showToast('danger', 'Falha na troca de plano', errMsg);
+          setPortalNotice(errMsg, 'err');
+          return;
+        }
+
+        const direction = String(data.direction || '').toUpperCase();
+        if (data.scheduled) {
+          clearPendingPlanChange();
+          const effectiveAt = String(data.effective_at || '').trim();
+          const scheduledMsg = effectiveAt
+            ? `Mudança agendada para ${new Date(effectiveAt).toLocaleString('pt-BR')}.`
+            : 'Mudança agendada para o próximo vencimento.';
+          setInlineAlert(planInlineNotice, 'warning', scheduledMsg);
+          showToast('info', 'Mudança agendada', scheduledMsg);
+          setPortalNotice(scheduledMsg, 'ok');
+        } else if (featurePlanChangeWebhookConfirmed && direction === 'UPGRADE') {
+          const payload = {
+            requested_plan_code: nextPlanCode,
+            action_id: protocol?.actionId || null,
+            request_id: protocol?.requestId || null,
+            created_at: new Date().toISOString(),
+          };
+          writePendingPlanChange(payload);
+          planSubmitBtn.setAttribute('disabled', 'disabled');
+          const pendingMsg = 'Solicitação enviada. Aguardando confirmação do ASAAS para aplicar a troca.';
+          setInlineAlert(planInlineNotice, 'warning', pendingMsg);
+          showToast('info', 'Troca solicitada', pendingMsg);
+          setPortalNotice(pendingMsg, 'ok');
+        } else {
+          clearPendingPlanChange();
+          const successMsg = 'Troca de plano solicitada com sucesso.';
+          setInlineAlert(planInlineNotice, 'success', successMsg);
+          showToast('success', 'Troca de plano', successMsg);
+          setPortalNotice(successMsg, 'ok');
+        }
+        closePortalModal(planChangeConfirmModal);
+      } finally {
+        planSubmitInFlight = false;
+        setButtonLoading(planSubmitBtn, false);
+        setButtonLoading(planChangeConfirmSubmitBtn, false);
+        applyPendingPlanUi();
+      }
+    };
+
+    planForm?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setInlineAlert(planInlineNotice, '', '');
+      setInlineAlert(planChangeConfirmNotice, '', '');
+      if (featurePlanChangeWebhookConfirmed) {
+        const existingPending = readPendingPlanChange();
+        const pendingRequested = String(existingPending?.requested_plan_code || '').toLowerCase();
+        if (existingPending && pendingRequested && pendingRequested !== planCurrentCode && !String(planForm?.querySelector('#planCustomValue')?.value || '').trim()) {
+          setInlineAlert(planInlineNotice, 'warning', 'Já existe uma solicitação de troca pendente de confirmação.');
+          return;
+        }
+      }
+      const selectedCode = String(planCodeSelect?.value || '').toLowerCase();
+      const selectedName = planNameMap[selectedCode] || selectedCode.toUpperCase();
+      const currentName = planNameMap[planCurrentCode] || planCurrentCode.toUpperCase();
+      const customValue = String(planForm?.querySelector('#planCustomValue')?.value || '').trim();
+      if (!selectedCode || (selectedCode === planCurrentCode && !customValue)) {
+        setInlineAlert(planInlineNotice, 'warning', 'Selecione um plano diferente do atual para continuar.');
+        return;
+      }
+      if (!planChangeConfirmModal) {
+        await executePlanChange();
+        return;
+      }
+      if (planChangeConfirmText) {
+        if (customValue && selectedCode === planCurrentCode) {
+          planChangeConfirmText.textContent = `Você está solicitando ajuste de mensalidade para R$ ${customValue}. Deseja confirmar?`;
+        } else {
+          planChangeConfirmText.textContent = `Você está solicitando troca de ${currentName} para ${selectedName}${customValue ? ` (R$ ${customValue})` : ''}. Deseja confirmar?`;
+        }
+      }
+      openPortalModal(planChangeConfirmModal);
+      planChangeConfirmSubmitBtn?.focus();
+    });
+    planChangeConfirmSubmitBtn?.addEventListener('click', executePlanChange);
+    planChangeConfirmCancelBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
+    planChangeConfirmCloseBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
+    planChangeConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
+
+    retryPaymentBtn?.addEventListener('click', async () => {
+      const sid = String(retryPaymentBtn?.dataset?.subscriptionId || '').trim();
+      if (!sid) return;
+      setInlineAlert(paymentInlineNotice, '', '');
+      setButtonLoading(retryPaymentBtn, true);
+      try {
+        const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/retry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await parseApiJson(response);
+        const protocol = normalizeProtocol(data);
+        renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
+        if (!response.ok) {
+          const msg = `${data.error || 'Não foi possível abrir a cobrança.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          setInlineAlert(paymentInlineNotice, 'danger', msg);
+          setPortalNotice(msg, 'err');
+          showToast('danger', 'Falha ao gerar cobrança', msg);
+          return;
+        }
+        if (data.payment_redirect_url) {
+          window.open(data.payment_redirect_url, '_blank', 'noopener,noreferrer');
+          const okMsg = 'Link de cobrança gerado e aberto em nova aba.';
+          setInlineAlert(paymentInlineNotice, 'success', okMsg);
+          setPortalNotice(okMsg, 'ok');
+          showToast('success', 'Cobrança segura', okMsg);
+          return;
+        }
+        const emptyMsg = 'Nenhuma cobrança pendente encontrada no momento.';
+        setInlineAlert(paymentInlineNotice, 'warning', emptyMsg);
+        setPortalNotice(emptyMsg, 'err');
+        showToast('warning', 'Sem cobrança pendente', emptyMsg);
+      } finally {
+        setButtonLoading(retryPaymentBtn, false);
+      }
+    });
+
+    updateCardBtn?.addEventListener('click', async () => {
+      const sid = String(updateCardBtn?.dataset?.subscriptionId || '').trim();
+      setInlineAlert(paymentInlineNotice, '', '');
+      setButtonLoading(updateCardBtn, true);
+      try {
+        const response = await apiFetch('/api/billing/card/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ asaas_subscription_id: sid || null }),
+        });
+        const data = await parseApiJson(response);
+        const protocol = normalizeProtocol(data);
+        renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
+        if (!response.ok) {
+          const msg = `${data.error || 'Atualização de cartão indisponível no momento.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          setInlineAlert(paymentInlineNotice, 'danger', msg);
+          showToast('danger', 'Atualização de cartão', msg);
+          setPortalNotice(msg, 'err');
+          return;
+        }
+        const cardUpdateUrl = String(data.card_update_url || '').trim();
+        const providerFlow = String(data.provider_flow || '').trim();
+        if (cardUpdateUrl) {
+          window.open(cardUpdateUrl, '_blank', 'noopener,noreferrer');
+        }
+        const okMsg = cardUpdateUrl
+          ? `Fluxo de atualização de cartão aberto no ASAAS (${providerFlow || 'CARD_UPDATE'}). Nenhuma cobrança foi gerada.`
+          : 'Solicitação registrada. Siga o fluxo de atualização informado pelo suporte.';
+        setInlineAlert(paymentInlineNotice, 'success', okMsg);
+        showToast('success', 'Atualização de cartão', okMsg);
+        setPortalNotice(okMsg, 'ok');
+      } finally {
+        setButtonLoading(updateCardBtn, false);
+      }
+    });
+
+    if (featureCancelSubscription && cancelSubscriptionBtn && cancelSubscriptionModal) {
+      cancelSubscriptionBtn.addEventListener('click', () => {
+        setInlineAlert(cancelSubscriptionNotice, '', '');
+        openPortalModal(cancelSubscriptionModal);
+        $('#cancelMode')?.focus();
+      });
+      cancelSubscriptionCancelBtn?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
+      cancelSubscriptionCloseBtn?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
+      cancelSubscriptionModal.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
+      cancelSubscriptionForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const sid = String(cancelSubscriptionBtn.dataset.subscriptionId || '').trim();
+        if (!sid) {
+          setInlineAlert(cancelSubscriptionNotice, 'danger', 'Assinatura inválida para cancelamento.');
+          return;
+        }
+        setButtonLoading(cancelSubscriptionSubmitBtn, true);
+        setInlineAlert(cancelSubscriptionNotice, '', '');
+        try {
+          const formPayload = Object.fromEntries(new FormData(cancelSubscriptionForm).entries());
+          const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: String(formPayload.mode || 'END_OF_CYCLE') }),
+          });
+          const data = await parseApiJson(response);
+          const protocol = normalizeProtocol(data);
+          renderProtocol(paymentProtocolCard, protocol, 'Protocolo de cancelamento');
+          if (!response.ok) {
+            const errMsg = `${data.error || 'Falha ao solicitar cancelamento.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+            setInlineAlert(cancelSubscriptionNotice, 'danger', errMsg);
+            showToast('danger', 'Cancelamento', errMsg);
+            return;
+          }
+          const okMsg = 'Solicitação de cancelamento enviada com sucesso.';
+          setInlineAlert(cancelSubscriptionNotice, 'success', okMsg);
+          setInlineAlert(paymentInlineNotice, 'warning', `${okMsg} Aguarde a confirmação final pelo webhook.`);
+          showToast('success', 'Cancelamento solicitado', okMsg);
+          closePortalModal(cancelSubscriptionModal);
+        } finally {
+          setButtonLoading(cancelSubscriptionSubmitBtn, false);
+        }
+      });
+    }
 
     portalApproveBtn?.addEventListener('click', () => {
       setPortalApprovalNotice('', true);
@@ -1263,25 +1747,54 @@
     });
 
     const profileForm = $('#profileForm');
+    const profileInlineNotice = $('#profileInlineNotice');
+    const profileSubmitBtn = $('#profileSubmitBtn');
     profileForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
+      setInlineAlert(profileInlineNotice, '', '');
+      $$('input', profileForm).forEach((field) => field.classList.remove('is-invalid'));
       const body = Object.fromEntries(new FormData(profileForm).entries());
-      const r = await apiFetch('/api/profile/update', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-      });
-      const d = await r.json();
-      if (!r.ok) {
-        setPortalNotice(d.error || 'Erro ao atualizar perfil', 'err');
+      const newPassword = String(body.new_password || '').trim();
+      const newPasswordConfirm = String(body.new_password_confirm || '').trim();
+      if ((newPassword || newPasswordConfirm) && newPassword !== newPasswordConfirm) {
+        setInlineAlert(profileInlineNotice, 'danger', 'A confirmação da nova senha não confere.');
+        $('#profileNewPasswordConfirm')?.classList.add('is-invalid');
+        $('#profileNewPasswordConfirm')?.focus();
         return;
       }
-      setPortalNotice(d.message || 'Perfil atualizado com sucesso.', 'ok');
-      const pwd = profileForm.querySelector('[name="account_password"]');
-      const np = profileForm.querySelector('[name="new_password"]');
-      const npc = profileForm.querySelector('[name="new_password_confirm"]');
-      if (pwd) pwd.value = '';
-      if (np) np.value = '';
-      if (npc) npc.value = '';
-      setTimeout(() => location.reload(), 500);
+      setButtonLoading(profileSubmitBtn, true);
+      try {
+        const response = await apiFetch('/api/profile/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok) {
+          const details = data?.details && typeof data.details === 'object' ? data.details : {};
+          const firstError = Object.values(details).find((msg) => !!msg);
+          const message = String(firstError || data.error || 'Erro ao atualizar perfil.');
+          Object.entries(details).forEach(([key]) => {
+            const field = profileForm.querySelector(`[name="${key}"]`);
+            field?.classList.add('is-invalid');
+          });
+          setInlineAlert(profileInlineNotice, 'danger', message);
+          setPortalNotice(message, 'err');
+          return;
+        }
+        const successMessage = String(data.message || 'Perfil atualizado com sucesso.');
+        setInlineAlert(profileInlineNotice, 'success', successMessage);
+        setPortalNotice(successMessage, 'ok');
+        showToast('success', 'Perfil atualizado', successMessage);
+        const pwd = profileForm.querySelector('[name="account_password"]');
+        const np = profileForm.querySelector('[name="new_password"]');
+        const npc = profileForm.querySelector('[name="new_password_confirm"]');
+        if (pwd) pwd.value = '';
+        if (np) np.value = '';
+        if (npc) npc.value = '';
+      } finally {
+        setButtonLoading(profileSubmitBtn, false);
+      }
     });
 
     const modal = $('#briefingModal');

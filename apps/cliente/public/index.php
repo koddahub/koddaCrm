@@ -293,6 +293,93 @@ function verifyTurnstileToken(?string $token): bool {
   return is_array($decoded) && !empty($decoded['success']);
 }
 
+function ensureSubscriptionRecurringTables(): void {
+  static $ready = false;
+  if ($ready) {
+    return;
+  }
+
+  db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS price_override NUMERIC(10,2)");
+  db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS billing_profile_updated_at TIMESTAMPTZ");
+  db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS last_asaas_event_at TIMESTAMPTZ");
+  db()->exec("
+    CREATE TABLE IF NOT EXISTS client.subscription_change_schedule (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      action_id UUID UNIQUE NOT NULL,
+      subscription_id UUID NOT NULL REFERENCES client.subscriptions(id) ON DELETE CASCADE,
+      organization_id UUID NOT NULL REFERENCES client.organizations(id) ON DELETE CASCADE,
+      asaas_subscription_id VARCHAR(80) NOT NULL,
+      change_type VARCHAR(40) NOT NULL,
+      current_plan_id UUID REFERENCES client.plans(id),
+      target_plan_id UUID REFERENCES client.plans(id),
+      current_value NUMERIC(10,2),
+      target_value NUMERIC(10,2) NOT NULL,
+      effective_at TIMESTAMPTZ NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'SCHEDULED',
+      metadata JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      applied_at TIMESTAMPTZ,
+      failed_at TIMESTAMPTZ,
+      failure_reason TEXT
+    )
+  ");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_subscription_change_schedule_status_effective ON client.subscription_change_schedule(status, effective_at)");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_subscription_change_schedule_subscription ON client.subscription_change_schedule(subscription_id, created_at DESC)");
+  $ready = true;
+}
+
+function safeDateTime(string $value): ?DateTimeImmutable {
+  $value = trim($value);
+  if ($value === '') {
+    return null;
+  }
+  try {
+    return new DateTimeImmutable($value);
+  } catch (Throwable) {
+    return null;
+  }
+}
+
+function calculateProrataAmount(float $currentValue, float $newValue, ?string $nextDueDate, int $defaultCycleDays = 30): float {
+  $difference = round($newValue - $currentValue, 2);
+  if ($difference <= 0) {
+    return 0.0;
+  }
+  $cycleDays = max(1, $defaultCycleDays);
+  $today = new DateTimeImmutable('today');
+  $due = safeDateTime((string)$nextDueDate);
+  if (!$due) {
+    return $difference;
+  }
+  $remaining = (int)$today->diff($due)->format('%r%a');
+  if ($remaining < 0) {
+    return $difference;
+  }
+  if ($remaining === 0) {
+    return 0.0;
+  }
+  $ratio = min(1, max(0, $remaining / $cycleDays));
+  return round($difference * $ratio, 2);
+}
+
+function resolveAsaasEventTime(array $event): ?DateTimeImmutable {
+  $candidates = [
+    (string)($event['dateCreated'] ?? ''),
+    (string)($event['date'] ?? ''),
+    (string)($event['payment']['dateCreated'] ?? ''),
+    (string)($event['payment']['confirmedDate'] ?? ''),
+    (string)($event['subscription']['dateCreated'] ?? ''),
+  ];
+  foreach ($candidates as $candidate) {
+    $dt = safeDateTime($candidate);
+    if ($dt) {
+      return $dt;
+    }
+  }
+  return null;
+}
+
 function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   $plan = in_array($plan, ['basic','profissional','pro'], true) ? $plan : 'basic';
   $turnstileKey = turnstileSiteKey();
@@ -1166,6 +1253,7 @@ function renderPortalPaymentPendingPage(array $ctx): string {
 }
 
 function renderDashboard(?string $notice = null): string {
+  ensureSubscriptionRecurringTables();
   $user = $_SESSION['client_user'];
   $orgId = $user['organization_id'] ?? null;
   $assetCssVersion = (string)@filemtime(__DIR__ . '/assets/app.css');
@@ -1197,7 +1285,7 @@ function renderDashboard(?string $notice = null): string {
     ];
   }
 
-  $sub = $orgId ? db()->one("SELECT s.id, s.asaas_subscription_id, s.status, s.next_due_date, s.payment_method, p.name as plan_name, p.monthly_price FROM client.subscriptions s JOIN client.plans p ON p.id=s.plan_id WHERE s.organization_id=:oid ORDER BY s.created_at DESC LIMIT 1", [':oid' => $orgId]) : null;
+  $sub = $orgId ? db()->one("SELECT s.id, s.asaas_subscription_id, s.asaas_customer_id, s.status, s.next_due_date, s.payment_method, s.price_override, s.billing_profile_updated_at, p.code AS plan_code, p.name as plan_name, p.monthly_price, COALESCE(s.price_override, p.monthly_price) AS effective_monthly_price FROM client.subscriptions s JOIN client.plans p ON p.id=s.plan_id WHERE s.organization_id=:oid ORDER BY s.created_at DESC LIMIT 1", [':oid' => $orgId]) : null;
   if (!$sub) {
     $basicPlan = db()->one("SELECT name, monthly_price FROM client.plans WHERE code='basic' LIMIT 1");
     $sub = [
@@ -1206,9 +1294,36 @@ function renderDashboard(?string $notice = null): string {
       'status' => 'EM CONFIGURACAO',
       'next_due_date' => null,
       'payment_method' => 'PIX',
+      'plan_code' => 'basic',
       'plan_name' => $basicPlan['name'] ?? 'Básico',
       'monthly_price' => $basicPlan['monthly_price'] ?? 149.99,
+      'effective_monthly_price' => $basicPlan['monthly_price'] ?? 149.99,
+      'price_override' => null,
+      'billing_profile_updated_at' => null,
     ];
+  }
+
+  $scheduledSubscriptionChange = null;
+  if ($orgId && !empty($sub['id'])) {
+    try {
+      $scheduledSubscriptionChange = db()->one("
+        SELECT
+          sc.id::text AS id,
+          sc.change_type,
+          sc.target_value,
+          sc.effective_at,
+          tp.code AS target_plan_code,
+          tp.name AS target_plan_name
+        FROM client.subscription_change_schedule sc
+        LEFT JOIN client.plans tp ON tp.id = sc.target_plan_id
+        WHERE sc.subscription_id = CAST(:sid AS uuid)
+          AND sc.status = 'SCHEDULED'
+        ORDER BY sc.effective_at ASC
+        LIMIT 1
+      ", [':sid' => (string)$sub['id']]);
+    } catch (Throwable) {
+      $scheduledSubscriptionChange = null;
+    }
   }
 
   $tickets = $orgId ? db()->all("SELECT id, ticket_type, priority, status, created_at, subject FROM client.tickets WHERE organization_id=:oid ORDER BY created_at DESC LIMIT 12", [':oid' => $orgId]) : [];
@@ -1220,6 +1335,18 @@ function renderDashboard(?string $notice = null): string {
   $siteStatusLabel = $siteOnline ? 'Online' : 'Aguardando publicação';
   $siteStatusClass = $siteOnline ? 'online' : 'offline';
   $uptime = $siteOnline ? '99,9%' : '--';
+  $currentPlanCode = strtolower((string)($sub['plan_code'] ?? 'basic'));
+  $subscriptionStatus = strtoupper((string)($sub['status'] ?? 'N/D'));
+  $subscriptionStatusBadgeClass = match($subscriptionStatus) {
+    'ACTIVE' => 'text-bg-success',
+    'OVERDUE' => 'text-bg-warning',
+    'CANCELED', 'CANCELLED', 'INACTIVE' => 'text-bg-danger',
+    'PENDING' => 'text-bg-secondary',
+    default => 'text-bg-secondary',
+  };
+  $featurePlanChangeWebhookConfirmed = featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true);
+  $featureTicketThreadSync = featureFlagEnabled('FEATURE_TICKET_THREAD_SYNC', false);
+  $featurePortalCancelSubscription = featureFlagEnabled('FEATURE_PORTAL_CANCEL_SUBSCRIPTION', true);
   $nextDue = !empty($sub['next_due_date']) ? date('d/m/Y', strtotime((string)$sub['next_due_date'])) : 'N/D';
   $fullAddress = trim((string)($org['billing_street'] ?? '') . ', ' . (string)($org['billing_number'] ?? '') . ' - ' . (string)($org['billing_city'] ?? '') . '/' . (string)($org['billing_state'] ?? ''));
   if ($fullAddress === ',  - /') {
@@ -1650,7 +1777,15 @@ function renderDashboard(?string $notice = null): string {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
-<body data-page="dashboard" data-theme="dark" data-open-briefing="<?= $hasBriefing ? '0' : '1' ?>" data-csrf-token="<?= h(csrfToken()) ?>">
+<body
+  data-page="dashboard"
+  data-theme="dark"
+  data-open-briefing="<?= $hasBriefing ? '0' : '1' ?>"
+  data-csrf-token="<?= h(csrfToken()) ?>"
+  data-feature-plan-change-webhook-confirmed="<?= $featurePlanChangeWebhookConfirmed ? '1' : '0' ?>"
+  data-feature-ticket-thread-sync="<?= $featureTicketThreadSync ? '1' : '0' ?>"
+  data-feature-cancel-subscription="<?= $featurePortalCancelSubscription ? '1' : '0' ?>"
+>
   <div class="client-layout">
     <aside class="client-sidebar">
       <div class="client-sidebar-logo-wrap">
@@ -1692,7 +1827,8 @@ function renderDashboard(?string $notice = null): string {
       </header>
 
       <main id="dashboard-main" class="client-content">
-        <div id="portalNotice" class="alert <?= $notice ? 'ok' : 'hidden' ?>"><?= $notice ? h($notice) : '' ?></div>
+        <div id="portalNotice" class="alert <?= $notice ? 'ok' : 'hidden' ?>" role="status" aria-live="polite"><?= $notice ? h($notice) : '' ?></div>
+        <div class="toast-container position-fixed top-0 end-0 p-3 portal-toast-container" id="portalToastContainer" aria-live="polite" aria-atomic="true"></div>
 
         <?php if (!$hasBriefing): ?>
           <section class="briefing-banner">
@@ -1717,7 +1853,7 @@ function renderDashboard(?string $notice = null): string {
             <article class="kpi-card skeleton-ready"><h4><i class="bi bi-box-seam-fill" aria-hidden="true"></i> Plano</h4><strong><?= h((string)($sub['plan_name'] ?? 'N/D')) ?></strong></article>
             <article class="kpi-card skeleton-ready"><h4><i class="bi bi-pin-angle-fill" aria-hidden="true"></i> Status</h4><strong class="<?= strtoupper((string)($sub['status'] ?? '')) === 'ACTIVE' ? 'status-text-ok' : 'status-text-warn' ?>"><?= h((string)($sub['status'] ?? 'N/D')) ?></strong></article>
             <article class="kpi-card skeleton-ready"><h4><i class="bi bi-calendar-event-fill" aria-hidden="true"></i> Vencimento</h4><strong><?= h($nextDue) ?></strong></article>
-            <article class="kpi-card skeleton-ready"><h4><i class="bi bi-cash-coin" aria-hidden="true"></i> Mensalidade</h4><strong>R$ <?= h(number_format((float)($sub['monthly_price'] ?? 0), 2, ',', '.')) ?></strong></article>
+            <article class="kpi-card skeleton-ready"><h4><i class="bi bi-cash-coin" aria-hidden="true"></i> Mensalidade</h4><strong>R$ <?= h(number_format((float)($sub['effective_monthly_price'] ?? $sub['monthly_price'] ?? 0), 2, ',', '.')) ?></strong></article>
           </section>
 
           <section class="portal-card modern-card">
@@ -1735,77 +1871,223 @@ function renderDashboard(?string $notice = null): string {
 
         <section class="portal-section" data-section="chamados">
           <section class="portal-card modern-card">
-            <h3>Central de Chamados</h3>
-            <form id="ticketForm" class="grid-2">
-              <div class="form-col"><label>Tipo</label><select name="ticket_type" required><option value="SITE_FORA_DO_AR">Site fora do ar</option><option value="SUPORTE">Suporte técnico</option><option value="MUDANCA_PLANO">Dúvidas sobre plano</option><option value="ORCAMENTO_PRIORITARIO">Solicitar mudança</option></select></div>
-              <div class="form-col"><label>Prioridade</label><select name="priority" required><option>BAIXA</option><option selected>NORMAL</option><option>ALTA</option><option>CRITICA</option></select></div>
-              <div class="form-col full"><label>Assunto</label><input name="subject" required></div>
-              <div class="form-col full"><label>Descrição detalhada</label><textarea name="description" required rows="5"></textarea></div>
-              <div class="form-col full"><button class="btn btn-primary" type="submit">Abrir Chamado</button></div>
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3">
+              <div>
+                <h3 class="mb-1">Central de Chamados</h3>
+                <p class="note mb-0">Abra solicitações e acompanhe os protocolos gerados no CRM.</p>
+              </div>
+            </div>
+            <div id="ticketInlineNotice" class="alert d-none mb-3" role="alert"></div>
+            <form id="ticketForm" class="row g-3" novalidate>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="ticketType">Tipo</label>
+                <select class="form-select" id="ticketType" name="ticket_type" required>
+                  <option value="SITE_FORA_DO_AR">Site fora do ar</option>
+                  <option value="SUPORTE">Suporte técnico</option>
+                  <option value="MUDANCA_PLANO">Dúvidas sobre plano</option>
+                  <option value="ORCAMENTO_PRIORITARIO">Solicitar mudança</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="ticketPriority">Prioridade</label>
+                <select class="form-select" id="ticketPriority" name="priority" required>
+                  <option>BAIXA</option>
+                  <option selected>NORMAL</option>
+                  <option>ALTA</option>
+                  <option>CRITICA</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="ticketSubject">Assunto</label>
+                <input class="form-control" id="ticketSubject" name="subject" required minlength="3" maxlength="180" placeholder="Ex.: Ajuste no formulário de contato">
+                <div class="form-text">Mínimo de 3 caracteres.</div>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="ticketDescription">Descrição detalhada</label>
+                <textarea class="form-control" id="ticketDescription" name="description" required minlength="10" rows="5" placeholder="Descreva o problema com contexto para agilizar o atendimento."></textarea>
+                <div class="form-text">Mínimo de 10 caracteres.</div>
+              </div>
+              <div class="col-12 d-grid d-sm-flex justify-content-sm-end">
+                <button class="btn btn-primary px-4" id="ticketSubmitBtn" type="submit" aria-label="Abrir chamado">
+                  <span class="btn-label">Abrir chamado</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+              </div>
             </form>
           </section>
           <section class="portal-card modern-card">
-            <h3>Histórico de Chamados</h3>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Tipo</th><th>Assunto</th><th>Prioridade</th><th>Status</th><th>Data</th></tr></thead>
-                <tbody>
-                  <?php foreach ($tickets as $t): ?>
-                  <tr>
-                    <td data-label="Tipo"><?= h((string)$t['ticket_type']) ?></td>
-                    <td data-label="Assunto"><?= h((string)$t['subject']) ?></td>
-                    <td data-label="Prioridade"><?= h((string)$t['priority']) ?></td>
-                    <td data-label="Status"><?= h((string)$t['status']) ?></td>
-                    <td data-label="Data"><?= h(date('d/m/Y H:i', strtotime((string)$t['created_at']))) ?></td>
-                  </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <h3 class="mb-0">Histórico de Chamados</h3>
+              <span class="badge text-bg-secondary"><?= h((string)count($tickets)) ?> chamado(s)</span>
             </div>
+            <?php if (count($tickets) === 0): ?>
+              <div class="empty-state text-center py-4">
+                <i class="bi bi-inbox fs-3 d-block mb-2" aria-hidden="true"></i>
+                <p class="mb-1 fw-semibold">Nenhum chamado registrado.</p>
+                <p class="note mb-0">Abra seu primeiro chamado para iniciar o atendimento.</p>
+              </div>
+            <?php else: ?>
+              <div class="table-wrap table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Protocolo</th>
+                      <th>Tipo</th>
+                      <th>Assunto</th>
+                      <th>Prioridade</th>
+                      <th>Status</th>
+                      <th>Data</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($tickets as $t): ?>
+                    <?php
+                      $ticketStatus = strtoupper((string)($t['status'] ?? 'OPEN'));
+                      $ticketBadgeClass = match ($ticketStatus) {
+                        'OPEN' => 'text-bg-primary',
+                        'IN_PROGRESS' => 'text-bg-warning',
+                        'CLOSED' => 'text-bg-success',
+                        default => 'text-bg-secondary',
+                      };
+                    ?>
+                    <tr>
+                      <td data-label="Protocolo"><code class="small"><?= h((string)$t['id']) ?></code></td>
+                      <td data-label="Tipo"><?= h((string)$t['ticket_type']) ?></td>
+                      <td data-label="Assunto"><?= h((string)$t['subject']) ?></td>
+                      <td data-label="Prioridade"><?= h((string)$t['priority']) ?></td>
+                      <td data-label="Status"><span class="badge <?= h($ticketBadgeClass) ?>"><?= h($ticketStatus) ?></span></td>
+                      <td data-label="Data"><?= h(date('d/m/Y H:i', strtotime((string)$t['created_at']))) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
           </section>
         </section>
 
         <section class="portal-section" data-section="pagamentos">
           <section class="portal-card modern-card">
-            <h3>Método de Pagamento Atual</h3>
-            <div class="payment-summary">
-              <div class="readonly-field"><label>Cartão atual</label><span><?= h(($billingProfile['card_brand'] ?? 'N/D') . ' •••• ' . ($billingProfile['card_last4'] ?? '----')) ?></span></div>
-              <div class="readonly-field"><label>Vencimento</label><span><?= h(!empty($billingProfile['exp_month']) ? str_pad((string)$billingProfile['exp_month'], 2, '0', STR_PAD_LEFT) . '/' . $billingProfile['exp_year'] : 'N/D') ?></span></div>
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3">
+              <div>
+                <h3 class="mb-1">Método de Pagamento Atual</h3>
+                <p class="note mb-0">A gestão de cobrança usa checkout seguro ASAAS para recorrência.</p>
+              </div>
+              <span class="badge <?= h($subscriptionStatusBadgeClass) ?> align-self-start"><?= h($subscriptionStatus) ?></span>
             </div>
-            <p class="note" style="margin-top:12px">A gestão de cartão é feita no checkout seguro do ASAAS. Este portal não processa dados brutos de cartão.</p>
+            <div id="paymentInlineNotice" class="alert d-none mb-3" role="alert"></div>
+            <div id="paymentProtocolCard" class="portal-protocol-card d-none mb-3" aria-live="polite"></div>
+            <div class="payment-summary">
+              <div class="readonly-field">
+                <label>Cartão atual</label>
+                <span><?= h(($billingProfile['card_brand'] ?? 'N/D') . ' •••• ' . ($billingProfile['card_last4'] ?? '----')) ?></span>
+              </div>
+              <div class="readonly-field">
+                <label>Vencimento</label>
+                <span><?= h(!empty($billingProfile['exp_month']) ? str_pad((string)$billingProfile['exp_month'], 2, '0', STR_PAD_LEFT) . '/' . $billingProfile['exp_year'] : 'N/D') ?></span>
+              </div>
+            </div>
+            <p class="note mt-2 mb-0">Dados sensíveis do cartão não são armazenados neste portal. Atualização de cartão não gera nova cobrança.</p>
+            <?php if (!empty($sub['billing_profile_updated_at'])): ?>
+              <p class="note mt-1 mb-0">Última atualização do método de pagamento: <?= h(date('d/m/Y H:i', strtotime((string)$sub['billing_profile_updated_at']))) ?></p>
+            <?php endif; ?>
             <?php if (!empty($sub['asaas_subscription_id'])): ?>
-              <div style="margin-top:12px">
-                <button class="btn btn-primary" id="retryPaymentBtn" type="button" data-subscription-id="<?= h((string)$sub['asaas_subscription_id']) ?>">Abrir cobrança segura</button>
+              <div class="d-flex flex-wrap gap-2 mt-3">
+                <button class="btn btn-primary" id="retryPaymentBtn" type="button" data-subscription-id="<?= h((string)$sub['asaas_subscription_id']) ?>">
+                  <span class="btn-label">Abrir cobrança segura</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+                <button class="btn btn-outline-secondary" id="updateCardBtn" type="button" data-subscription-id="<?= h((string)$sub['asaas_subscription_id']) ?>">
+                  <span class="btn-label">Atualizar cartão</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+                <button class="btn btn-outline-danger" id="cancelSubscriptionBtn" type="button" data-subscription-id="<?= h((string)$sub['asaas_subscription_id']) ?>" <?= $featurePortalCancelSubscription ? '' : 'disabled title="Cancelamento indisponível neste ambiente"' ?>>
+                  Solicitar cancelamento
+                </button>
               </div>
             <?php endif; ?>
           </section>
           <section class="portal-card modern-card">
-            <h3>Histórico de Faturas</h3>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Data</th><th>Valor</th><th>Status</th><th>Método</th><th>Pago em</th></tr></thead>
-                <tbody>
-                  <?php foreach ($payments as $p): ?>
-                  <tr>
-                    <td data-label="Data"><?= h(!empty($p['due_date']) ? date('d/m/Y', strtotime((string)$p['due_date'])) : 'N/D') ?></td>
-                    <td data-label="Valor">R$ <?= h(number_format((float)$p['amount'], 2, ',', '.')) ?></td>
-                    <td data-label="Status"><?= h((string)$p['status']) ?></td>
-                    <td data-label="Método"><?= h((string)$p['billing_type']) ?></td>
-                    <td data-label="Pago em"><?= h(!empty($p['paid_at']) ? date('d/m/Y H:i', strtotime((string)$p['paid_at'])) : '-') ?></td>
-                  </tr>
-                  <?php endforeach; ?>
-                </tbody>
-              </table>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <h3 class="mb-0">Histórico de Faturas</h3>
+              <span class="badge text-bg-secondary"><?= h((string)count($payments)) ?> fatura(s)</span>
             </div>
+            <?php if (count($payments) === 0): ?>
+              <div class="empty-state text-center py-4">
+                <i class="bi bi-receipt fs-3 d-block mb-2" aria-hidden="true"></i>
+                <p class="mb-1 fw-semibold">Nenhuma fatura disponível.</p>
+                <p class="note mb-0">As cobranças aparecerão aqui após a emissão no ASAAS.</p>
+              </div>
+            <?php else: ?>
+              <div class="table-wrap table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th class="text-end">Valor</th>
+                      <th>Status</th>
+                      <th>Método</th>
+                      <th>Pago em</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($payments as $p): ?>
+                    <?php
+                      $paymentStatus = strtoupper((string)($p['status'] ?? 'PENDING'));
+                      $paymentBadgeClass = match ($paymentStatus) {
+                        'RECEIVED', 'PAID', 'CONFIRMED' => 'text-bg-success',
+                        'PENDING' => 'text-bg-warning',
+                        'OVERDUE' => 'text-bg-danger',
+                        'CANCELED', 'CANCELLED' => 'text-bg-secondary',
+                        default => 'text-bg-secondary',
+                      };
+                    ?>
+                    <tr>
+                      <td data-label="Data"><?= h(!empty($p['due_date']) ? date('d/m/Y', strtotime((string)$p['due_date'])) : 'N/D') ?></td>
+                      <td data-label="Valor" class="text-end">R$ <?= h(number_format((float)$p['amount'], 2, ',', '.')) ?></td>
+                      <td data-label="Status"><span class="badge <?= h($paymentBadgeClass) ?>"><?= h($paymentStatus) ?></span></td>
+                      <td data-label="Método"><?= h((string)$p['billing_type']) ?></td>
+                      <td data-label="Pago em"><?= h(!empty($p['paid_at']) ? date('d/m/Y H:i', strtotime((string)$p['paid_at'])) : '-') ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
           </section>
         </section>
 
         <section class="portal-section" data-section="planos">
           <section class="portal-card modern-card">
-            <h3>Planos Disponíveis</h3>
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3">
+              <div>
+                <h3 class="mb-1">Planos Disponíveis</h3>
+                <p class="note mb-0">Upgrade aplica imediatamente com cobrança proporcional da diferença. Downgrade fica agendado para o próximo vencimento.</p>
+              </div>
+              <span class="badge text-bg-info align-self-start">Plano atual: <?= h((string)($sub['plan_name'] ?? 'N/D')) ?></span>
+            </div>
+            <div id="planInlineNotice" class="alert d-none mb-3" role="alert"></div>
+            <div id="planProtocolCard" class="portal-protocol-card d-none mb-3" aria-live="polite"></div>
+            <div class="alert alert-secondary py-2 mb-3">
+              Mensalidade atual: <strong>R$ <?= h(number_format((float)($sub['effective_monthly_price'] ?? $sub['monthly_price'] ?? 0), 2, ',', '.')) ?></strong>
+              <?php if (!empty($sub['next_due_date'])): ?>
+                | Próximo vencimento: <strong><?= h(date('d/m/Y', strtotime((string)$sub['next_due_date']))) ?></strong>
+              <?php endif; ?>
+            </div>
+            <?php if ($scheduledSubscriptionChange): ?>
+              <div class="alert alert-warning py-2 mb-3">
+                Mudança agendada:
+                <strong><?= h((string)($scheduledSubscriptionChange['target_plan_name'] ?? 'Ajuste de valor')) ?></strong>
+                (R$ <?= h(number_format((float)($scheduledSubscriptionChange['target_value'] ?? 0), 2, ',', '.')) ?>)
+                para <strong><?= h(date('d/m/Y H:i', strtotime((string)$scheduledSubscriptionChange['effective_at']))) ?></strong>.
+              </div>
+            <?php endif; ?>
             <div class="plans-grid">
-              <article class="plan-tile">
-                <h4>Básico</h4>
+              <article class="plan-tile <?= $currentPlanCode === 'basic' ? 'is-current' : '' ?>" data-plan-code="basic">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                  <h4>Básico</h4>
+                  <?php if ($currentPlanCode === 'basic'): ?><span class="badge text-bg-success">Atual</span><?php endif; ?>
+                </div>
                 <strong>R$ 149,99/mês</strong>
                 <ul>
                   <li>Site 1 página</li>
@@ -1813,9 +2095,13 @@ function renderDashboard(?string $notice = null): string {
                   <li>1 e-mail profissional</li>
                   <li>Migração gratuita</li>
                 </ul>
+                <button class="btn btn-outline-primary btn-sm mt-2 plan-pick-btn" type="button" data-plan-code="basic">Selecionar</button>
               </article>
-              <article class="plan-tile featured">
-                <h4>Profissional</h4>
+              <article class="plan-tile featured <?= $currentPlanCode === 'profissional' ? 'is-current' : '' ?>" data-plan-code="profissional">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                  <h4>Profissional</h4>
+                  <?php if ($currentPlanCode === 'profissional'): ?><span class="badge text-bg-success">Atual</span><?php endif; ?>
+                </div>
                 <strong>R$ 249,00/mês</strong>
                 <ul>
                   <li>Até 3 páginas</li>
@@ -1823,9 +2109,13 @@ function renderDashboard(?string $notice = null): string {
                   <li>E-mails ilimitados</li>
                   <li>Suporte técnico</li>
                 </ul>
+                <button class="btn btn-outline-primary btn-sm mt-2 plan-pick-btn" type="button" data-plan-code="profissional">Selecionar</button>
               </article>
-              <article class="plan-tile">
-                <h4>Pro</h4>
+              <article class="plan-tile <?= $currentPlanCode === 'pro' ? 'is-current' : '' ?>" data-plan-code="pro">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                  <h4>Pro</h4>
+                  <?php if ($currentPlanCode === 'pro'): ?><span class="badge text-bg-success">Atual</span><?php endif; ?>
+                </div>
                 <strong>R$ 399,00/mês</strong>
                 <ul>
                   <li>Chatbot incluso</li>
@@ -1833,13 +2123,36 @@ function renderDashboard(?string $notice = null): string {
                   <li>Catálogo de produtos</li>
                   <li>SEO profissional</li>
                 </ul>
+                <button class="btn btn-outline-primary btn-sm mt-2 plan-pick-btn" type="button" data-plan-code="pro">Selecionar</button>
               </article>
             </div>
-            <form id="planForm" class="grid-2" style="margin-top:14px;">
+            <form id="planForm" class="row g-3 mt-1" data-current-plan="<?= h($currentPlanCode) ?>">
               <input type="hidden" name="asaas_subscription_id" value="<?= h((string)($sub['asaas_subscription_id'] ?? '')) ?>">
-              <div class="form-col"><label>Novo plano</label><select name="plan_code" required><option value="basic">Básico</option><option value="profissional">Profissional</option><option value="pro">Pro</option></select></div>
-              <div class="form-col"><label>Justificativa</label><textarea name="justificativa" required></textarea></div>
-              <div class="form-col full"><button class="btn btn-accent" type="submit" <?= empty($sub['asaas_subscription_id']) ? 'disabled title="Finalize a contratação para habilitar troca de plano"' : '' ?>>Solicitar troca</button></div>
+              <input type="hidden" name="next_due_date" value="<?= h((string)($sub['next_due_date'] ?? '')) ?>">
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="planCodeSelect">Novo plano</label>
+                <select class="form-select" id="planCodeSelect" name="plan_code" required>
+                  <option value="basic" <?= $currentPlanCode === 'basic' ? 'selected' : '' ?>>Básico</option>
+                  <option value="profissional" <?= $currentPlanCode === 'profissional' ? 'selected' : '' ?>>Profissional</option>
+                  <option value="pro" <?= $currentPlanCode === 'pro' ? 'selected' : '' ?>>Pro</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="planReason">Justificativa (opcional)</label>
+                <textarea class="form-control" id="planReason" name="justificativa" rows="3" maxlength="500" placeholder="Se quiser, descreva o motivo da troca."></textarea>
+                <div class="form-text" id="planJustificationCounter">0 / 500</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="planCustomValue">Ajuste de mensalidade (opcional)</label>
+                <input class="form-control" id="planCustomValue" name="custom_value" type="number" min="0" step="0.01" placeholder="Ex.: 299.90">
+                <div class="form-text">Se informado, substitui o valor padrão do plano para esta assinatura.</div>
+              </div>
+              <div class="col-12 d-grid d-sm-flex justify-content-sm-end">
+                <button class="btn btn-accent px-4" id="planSubmitBtn" type="submit" <?= empty($sub['asaas_subscription_id']) ? 'disabled title="Finalize a contratação para habilitar troca de plano"' : '' ?>>
+                  <span class="btn-label">Solicitar troca</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+              </div>
             </form>
           </section>
         </section>
@@ -2307,46 +2620,124 @@ function renderDashboard(?string $notice = null): string {
           </div>
         </div>
 
-        <section class="portal-section" data-section="perfil">
-          <section class="portal-card modern-card">
-            <h3>Perfil e Conta</h3>
-            <form id="profileForm" class="grid-2">
-              <div class="form-col">
-                <label>Nome da conta</label>
-                <input name="name" value="<?= h((string)($org['legal_name'] ?? ($user['name'] ?? 'Cliente KoddaHub'))) ?>" required>
+        <div class="portal-modal hidden" id="planChangeConfirmModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog">
+            <header class="portal-modal-header">
+              <h3>Confirmar troca de plano</h3>
+              <button type="button" class="icon-btn" id="planChangeConfirmCloseBtn" aria-label="Fechar">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </header>
+            <p id="planChangeConfirmText" class="mb-2">Revise sua solicitação antes de enviar.</p>
+            <p class="note mb-0">A solicitação será validada no ASAAS e pode ficar pendente até confirmação do webhook.</p>
+            <div class="alert d-none mt-3" id="planChangeConfirmNotice" role="alert"></div>
+            <div class="operation-actions mt-3">
+              <button type="button" class="btn btn-ghost" id="planChangeConfirmCancelBtn">Cancelar</button>
+              <button type="button" class="btn btn-primary" id="planChangeConfirmSubmitBtn">
+                <span class="btn-label">Confirmar solicitação</span>
+                <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="portal-modal hidden" id="cancelSubscriptionModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog">
+            <header class="portal-modal-header">
+              <h3>Solicitar cancelamento</h3>
+              <button type="button" class="icon-btn" id="cancelSubscriptionCloseBtn" aria-label="Fechar">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </header>
+            <form id="cancelSubscriptionForm" class="row g-3">
+              <input type="hidden" name="asaas_subscription_id" value="<?= h((string)($sub['asaas_subscription_id'] ?? '')) ?>">
+              <div class="col-12">
+                <label class="form-label" for="cancelMode">Modo de cancelamento</label>
+                <select class="form-select" id="cancelMode" name="mode" required>
+                  <option value="END_OF_CYCLE" selected>No fim do ciclo atual</option>
+                  <option value="IMMEDIATE">Imediato</option>
+                </select>
               </div>
-              <div class="form-col">
-                <label>E-mail de acesso</label>
-                <input type="email" name="email" value="<?= h((string)($org['billing_email'] ?? ($user['email'] ?? ''))) ?>" required>
+              <div class="col-12">
+                <div class="form-text">Você poderá acompanhar o status final após confirmação no gateway.</div>
               </div>
-              <div class="form-col">
-                <label>WhatsApp</label>
-                <input name="phone" value="<?= h((string)($org['whatsapp'] ?? '')) ?>" placeholder="(41) 99999-9999">
+              <div class="col-12">
+                <div class="alert d-none" id="cancelSubscriptionNotice" role="alert"></div>
               </div>
-              <div class="form-col">
-                <label>E-mail de cobrança</label>
-                <input type="email" name="billing_email" value="<?= h((string)($org['billing_email'] ?? ($user['email'] ?? ''))) ?>" required>
-              </div>
-              <div class="form-col">
-                <label>Nova senha (opcional)</label>
-                <input type="password" name="new_password" placeholder="mínimo 6 caracteres">
-              </div>
-              <div class="form-col">
-                <label>Confirmar nova senha</label>
-                <input type="password" name="new_password_confirm" placeholder="repita a nova senha">
-              </div>
-              <div class="form-col full">
-                <label>Senha atual (obrigatória para salvar)</label>
-                <input type="password" name="account_password" required>
-              </div>
-              <div class="form-col full">
-                <button type="submit" class="btn btn-primary">Salvar alterações</button>
+              <div class="col-12 operation-actions">
+                <button type="button" class="btn btn-ghost" id="cancelSubscriptionCancelBtn">Voltar</button>
+                <button type="submit" class="btn btn-danger" id="cancelSubscriptionSubmitBtn">
+                  <span class="btn-label">Confirmar cancelamento</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
               </div>
             </form>
-            <div class="contract-grid" style="margin-top:12px">
-              <div class="readonly-field"><label>Plano atual</label><span><?= h((string)($sub['plan_name'] ?? 'N/D')) ?></span></div>
-              <div class="readonly-field"><label>Status assinatura</label><span><?= h((string)($sub['status'] ?? 'N/D')) ?></span></div>
-              <div class="readonly-field"><label>ID assinatura</label><span><?= h((string)($sub['asaas_subscription_id'] ?? 'N/D')) ?></span></div>
+          </div>
+        </div>
+
+        <section class="portal-section" data-section="perfil">
+          <section class="portal-card modern-card">
+            <div class="d-flex flex-column flex-lg-row justify-content-between gap-2 mb-3">
+              <div>
+                <h3 class="mb-1">Perfil e Conta</h3>
+                <p class="note mb-0">Mantenha seus dados atualizados para comunicação e cobrança.</p>
+              </div>
+            </div>
+            <div id="profileInlineNotice" class="alert d-none mb-3" role="alert"></div>
+            <form id="profileForm" class="row g-3" novalidate>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profileName">Nome da conta</label>
+                <input class="form-control" id="profileName" name="name" value="<?= h((string)($org['legal_name'] ?? ($user['name'] ?? 'Cliente KoddaHub'))) ?>" required>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profileEmail">E-mail de acesso</label>
+                <input class="form-control" id="profileEmail" type="email" name="email" value="<?= h((string)($org['billing_email'] ?? ($user['email'] ?? ''))) ?>" required>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profilePhone">WhatsApp</label>
+                <input class="form-control" id="profilePhone" name="phone" value="<?= h((string)($org['whatsapp'] ?? '')) ?>" placeholder="(41) 99999-9999">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profileBillingEmail">E-mail de cobrança</label>
+                <input class="form-control" id="profileBillingEmail" type="email" name="billing_email" value="<?= h((string)($org['billing_email'] ?? ($user['email'] ?? ''))) ?>" required>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profileNewPassword">Nova senha (opcional)</label>
+                <input class="form-control" id="profileNewPassword" type="password" name="new_password" placeholder="mínimo 6 caracteres" minlength="6">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="profileNewPasswordConfirm">Confirmar nova senha</label>
+                <input class="form-control" id="profileNewPasswordConfirm" type="password" name="new_password_confirm" placeholder="repita a nova senha" minlength="6">
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="profileAccountPassword">Senha atual (obrigatória para salvar)</label>
+                <input class="form-control" id="profileAccountPassword" type="password" name="account_password" required>
+              </div>
+              <div class="col-12 d-grid d-sm-flex justify-content-sm-end">
+                <button type="submit" class="btn btn-primary px-4" id="profileSubmitBtn">
+                  <span class="btn-label">Salvar alterações</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+              </div>
+            </form>
+            <div class="contract-grid mt-3">
+              <div class="readonly-field">
+                <label>Plano atual</label>
+                <span><?= h((string)($sub['plan_name'] ?? 'N/D')) ?></span>
+              </div>
+              <div class="readonly-field">
+                <label>Status assinatura</label>
+                <span><span class="badge <?= h($subscriptionStatusBadgeClass) ?>"><?= h($subscriptionStatus) ?></span></span>
+              </div>
+              <div class="readonly-field">
+                <label>ID assinatura</label>
+                <span class="d-flex align-items-center gap-2 flex-wrap">
+                  <code id="profileSubscriptionId"><?= h((string)($sub['asaas_subscription_id'] ?? 'N/D')) ?></code>
+                  <button class="btn btn-outline-secondary btn-sm" type="button" data-copy-target="profileSubscriptionId" aria-label="Copiar ID da assinatura">Copiar</button>
+                </span>
+              </div>
             </div>
           </section>
         </section>
@@ -5693,25 +6084,37 @@ $router->post('/api/auth/register-contract', function(Request $request) {
 $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
+  ensureSubscriptionRecurringTables();
   $requestId = requestCorrelationId($request);
   $sid = (string)($request->query['id'] ?? '');
   $planCode = (string)$request->input('plan_code', '');
   if ($sid === '' || $planCode === '') {
-    Response::json(['error' => 'Dados obrigatórios ausentes'], 422);
+    Response::json(['error' => 'Dados obrigatórios ausentes', 'request_id' => $requestId], 422);
     return;
   }
 
-  $plan = db()->one("SELECT id, monthly_price FROM client.plans WHERE code=:c", [':c' => $planCode]);
+  $plan = db()->one("SELECT id, code, monthly_price FROM client.plans WHERE code=:c", [':c' => $planCode]);
   if (!$plan) {
-    Response::json(['error' => 'Plano inválido'], 422);
+    Response::json(['error' => 'Plano inválido', 'request_id' => $requestId], 422);
     return;
   }
 
+  $customValueInput = trim((string)$request->input('custom_value', ''));
+  $customValue = null;
+  if ($customValueInput !== '') {
+    if (!is_numeric($customValueInput) || (float)$customValueInput <= 0) {
+      Response::json(['error' => 'Valor personalizado inválido', 'request_id' => $requestId], 422);
+      return;
+    }
+    $customValue = round((float)$customValueInput, 2);
+  }
+
+  $targetValue = $customValue !== null ? $customValue : (float)$plan['monthly_price'];
   $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
   $userId = (string)($_SESSION['client_user']['id'] ?? '');
   $sub = db()->one("
-    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.plan_id::text AS plan_id, s.status, s.asaas_subscription_id,
-           p.code AS current_plan_code, p.monthly_price AS current_price,
+    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.plan_id::text AS plan_id, s.status, s.asaas_subscription_id, s.asaas_customer_id, s.next_due_date, s.price_override,
+           p.code AS current_plan_code, p.monthly_price AS current_price, COALESCE(s.price_override, p.monthly_price) AS current_value,
            d.id::text AS deal_id
     FROM client.subscriptions s
     JOIN client.plans p ON p.id = s.plan_id
@@ -5726,9 +6129,22 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
     LIMIT 1
   ", [':sid' => $sid]);
   if (!$sub || (string)($sub['organization_id'] ?? '') !== $orgId) {
-    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado'], 403);
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado', 'request_id' => $requestId], 403);
     return;
   }
+
+  $currentValue = round((float)($sub['current_value'] ?? $sub['current_price'] ?? 0), 2);
+  $delta = round($targetValue - $currentValue, 2);
+  $direction = $delta > 0 ? 'UPGRADE' : ($delta < 0 ? 'DOWNGRADE' : 'UNCHANGED');
+  if ($direction === 'UNCHANGED' && strtolower((string)$sub['current_plan_code']) === strtolower($planCode)) {
+    Response::json(['error' => 'Nenhuma mudança detectada no plano/valor', 'request_id' => $requestId], 422);
+    return;
+  }
+
+  $defaultCycleDays = max(1, (int)(getenv('ASAAS_DEFAULT_CYCLE_DAYS') ?: 30));
+  $prorataAmount = $direction === 'UPGRADE'
+    ? calculateProrataAmount($currentValue, $targetValue, (string)($sub['next_due_date'] ?? ''), $defaultCycleDays)
+    : 0.0;
 
   $asaas = new AsaasClient();
   $action = financialAuditNotifier()->recordActionRequested([
@@ -5742,57 +6158,364 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
     'correlation_id' => $requestId,
     'before_state' => [
       'current_plan_code' => (string)($sub['current_plan_code'] ?? ''),
-      'current_price' => (float)($sub['current_price'] ?? 0),
+      'current_price' => $currentValue,
       'status' => (string)($sub['status'] ?? ''),
     ],
     'payload' => [
       'asaas_subscription_id' => $sid,
       'current_plan_code' => (string)($sub['current_plan_code'] ?? ''),
       'requested_plan_code' => $planCode,
-      'requested_price' => (float)$plan['monthly_price'],
-      'mode' => featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true) ? 'AWAIT_WEBHOOK_CONFIRMATION' : 'IMMEDIATE_LOCAL_UPDATE',
+      'requested_price' => $targetValue,
+      'direction' => $direction,
+      'prorata_amount' => $prorataAmount,
+      'mode' => $direction === 'DOWNGRADE' ? 'SCHEDULE_NEXT_DUE' : (featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true) ? 'AWAIT_WEBHOOK_CONFIRMATION' : 'IMMEDIATE_LOCAL_UPDATE'),
     ],
     'source' => 'PORTAL_API',
   ]);
   $actionId = (string)($action['action_id'] ?? '');
 
-  $result = $asaas->updateSubscription($sid, ['value' => (float)$plan['monthly_price']]);
-  if (!$asaas->isSuccess($result)) {
-    financialAuditNotifier()->recordActionFailed([
-      'action_id' => $actionId,
-      'error_reason' => 'Falha ao atualizar assinatura no ASAAS',
-      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($result)],
+  if ($direction === 'DOWNGRADE') {
+    $effectiveAt = safeDateTime((string)($sub['next_due_date'] ?? ''));
+    if (!$effectiveAt) {
+      $effectiveAt = (new DateTimeImmutable('now'))->modify('+30 days');
+    }
+    $effectiveAt = $effectiveAt->setTime(3, 0, 0);
+
+    db()->exec("
+      INSERT INTO client.subscription_change_schedule(
+        action_id, subscription_id, organization_id, asaas_subscription_id, change_type,
+        current_plan_id, target_plan_id, current_value, target_value, effective_at, status, metadata, created_at, updated_at
+      )
+      VALUES(
+        CAST(:action_id AS uuid), CAST(:subscription_id AS uuid), CAST(:organization_id AS uuid), :asaas_subscription_id, 'PLAN_DOWNGRADE',
+        CAST(:current_plan_id AS uuid), CAST(:target_plan_id AS uuid), :current_value, :target_value, :effective_at, 'SCHEDULED', CAST(:metadata AS jsonb), now(), now()
+      )
+      ON CONFLICT (action_id)
+      DO UPDATE SET
+        target_plan_id=EXCLUDED.target_plan_id,
+        target_value=EXCLUDED.target_value,
+        effective_at=EXCLUDED.effective_at,
+        metadata=EXCLUDED.metadata,
+        updated_at=now()
+    ", [
+      ':action_id' => $actionId,
+      ':subscription_id' => (string)$sub['id'],
+      ':organization_id' => $orgId,
+      ':asaas_subscription_id' => $sid,
+      ':current_plan_id' => (string)$sub['plan_id'],
+      ':target_plan_id' => (string)$plan['id'],
+      ':current_value' => $currentValue,
+      ':target_value' => $targetValue,
+      ':effective_at' => $effectiveAt->format('Y-m-d H:i:sP'),
+      ':metadata' => safeJson([
+        'requested_plan_code' => $planCode,
+        'requested_value' => $targetValue,
+        'request_id' => $requestId,
+      ]),
     ]);
-    Response::json(['error' => 'Falha ao solicitar troca no gateway de pagamento', 'action_id' => $actionId], 502);
+
+    db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('CHANGE_PLAN','Downgrade agendado para o próximo ciclo',:meta)", [
+      ':meta' => json_encode([
+        'asaas_subscription_id' => $sid,
+        'plan_code' => $planCode,
+        'effective_at' => $effectiveAt->format(DATE_ATOM),
+        'action_id' => $actionId,
+      ], JSON_UNESCAPED_UNICODE),
+    ]);
+
+    Response::json([
+      'ok' => true,
+      'scheduled' => true,
+      'effective_at' => $effectiveAt->format(DATE_ATOM),
+      'direction' => $direction,
+      'requested_plan_code' => $planCode,
+      'requested_price' => $targetValue,
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ]);
     return;
   }
 
+  $updateResult = $asaas->updateSubscriptionPlan($sid, $planCode, ['value' => $targetValue]);
+  if (!$updateResult['ok']) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao atualizar assinatura no ASAAS',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($updateResult)],
+    ]);
+    Response::json([
+      'error' => $updateResult['error_message_safe'] ?? 'Falha ao solicitar troca no gateway de pagamento',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 502);
+    return;
+  }
+
+  $prorataResult = null;
+  if ($direction === 'UPGRADE' && $prorataAmount > 0) {
+    $customerId = trim((string)($sub['asaas_customer_id'] ?? ''));
+    if ($customerId === '') {
+      $subscriptionDetails = $asaas->getSubscription($sid);
+      $detailsData = is_array($subscriptionDetails['data'] ?? null) ? $subscriptionDetails['data'] : [];
+      $customerId = trim((string)($detailsData['customer'] ?? ''));
+    }
+    if ($customerId !== '') {
+      $prorataResult = $asaas->createProrataCharge(
+        $customerId,
+        $prorataAmount,
+        sprintf('Diferença proporcional de upgrade (%s -> %s)', (string)($sub['current_plan_code'] ?? ''), $planCode)
+      );
+      if (!$prorataResult['ok']) {
+        financialAuditNotifier()->recordActionFailed([
+          'action_id' => $actionId,
+          'error_reason' => 'Plano atualizado, mas cobrança proporcional não pôde ser criada',
+          'payload' => [
+            'asaas_plan_response' => FinancialAuditNotifier::sanitizePayload($updateResult),
+            'asaas_prorata_response' => FinancialAuditNotifier::sanitizePayload($prorataResult),
+          ],
+        ]);
+        Response::json([
+          'error' => 'Plano atualizado no ASAAS, porém a cobrança proporcional falhou. O time já foi notificado.',
+          'action_id' => $actionId,
+          'request_id' => $requestId,
+          'direction' => $direction,
+          'prorata_amount' => $prorataAmount,
+        ], 502);
+        return;
+      }
+    }
+  }
+
   if (!featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true)) {
-    db()->exec("UPDATE client.subscriptions SET plan_id=:pid, updated_at=now() WHERE asaas_subscription_id=:sid", [
-      ':pid' => $plan['id'], ':sid' => $sid
+    db()->exec("UPDATE client.subscriptions SET plan_id=:pid, price_override=:price_override, updated_at=now() WHERE asaas_subscription_id=:sid", [
+      ':pid' => $plan['id'],
+      ':price_override' => abs($targetValue - (float)$plan['monthly_price']) < 0.01 ? null : $targetValue,
+      ':sid' => $sid,
     ]);
     financialAuditNotifier()->recordActionConfirmed([
       'action_id' => $actionId,
-      'after_state' => ['plan_code' => $planCode, 'mode' => 'IMMEDIATE_LOCAL_UPDATE'],
-      'payload' => ['asaas_http_status' => (int)($result['http_status'] ?? 0)],
+      'after_state' => ['plan_code' => $planCode, 'value' => $targetValue, 'mode' => 'IMMEDIATE_LOCAL_UPDATE'],
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($updateResult)],
     ]);
   }
 
   db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('CHANGE_PLAN','Solicitação de troca de plano',:meta)", [
-    ':meta' => json_encode(['asaas_subscription_id' => $sid, 'plan_code' => $planCode], JSON_UNESCAPED_UNICODE),
+    ':meta' => json_encode([
+      'asaas_subscription_id' => $sid,
+      'plan_code' => $planCode,
+      'requested_value' => $targetValue,
+      'direction' => $direction,
+      'prorata_amount' => $prorataAmount,
+      'action_id' => $actionId,
+    ], JSON_UNESCAPED_UNICODE),
   ]);
 
-  Response::json(['ok' => true, 'asaas' => $result, 'action_id' => $actionId, 'request_id' => $requestId]);
+  Response::json([
+    'ok' => true,
+    'asaas' => $updateResult,
+    'direction' => $direction,
+    'requested_plan_code' => $planCode,
+    'requested_price' => $targetValue,
+    'prorata_amount' => $prorataAmount,
+    'prorata_result' => $prorataResult,
+    'action_id' => $actionId,
+    'request_id' => $requestId,
+  ]);
+});
+
+$router->post('/api/billing/subscriptions/{id}/update-value', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureSubscriptionRecurringTables();
+  $requestId = requestCorrelationId($request);
+  $sid = (string)($request->query['id'] ?? '');
+  $valueInput = trim((string)$request->input('new_value', ''));
+  if ($sid === '' || $valueInput === '' || !is_numeric($valueInput)) {
+    Response::json(['error' => 'Dados obrigatórios ausentes', 'request_id' => $requestId], 422);
+    return;
+  }
+  $newValue = round((float)$valueInput, 2);
+  if ($newValue <= 0) {
+    Response::json(['error' => 'Valor inválido', 'request_id' => $requestId], 422);
+    return;
+  }
+
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $sub = db()->one("
+    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.asaas_subscription_id, s.asaas_customer_id, s.next_due_date, s.status, s.plan_id::text AS plan_id,
+           p.monthly_price, COALESCE(s.price_override, p.monthly_price) AS current_value, d.id::text AS deal_id
+    FROM client.subscriptions s
+    JOIN client.plans p ON p.id = s.plan_id
+    LEFT JOIN LATERAL (
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id = s.organization_id
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) d ON true
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
+  if (!$sub || (string)($sub['organization_id'] ?? '') !== $orgId) {
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado', 'request_id' => $requestId], 403);
+    return;
+  }
+
+  $currentValue = round((float)($sub['current_value'] ?? 0), 2);
+  if (abs($currentValue - $newValue) < 0.01) {
+    Response::json(['error' => 'Nenhuma mudança de valor detectada', 'request_id' => $requestId], 422);
+    return;
+  }
+  $direction = $newValue > $currentValue ? 'UPGRADE' : 'DOWNGRADE';
+  $defaultCycleDays = max(1, (int)(getenv('ASAAS_DEFAULT_CYCLE_DAYS') ?: 30));
+  $prorataAmount = $direction === 'UPGRADE'
+    ? calculateProrataAmount($currentValue, $newValue, (string)($sub['next_due_date'] ?? ''), $defaultCycleDays)
+    : 0.0;
+
+  $audit = financialAuditNotifier();
+  $action = $audit->recordActionRequested([
+    'action_type' => 'UPDATE_SUBSCRIPTION_VALUE',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'deal_id' => (string)($sub['deal_id'] ?? ''),
+    'request_id' => $requestId,
+    'correlation_id' => $requestId,
+    'before_state' => ['current_value' => $currentValue, 'status' => (string)($sub['status'] ?? '')],
+    'payload' => [
+      'asaas_subscription_id' => $sid,
+      'requested_value' => $newValue,
+      'direction' => $direction,
+      'prorata_amount' => $prorataAmount,
+      'mode' => $direction === 'DOWNGRADE' ? 'SCHEDULE_NEXT_DUE' : (featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true) ? 'AWAIT_WEBHOOK_CONFIRMATION' : 'IMMEDIATE_LOCAL_UPDATE'),
+    ],
+    'source' => 'PORTAL_API',
+  ]);
+  $actionId = (string)($action['action_id'] ?? '');
+
+  if ($direction === 'DOWNGRADE') {
+    $effectiveAt = safeDateTime((string)($sub['next_due_date'] ?? ''));
+    if (!$effectiveAt) {
+      $effectiveAt = (new DateTimeImmutable('now'))->modify('+30 days');
+    }
+    $effectiveAt = $effectiveAt->setTime(3, 0, 0);
+    db()->exec("
+      INSERT INTO client.subscription_change_schedule(
+        action_id, subscription_id, organization_id, asaas_subscription_id, change_type,
+        current_plan_id, target_plan_id, current_value, target_value, effective_at, status, metadata, created_at, updated_at
+      )
+      VALUES(
+        CAST(:action_id AS uuid), CAST(:subscription_id AS uuid), CAST(:organization_id AS uuid), :asaas_subscription_id, 'VALUE_DECREASE',
+        CAST(:current_plan_id AS uuid), NULL, :current_value, :target_value, :effective_at, 'SCHEDULED', CAST(:metadata AS jsonb), now(), now()
+      )
+      ON CONFLICT (action_id)
+      DO UPDATE SET
+        target_value=EXCLUDED.target_value,
+        effective_at=EXCLUDED.effective_at,
+        metadata=EXCLUDED.metadata,
+        updated_at=now()
+    ", [
+      ':action_id' => $actionId,
+      ':subscription_id' => (string)$sub['id'],
+      ':organization_id' => $orgId,
+      ':asaas_subscription_id' => $sid,
+      ':current_plan_id' => (string)$sub['plan_id'],
+      ':current_value' => $currentValue,
+      ':target_value' => $newValue,
+      ':effective_at' => $effectiveAt->format('Y-m-d H:i:sP'),
+      ':metadata' => safeJson(['request_id' => $requestId, 'requested_value' => $newValue]),
+    ]);
+
+    Response::json([
+      'ok' => true,
+      'scheduled' => true,
+      'effective_at' => $effectiveAt->format(DATE_ATOM),
+      'direction' => $direction,
+      'requested_value' => $newValue,
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ]);
+    return;
+  }
+
+  $asaas = new AsaasClient();
+  $updateResult = $asaas->updateSubscriptionValue($sid, $newValue);
+  if (!$updateResult['ok']) {
+    $audit->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao atualizar valor da assinatura no ASAAS',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($updateResult)],
+    ]);
+    Response::json([
+      'error' => $updateResult['error_message_safe'] ?? 'Falha ao atualizar valor da assinatura',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 502);
+    return;
+  }
+
+  $prorataResult = null;
+  if ($prorataAmount > 0) {
+    $customerId = trim((string)($sub['asaas_customer_id'] ?? ''));
+    if ($customerId !== '') {
+      $prorataResult = $asaas->createProrataCharge(
+        $customerId,
+        $prorataAmount,
+        'Cobrança proporcional por ajuste de valor da assinatura'
+      );
+      if (!$prorataResult['ok']) {
+        $audit->recordActionFailed([
+          'action_id' => $actionId,
+          'error_reason' => 'Valor atualizado, porém cobrança proporcional não pôde ser criada',
+          'payload' => [
+            'asaas_update' => FinancialAuditNotifier::sanitizePayload($updateResult),
+            'asaas_prorata' => FinancialAuditNotifier::sanitizePayload($prorataResult),
+          ],
+        ]);
+        Response::json([
+          'error' => 'Valor atualizado no ASAAS, porém houve falha na cobrança proporcional. O time foi notificado.',
+          'action_id' => $actionId,
+          'request_id' => $requestId,
+        ], 502);
+        return;
+      }
+    }
+  }
+
+  if (!featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true)) {
+    db()->exec("UPDATE client.subscriptions SET price_override=:price_override, updated_at=now() WHERE asaas_subscription_id=:sid", [
+      ':price_override' => $newValue,
+      ':sid' => $sid,
+    ]);
+    $audit->recordActionConfirmed([
+      'action_id' => $actionId,
+      'after_state' => ['effective_value' => $newValue, 'mode' => 'IMMEDIATE_LOCAL_UPDATE'],
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($updateResult)],
+    ]);
+  }
+
+  Response::json([
+    'ok' => true,
+    'direction' => $direction,
+    'requested_value' => $newValue,
+    'prorata_amount' => $prorataAmount,
+    'prorata_result' => $prorataResult,
+    'action_id' => $actionId,
+    'request_id' => $requestId,
+  ]);
 });
 
 $router->get('/api/billing/subscriptions/{id}/status', function(Request $request) {
+  ensureSubscriptionRecurringTables();
   $sid = (string)($request->query['id'] ?? '');
   if ($sid === '') {
     Response::json(['error' => 'Assinatura inválida'], 422);
     return;
   }
   $sub = db()->one("
-    SELECT s.id, s.status, s.asaas_subscription_id, s.next_due_date, s.payment_method, p.name AS plan_name, p.monthly_price
+    SELECT s.id, s.status, s.asaas_subscription_id, s.next_due_date, s.payment_method, s.price_override, p.name AS plan_name, p.monthly_price, COALESCE(s.price_override, p.monthly_price) AS effective_monthly_price
     FROM client.subscriptions s
     JOIN client.plans p ON p.id=s.plan_id
     WHERE s.asaas_subscription_id=:sid
@@ -5804,11 +6527,20 @@ $router->get('/api/billing/subscriptions/{id}/status', function(Request $request
   }
   $status = strtoupper((string)($sub['status'] ?? ''));
   $paymentStatus = $status === 'ACTIVE' ? 'CONFIRMED' : ($status === 'PENDING' ? 'PENDING' : $status);
+  $scheduled = db()->one("
+    SELECT id::text AS id, change_type, target_value, effective_at
+    FROM client.subscription_change_schedule
+    WHERE asaas_subscription_id=:sid
+      AND status='SCHEDULED'
+    ORDER BY effective_at ASC
+    LIMIT 1
+  ", [':sid' => $sid]);
   Response::json([
     'ok' => true,
     'subscription' => $sub,
     'payment_status' => $paymentStatus,
     'can_login' => $status === 'ACTIVE',
+    'scheduled_change' => $scheduled ?: null,
   ]);
 });
 
@@ -5860,22 +6592,21 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
   $actionId = (string)($action['action_id'] ?? '');
 
   $asaas = new AsaasClient();
-  $payments = $asaas->getPaymentsBySubscription($sid, 1);
-  $payment = $payments['data'][0] ?? null;
-  $redirectUrl = null;
-  $paymentId = null;
-  if (is_array($payment)) {
-    $paymentId = (string)($payment['id'] ?? '');
-    $redirectUrl = $payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? null;
-  }
-
-  if ((string)$redirectUrl === '') {
+  $retryResult = $asaas->createPaymentRetryLink($sid);
+  $retryData = is_array($retryResult['data'] ?? null) ? $retryResult['data'] : [];
+  $redirectUrl = (string)($retryData['payment_redirect_url'] ?? '');
+  $paymentId = (string)($retryData['payment_id'] ?? '');
+  if (!$retryResult['ok'] || $redirectUrl === '') {
     financialAuditNotifier()->recordActionFailed([
       'action_id' => $actionId,
       'error_reason' => 'Nenhuma cobrança pendente encontrada para retentativa',
-      'payload' => ['payments_response' => FinancialAuditNotifier::sanitizePayload($payments)],
+      'payload' => ['payments_response' => FinancialAuditNotifier::sanitizePayload($retryResult)],
     ]);
-    Response::json(['error' => 'Nenhuma cobrança pendente encontrada no ASAAS', 'action_id' => $actionId], 404);
+    Response::json([
+      'error' => $retryResult['error_message_safe'] ?? 'Nenhuma cobrança pendente encontrada no ASAAS',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 404);
     return;
   }
 
@@ -5883,7 +6614,7 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
     'action_id' => $actionId,
     'after_state' => [
       'payment_id' => $paymentId !== '' ? $paymentId : null,
-      'payment_redirect_url' => $redirectUrl,
+      'payment_redirect_url' => $redirectUrl !== '' ? $redirectUrl : null,
     ],
   ]);
   Response::json([
@@ -5898,36 +6629,123 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
 $router->post('/api/billing/card/update', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
+  ensureSubscriptionRecurringTables();
   $requestId = requestCorrelationId($request);
   $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
   $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $sid = trim((string)$request->input('asaas_subscription_id', ''));
+  if ($sid === '') {
+    $latestSub = db()->one("SELECT asaas_subscription_id FROM client.subscriptions WHERE organization_id=CAST(:oid AS uuid) ORDER BY created_at DESC LIMIT 1", [':oid' => $orgId]);
+    $sid = trim((string)($latestSub['asaas_subscription_id'] ?? ''));
+  }
+  if ($sid === '') {
+    Response::json(['error' => 'Assinatura não encontrada para atualização de cartão', 'request_id' => $requestId], 422);
+    return;
+  }
+  $subscription = db()->one("
+    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.asaas_subscription_id, s.asaas_customer_id, d.id::text AS deal_id
+    FROM client.subscriptions s
+    LEFT JOIN LATERAL (
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id = s.organization_id
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) d ON true
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
+  if (!$subscription || (string)($subscription['organization_id'] ?? '') !== $orgId) {
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado', 'request_id' => $requestId], 403);
+    return;
+  }
+
   $action = financialAuditNotifier()->recordActionRequested([
-    'action_type' => 'UPDATE_CARD',
-    'entity_type' => 'BILLING_PROFILE',
-    'entity_id' => $orgId,
+    'action_type' => 'CARD_UPDATE_REQUESTED',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
     'org_id' => $orgId,
     'user_id' => $userId,
+    'deal_id' => (string)($subscription['deal_id'] ?? ''),
     'request_id' => $requestId,
     'correlation_id' => $requestId,
-    'payload' => ['status' => 'ENDPOINT_DISABLED'],
+    'payload' => [
+      'asaas_subscription_id' => $sid,
+      'asaas_customer_id' => (string)($subscription['asaas_customer_id'] ?? ''),
+      'policy' => 'NO_CHARGE_CARD_UPDATE',
+    ],
     'source' => 'PORTAL_API',
   ]);
-  financialAuditNotifier()->recordActionFailed([
-    'action_id' => (string)($action['action_id'] ?? ''),
-    'error_reason' => 'Atualização direta de cartão desativada por política de segurança',
-  ]);
-  Response::json([
-    'error' => 'Atualização direta de cartão desativada. Utilize o checkout seguro do ASAAS para alterar o método de pagamento.',
-    'action_id' => (string)($action['action_id'] ?? ''),
+  $actionId = (string)($action['action_id'] ?? '');
+
+  $asaas = new AsaasClient();
+  $cardFlow = $asaas->createCardUpdateLinkForSubscription($sid);
+  if (!$cardFlow['ok']) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Fluxo de atualização de cartão indisponível sem cobrança',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($cardFlow)],
+    ]);
+    Response::json([
+      'error' => $cardFlow['error_message_safe'] ?? 'Não foi possível abrir o fluxo de atualização de cartão sem cobrança.',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 503);
+    return;
+  }
+
+  $flowData = is_array($cardFlow['data'] ?? null) ? $cardFlow['data'] : [];
+  $cardUpdateUrl = trim((string)($flowData['card_update_url'] ?? ''));
+  $providerFlow = trim((string)($flowData['provider_flow'] ?? 'CUSTOMER_BILLING_UPDATE'));
+  if ($cardUpdateUrl === '') {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Fluxo de atualização retornou sem URL',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($cardFlow)],
+    ]);
+    Response::json([
+      'error' => 'Fluxo de atualização indisponível neste momento.',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 503);
+    return;
+  }
+
+  financialAuditNotifier()->recordActionRequested([
+    'action_id' => $actionId,
+    'action_type' => 'CARD_UPDATE_REQUESTED',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'deal_id' => (string)($subscription['deal_id'] ?? ''),
     'request_id' => $requestId,
-  ], 410);
+    'correlation_id' => $requestId,
+    'payload' => [
+      'asaas_subscription_id' => $sid,
+      'provider_flow' => $providerFlow,
+      'card_update_url' => $cardUpdateUrl,
+      'no_charge' => true,
+    ],
+    'source' => 'PORTAL_API',
+  ], false);
+
+  Response::json([
+    'ok' => true,
+    'message' => 'Você será direcionado ao ASAAS para atualizar o cartão da assinatura. Nenhuma cobrança será gerada agora.',
+    'card_update_url' => $cardUpdateUrl,
+    'provider_flow' => $providerFlow,
+    'action_id' => $actionId,
+    'request_id' => $requestId,
+  ]);
 });
 
 $router->post('/api/billing/subscriptions/{id}/cancel', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
+  ensureSubscriptionRecurringTables();
   $requestId = requestCorrelationId($request);
-  if (!featureFlagEnabled('FEATURE_PORTAL_CANCEL_SUBSCRIPTION', false)) {
+  if (!featureFlagEnabled('FEATURE_PORTAL_CANCEL_SUBSCRIPTION', true)) {
     Response::json(['error' => 'Funcionalidade de cancelamento não habilitada neste ambiente', 'request_id' => $requestId], 403);
     return;
   }
@@ -5974,17 +6792,27 @@ $router->post('/api/billing/subscriptions/{id}/cancel', function(Request $reques
   ]);
   $actionId = (string)($action['action_id'] ?? '');
   $asaas = new AsaasClient();
-  $result = $asaas->cancelSubscription($sid);
-  if (!$asaas->isSuccess($result)) {
+  $result = $asaas->cancelSubscription($sid, $cancelMode);
+  if (!(bool)($result['ok'] ?? false)) {
     financialAuditNotifier()->recordActionFailed([
       'action_id' => $actionId,
       'error_reason' => 'Falha ao solicitar cancelamento no ASAAS',
       'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($result)],
     ]);
-    Response::json(['error' => 'Falha ao solicitar cancelamento', 'action_id' => $actionId, 'request_id' => $requestId], 502);
+    Response::json([
+      'error' => $result['error_message_safe'] ?? 'Falha ao solicitar cancelamento',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 502);
     return;
   }
-  Response::json(['ok' => true, 'asaas' => $result, 'action_id' => $actionId, 'request_id' => $requestId]);
+  Response::json([
+    'ok' => true,
+    'mode' => $cancelMode,
+    'asaas' => $result,
+    'action_id' => $actionId,
+    'request_id' => $requestId,
+  ]);
 });
 
 $router->post('/api/profile/update', function(Request $request) {
@@ -6996,6 +7824,7 @@ $router->post('/api/tickets/{id}/messages', function(Request $request) {
 });
 
 $router->post('/api/webhooks/asaas', function(Request $request) {
+  ensureSubscriptionRecurringTables();
   $requestId = requestCorrelationId($request);
   if (!rateLimitAllow('asaas-webhook', 600, 300)) {
     Response::json(['error' => 'Rate limit'], 429);
@@ -7014,6 +7843,8 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
   $event = $request->body;
   $eventId = (string)($event['id'] ?? sha1(json_encode($event)));
   $eventType = (string)($event['event'] ?? 'UNKNOWN');
+  $eventTime = resolveAsaasEventTime(is_array($event) ? $event : []);
+  $eventTimeIso = ($eventTime ?? new DateTimeImmutable('now'))->format(DATE_ATOM);
 
   $safeEvent = $event;
   if (isset($safeEvent['payment']['creditCard'])) {
@@ -7030,6 +7861,8 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
   $isPaymentConfirmed = str_contains($eventType, 'PAYMENT_CONFIRMED') || str_contains($eventType, 'PAYMENT_RECEIVED');
   $isPaymentProblem = str_contains($eventType, 'PAYMENT_OVERDUE') || str_contains($eventType, 'PAYMENT_FAILED');
   $isSubscriptionCanceled = str_contains($eventType, 'SUBSCRIPTION_DELETED') || str_contains($eventType, 'SUBSCRIPTION_CANCELED');
+  $isBillingInfoUpdated = str_contains($eventType, 'BILLING_INFO') || str_contains($eventType, 'PAYMENT_METHOD') || str_contains($eventType, 'CUSTOMER_UPDATED');
+  $customerCode = (string)($event['payment']['customer'] ?? $event['subscription']['customer'] ?? $event['customer']['id'] ?? $event['customer'] ?? '');
 
   try {
     $pdo->beginTransaction();
@@ -7048,6 +7881,29 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
     ]);
 
     if ($subCode !== '') {
+      $subRow = db()->one("
+        SELECT id::text AS id, organization_id::text AS organization_id, last_asaas_event_at
+        FROM client.subscriptions
+        WHERE asaas_subscription_id=:sid
+        ORDER BY created_at DESC
+        LIMIT 1
+      ", [':sid' => $subCode]);
+      $isOutOfOrder = false;
+      if ($subRow && !empty($subRow['last_asaas_event_at']) && $eventTime) {
+        $lastTs = strtotime((string)$subRow['last_asaas_event_at']);
+        $eventTs = strtotime($eventTime->format('c'));
+        if ($lastTs !== false && $eventTs !== false && $eventTs < $lastTs) {
+          $isOutOfOrder = true;
+        }
+      }
+
+      if ($isOutOfOrder) {
+        db()->exec("UPDATE client.webhook_events SET processed=true WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
+        $pdo->commit();
+        Response::json(['ok' => true, 'request_id' => $requestId, 'out_of_order' => true]);
+        return;
+      }
+
       if ($isSubscriptionChanged) {
         db()->exec("UPDATE client.subscriptions SET status='PENDING', updated_at=now() WHERE asaas_subscription_id=:sid AND status <> 'ACTIVE'", [':sid' => $subCode]);
 
@@ -7058,6 +7914,7 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
             WHERE action_type='CHANGE_PLAN'
               AND status='REQUESTED'
               AND coalesce(payload->>'asaas_subscription_id','') = :sid
+              AND coalesce(payload->>'mode','') <> 'SCHEDULE_NEXT_DUE'
             ORDER BY created_at DESC
             LIMIT 1
           ", [':sid' => $subCode]);
@@ -7069,11 +7926,13 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
             }
             $payload = is_array($payloadRaw) ? $payloadRaw : [];
             $requestedPlan = trim((string)($payload['requested_plan_code'] ?? ''));
+            $requestedValue = isset($payload['requested_price']) ? round((float)$payload['requested_price'], 2) : null;
             if ($requestedPlan !== '') {
-              $plan = db()->one("SELECT id, code FROM client.plans WHERE code=:code LIMIT 1", [':code' => $requestedPlan]);
+              $plan = db()->one("SELECT id, code, monthly_price FROM client.plans WHERE code=:code LIMIT 1", [':code' => $requestedPlan]);
               if ($plan) {
-                db()->exec("UPDATE client.subscriptions SET plan_id=:pid, updated_at=now() WHERE asaas_subscription_id=:sid", [
+                db()->exec("UPDATE client.subscriptions SET plan_id=:pid, price_override=:price_override, updated_at=now() WHERE asaas_subscription_id=:sid", [
                   ':pid' => $plan['id'],
+                  ':price_override' => ($requestedValue !== null && abs($requestedValue - (float)($plan['monthly_price'] ?? 0)) >= 0.01) ? $requestedValue : null,
                   ':sid' => $subCode,
                 ]);
               }
@@ -7100,6 +7959,37 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
               'after_state' => ['subscription_id' => $subCode, 'event_type' => $eventType],
             ], false);
           }
+        }
+
+        $pendingValueAction = db()->one("
+          SELECT action_id::text AS action_id, payload
+          FROM audit.financial_actions
+          WHERE action_type='UPDATE_SUBSCRIPTION_VALUE'
+            AND status='REQUESTED'
+            AND coalesce(payload->>'asaas_subscription_id','') = :sid
+            AND coalesce(payload->>'mode','') <> 'SCHEDULE_NEXT_DUE'
+          ORDER BY created_at DESC
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($pendingValueAction) {
+          $payloadRaw = $pendingValueAction['payload'] ?? [];
+          if (is_string($payloadRaw)) {
+            $decodedPayload = json_decode($payloadRaw, true);
+            $payloadRaw = is_array($decodedPayload) ? $decodedPayload : [];
+          }
+          $payload = is_array($payloadRaw) ? $payloadRaw : [];
+          $requestedValue = isset($payload['requested_value']) ? round((float)$payload['requested_value'], 2) : null;
+          if ($requestedValue !== null) {
+            db()->exec("UPDATE client.subscriptions SET price_override=:value, updated_at=now() WHERE asaas_subscription_id=:sid", [
+              ':value' => $requestedValue,
+              ':sid' => $subCode,
+            ]);
+          }
+          $audit->recordActionConfirmed([
+            'action_id' => (string)$pendingValueAction['action_id'],
+            'after_state' => ['subscription_id' => $subCode, 'event_type' => $eventType],
+            'payload' => ['webhook_event_id' => $eventId, 'webhook_type' => $eventType],
+          ]);
         }
 
         $org = db()->one("
@@ -7296,6 +8186,77 @@ WHERE id IN (
         if ($org && !empty($org['organization_id'])) {
           syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_canceled');
         }
+      }
+
+      if ($isBillingInfoUpdated) {
+        db()->exec("
+          UPDATE client.subscriptions
+          SET billing_profile_updated_at=now(),
+              updated_at=now()
+          WHERE asaas_subscription_id=:sid
+        ", [':sid' => $subCode]);
+
+        $pendingCardActionBySub = db()->one("
+          SELECT action_id::text AS action_id
+          FROM audit.financial_actions
+          WHERE action_type='CARD_UPDATE_REQUESTED'
+            AND status='REQUESTED'
+            AND coalesce(entity_id,'') = :sid
+          ORDER BY created_at DESC
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($pendingCardActionBySub) {
+          $audit->recordActionConfirmed([
+            'action_id' => (string)$pendingCardActionBySub['action_id'],
+            'after_state' => ['billing_profile_updated_at' => $eventTimeIso, 'event_type' => $eventType],
+            'payload' => ['webhook_event_id' => $eventId, 'subscription_id' => $subCode],
+          ]);
+        }
+      }
+
+      db()->exec("
+        UPDATE client.subscriptions
+        SET last_asaas_event_at = GREATEST(COALESCE(last_asaas_event_at, CAST(:event_time AS timestamptz)), CAST(:event_time AS timestamptz)),
+            updated_at=now()
+        WHERE asaas_subscription_id=:sid
+      ", [
+        ':event_time' => $eventTimeIso,
+        ':sid' => $subCode,
+      ]);
+    } elseif ($isBillingInfoUpdated && $customerCode !== '') {
+      db()->exec("
+        UPDATE client.subscriptions
+        SET billing_profile_updated_at=now(),
+            last_asaas_event_at=GREATEST(COALESCE(last_asaas_event_at, CAST(:event_time AS timestamptz)), CAST(:event_time AS timestamptz)),
+            updated_at=now()
+        WHERE asaas_customer_id=:customer
+      ", [
+        ':event_time' => $eventTimeIso,
+        ':customer' => $customerCode,
+      ]);
+
+      $pendingCardAction = db()->one("
+        SELECT action_id::text AS action_id
+        FROM audit.financial_actions
+        WHERE action_type='CARD_UPDATE_REQUESTED'
+          AND status='REQUESTED'
+          AND (
+            coalesce(payload->>'asaas_customer_id','') = :customer
+            OR coalesce(entity_id,'') IN (
+              SELECT asaas_subscription_id
+              FROM client.subscriptions
+              WHERE asaas_customer_id=:customer
+            )
+          )
+        ORDER BY created_at DESC
+        LIMIT 1
+      ", [':customer' => $customerCode]);
+      if ($pendingCardAction) {
+        $audit->recordActionConfirmed([
+          'action_id' => (string)$pendingCardAction['action_id'],
+          'after_state' => ['billing_profile_updated_at' => $eventTimeIso, 'event_type' => $eventType],
+          'payload' => ['webhook_event_id' => $eventId, 'customer_id' => $customerCode],
+        ]);
       }
     }
 
