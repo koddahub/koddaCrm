@@ -35,6 +35,50 @@ final class AsaasClient {
         return $this->request('POST', '/subscriptions', $payload);
     }
 
+    public function createSubscriptionWithCreditCard(array $payload): array {
+        if (!isset($payload['billingType']) || strtoupper((string)$payload['billingType']) !== 'CREDIT_CARD') {
+            $payload['billingType'] = 'CREDIT_CARD';
+        }
+        $raw = $this->createSubscription($payload);
+        return $this->toProviderResult($raw);
+    }
+
+    public function tokenizeCreditCard(array $payload): array {
+        $raw = $this->request('POST', '/creditCard/tokenizeCreditCard', $payload);
+        if ($this->isSuccess($raw)) {
+            return $this->toProviderResult($raw);
+        }
+        $status = (int)($raw['http_status'] ?? 0);
+        if (in_array($status, [400, 404, 405], true) || $this->isMethodNotSupportedResponse($raw)) {
+            $fallbackRaw = $this->request('POST', '/creditCard/tokenize', $payload);
+            return $this->toProviderResult($fallbackRaw);
+        }
+        return $this->toProviderResult($raw);
+    }
+
+    public function createPayment(array $payload): array {
+        $raw = $this->request('POST', '/payments', $payload);
+        return $this->toProviderResult($raw);
+    }
+
+    public function getPixQrCode(string $paymentId): array {
+        $raw = $this->request('GET', '/payments/' . rawurlencode($paymentId) . '/pixQrCode');
+        return $this->toProviderResult($raw);
+    }
+
+    public function getDigitableLine(string $paymentId): array {
+        $raw = $this->request('GET', '/payments/' . rawurlencode($paymentId) . '/identificationField');
+        if ($this->isSuccess($raw)) {
+            return $this->toProviderResult($raw);
+        }
+        $status = (int)($raw['http_status'] ?? 0);
+        if (in_array($status, [400, 404, 405], true) || $this->isMethodNotSupportedResponse($raw)) {
+            $fallbackRaw = $this->request('GET', '/payments/' . rawurlencode($paymentId) . '/digitableLine');
+            return $this->toProviderResult($fallbackRaw);
+        }
+        return $this->toProviderResult($raw);
+    }
+
     public function getSubscription(string $id): array {
         $raw = $this->request('GET', '/subscriptions/' . rawurlencode($id));
         return $this->toProviderResult($raw);
@@ -601,13 +645,17 @@ final class AsaasClient {
 
     private function request(string $method, string $path, array $payload = []): array {
         if ($this->apiKey === '') {
+            $safePayload = $payload;
+            if (isset($safePayload['creditCard']) && is_array($safePayload['creditCard'])) {
+                unset($safePayload['creditCard']['number'], $safePayload['creditCard']['ccv']);
+            }
             return [
                 'mock' => true,
                 'id' => 'mock_' . uniqid(),
                 'status' => 'PENDING',
                 'invoiceUrl' => '/portal/dashboard?mock_payment=1',
                 'http_status' => 200,
-                'payload' => $payload
+                'payload' => $safePayload
             ];
         }
 

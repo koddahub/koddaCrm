@@ -38,6 +38,50 @@
     const d = onlyDigits(v).slice(0, 8);
     return d.replace(/^(\d{5})(\d)/, '$1-$2');
   };
+  const formatCardNumber = (v) => {
+    const d = onlyDigits(v).slice(0, 19);
+    return d.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
+  };
+  const detectCardBrand = (digits) => {
+    const d = String(digits || '');
+    if (/^4/.test(d)) return 'VISA';
+    if (/^(5[1-5]|2(2[2-9]|[3-6]\d|7[01]|720))/.test(d)) return 'MASTERCARD';
+    if (/^3[47]/.test(d)) return 'AMEX';
+    if (/^(4011(78|79)|431274|438935|451416|457393|4576(31|32)|504175|627780|636297|636368)/.test(d)) return 'ELO';
+    if (/^(606282|3841)/.test(d)) return 'HIPERCARD';
+    return '';
+  };
+  const isLuhnValid = (digits) => {
+    const d = String(digits || '');
+    if (!/^\d{13,19}$/.test(d)) return false;
+    let sum = 0;
+    let shouldDouble = false;
+    for (let i = d.length - 1; i >= 0; i -= 1) {
+      let n = Number(d[i]);
+      if (shouldDouble) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      shouldDouble = !shouldDouble;
+    }
+    return sum % 10 === 0;
+  };
+  const parsePossiblyNoisyJson = (raw) => {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch (_) {}
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch (_) {}
+    }
+    return null;
+  };
 
   function setFieldError(el, msg = '') {
     if (!el) return;
@@ -452,6 +496,41 @@
       }
     }
 
+    if (step === 4) {
+      const cardNumber = onlyDigits($('#card_number')?.value || '');
+      const expMonth = Number(onlyDigits($('#card_expiry_month')?.value || '0'));
+      const expYear = Number(onlyDigits($('#card_expiry_year')?.value || '0'));
+      const ccv = onlyDigits($('#card_ccv')?.value || '');
+      const now = new Date();
+      const nowYear = now.getFullYear();
+      const nowMonth = now.getMonth() + 1;
+      if (cardNumber.length < 13 || cardNumber.length > 19) {
+        setNotice('Número do cartão inválido.');
+        $('#card_number')?.focus();
+        return false;
+      }
+      if (!isLuhnValid(cardNumber)) {
+        setNotice('Número do cartão inválido. Revise os dígitos e tente novamente.');
+        $('#card_number')?.focus();
+        return false;
+      }
+      if (expMonth < 1 || expMonth > 12) {
+        setNotice('Mês de validade inválido.');
+        $('#card_expiry_month')?.focus();
+        return false;
+      }
+      if (expYear < nowYear || expYear > nowYear + 20 || (expYear === nowYear && expMonth < nowMonth)) {
+        setNotice('Validade do cartão inválida.');
+        $('#card_expiry_year')?.focus();
+        return false;
+      }
+      if (ccv.length < 3 || ccv.length > 4) {
+        setNotice('CVV inválido.');
+        $('#card_ccv')?.focus();
+        return false;
+      }
+    }
+
     return await runSignupStepPrecheck(step);
   }
 
@@ -686,7 +765,7 @@
     }
     e.target.dataset.submitting = '1';
     $('#wizardSubmit')?.setAttribute('disabled', 'disabled');
-    showFlowOverlay('Aguardando link de pagamento...', 'Estamos cadastrando o cliente e preparando o checkout seguro no ASAAS.');
+    showFlowOverlay('Ativando assinatura no cartão...', 'Estamos tokenizando o cartão e criando sua assinatura recorrente no Asaas.');
     const fd = new FormData(e.target);
     const body = Object.fromEntries(fd.entries());
     const pendingCheck = await checkPendingByIdentity({
@@ -708,10 +787,8 @@
       const res = await apiFetch('/api/auth/register-contract', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
-      const contentType = (res.headers.get('content-type') || '').toLowerCase();
-      const data = contentType.includes('application/json')
-        ? await res.json()
-        : { error: 'Resposta inesperada da API de cadastro/pagamento.' };
+      const raw = await res.text();
+      const data = parsePossiblyNoisyJson(raw) || { error: 'Resposta inesperada da API de cadastro/pagamento.' };
       if (!res.ok) {
         if (data?.asaas_subscription_id && data?.payment_redirect_url) {
           hideFlowOverlay();
@@ -734,28 +811,13 @@
           if (firstDetail) message = String(firstDetail);
         }
         showStateModal({
-          title: 'Não foi possível iniciar o pagamento',
+          title: 'Não foi possível ativar a assinatura',
           text: message,
           showClose: true,
         });
         return;
       }
 
-      const sidRaw = String(data.asaas_subscription_id || '');
-      const ssidRaw = String(data.signup_session_id || '');
-      const paymentUrl = data.payment_redirect_url || null;
-      if (paymentUrl) {
-        hideFlowOverlay();
-        openPaymentTab(paymentUrl);
-        startPendingFlow(sidRaw, data.pending_until || null, paymentUrl, ssidRaw || null);
-        return;
-      }
-
-      if (data.awaiting_payment && data.asaas_subscription_id) {
-        hideFlowOverlay();
-        startPendingFlow(sidRaw, data.pending_until || null, null, ssidRaw || null);
-        return;
-      }
       hideFlowOverlay();
       window.location.href = `/portal/dashboard?new=1&subscription_id=${encodeURIComponent(data.subscription_id || '')}`;
     } catch (err) {
@@ -782,6 +844,27 @@
 
     phone?.addEventListener('input', () => { phone.value = formatPhone(phone.value); });
     doc?.addEventListener('input', () => { doc.value = formatCpfCnpj(doc.value); });
+    const signupCardNumber = $('#card_number');
+    const signupCardHolder = $('#card_holder_name');
+    signupCardNumber?.addEventListener('input', () => {
+      signupCardNumber.value = formatCardNumber(signupCardNumber.value);
+      refreshSignupCardPreview();
+    });
+    signupCardHolder?.addEventListener('input', refreshSignupCardPreview);
+    const signupCardExpMonth = $('#card_expiry_month');
+    signupCardExpMonth?.addEventListener('input', () => {
+      signupCardExpMonth.value = onlyDigits(signupCardExpMonth.value).slice(0, 2);
+      refreshSignupCardPreview();
+    });
+    const signupCardExpYear = $('#card_expiry_year');
+    signupCardExpYear?.addEventListener('input', () => {
+      signupCardExpYear.value = onlyDigits(signupCardExpYear.value).slice(0, 4);
+      refreshSignupCardPreview();
+    });
+    const signupCardCcv = $('#card_ccv');
+    signupCardCcv?.addEventListener('input', () => {
+      signupCardCcv.value = onlyDigits(signupCardCcv.value).slice(0, 4);
+    });
     zip?.addEventListener('input', () => {
       zip.value = formatZip(zip.value);
       state.cepResolved = false;
@@ -804,6 +887,33 @@
       setFieldError(doc, valid ? '' : 'invalid');
       if (!valid) setNotice('CPF/CNPJ inválido para o tipo selecionado.');
     });
+    refreshSignupCardPreview();
+  }
+
+  function refreshSignupCardPreview() {
+    const numberEl = $('#card_number');
+    const holderEl = $('#card_holder_name');
+    const monthEl = $('#card_expiry_month');
+    const yearEl = $('#card_expiry_year');
+    const previewNumber = $('#card_preview_number');
+    const previewHolder = $('#card_preview_holder');
+    const previewExpiry = $('#card_preview_expiry');
+    const previewBrand = $('#card_brand_chip');
+    const previewCard = $('#signupCardPreview');
+    if (!numberEl || !previewNumber || !previewHolder || !previewExpiry || !previewBrand || !previewCard) return;
+
+    const digits = onlyDigits(numberEl.value);
+    const formatted = formatCardNumber(digits);
+    const brand = detectCardBrand(digits);
+    const holder = String(holderEl?.value || '').trim().toUpperCase();
+    const mm = onlyDigits(monthEl?.value || '').slice(0, 2);
+    const yyyy = onlyDigits(yearEl?.value || '').slice(0, 4);
+
+    previewNumber.textContent = formatted || '•••• •••• •••• ••••';
+    previewHolder.textContent = holder || 'NOME DO TITULAR';
+    previewExpiry.textContent = (mm && yyyy) ? `${mm}/${yyyy}` : 'MM/AAAA';
+    previewBrand.textContent = brand || 'Bandeira não identificada';
+    previewCard.classList.toggle('brand-known', !!brand);
   }
 
   function initAuthKeyBehavior() {
@@ -923,7 +1033,7 @@
         if (select) select.value = plan;
         setTab('signup');
         setStep(1);
-        setNotice(`Plano ${plan.toUpperCase()} pré-selecionado. Complete o cadastro e finalize na etapa de pagamento.`, 'ok');
+        setNotice(`Plano ${plan.toUpperCase()} pré-selecionado. Complete o cadastro e confirme o cartão para ativar sua assinatura.`, 'ok');
         $('#person_type')?.focus();
       });
     });
@@ -1062,7 +1172,6 @@
     const planCodeSelect = $('#planCodeSelect');
     const planReason = $('#planReason');
     const planInlineNotice = $('#planInlineNotice');
-    const planProtocolCard = $('#planProtocolCard');
     const planJustificationCounter = $('#planJustificationCounter');
     const planCurrentCode = (planForm?.dataset?.currentPlan || '').trim().toLowerCase();
     const planPickButtons = $$('.plan-pick-btn');
@@ -1070,12 +1179,17 @@
     const planChangeConfirmModal = $('#planChangeConfirmModal');
     const planChangeConfirmText = $('#planChangeConfirmText');
     const planChangeConfirmNotice = $('#planChangeConfirmNotice');
+    const planUpgradePaymentWrap = $('#planUpgradePaymentWrap');
+    const planUpgradePaymentMethod = $('#planUpgradePaymentMethod');
+    const planUpgradePixWrap = $('#planUpgradePixWrap');
+    const planUpgradePixPayload = $('#planUpgradePixPayload');
     const planChangeConfirmSubmitBtn = $('#planChangeConfirmSubmitBtn');
     const planChangeConfirmCancelBtn = $('#planChangeConfirmCancelBtn');
     const planChangeConfirmCloseBtn = $('#planChangeConfirmCloseBtn');
     let planSubmitInFlight = false;
 
     const payNowBtn = $('#payNowBtn');
+    const anticipatePixBtn = $('#anticipatePixBtn');
     const updateCardBtn = $('#updateCardBtn');
     const paymentInlineNotice = $('#paymentInlineNotice');
     const paymentProtocolCard = $('#paymentProtocolCard');
@@ -1093,6 +1207,19 @@
     const updateCardConfirmBtn = $('#updateCardConfirmBtn');
     const updateCardCancelBtn = $('#updateCardCancelBtn');
     const updateCardCloseBtn = $('#updateCardCloseBtn');
+    const updateCardForm = $('#updateCardForm');
+    const paymentAlternativeModal = $('#paymentAlternativeModal');
+    const paymentAlternativeTitle = $('#paymentAlternativeTitle');
+    const paymentAlternativeMethod = $('#paymentAlternativeMethod');
+    const paymentAlternativeNotice = $('#paymentAlternativeNotice');
+    const paymentAlternativeConfirmBtn = $('#paymentAlternativeConfirmBtn');
+    const paymentAlternativeCancelBtn = $('#paymentAlternativeCancelBtn');
+    const paymentAlternativeCloseBtn = $('#paymentAlternativeCloseBtn');
+    const paymentAlternativePixBox = $('#paymentAlternativePixBox');
+    const paymentAlternativePixPayload = $('#paymentAlternativePixPayload');
+    const paymentAlternativeBoletoBox = $('#paymentAlternativeBoletoBox');
+    const paymentAlternativeDigitableLine = $('#paymentAlternativeDigitableLine');
+    let paymentAlternativeMode = 'OVERDUE';
 
     const cancelSubscriptionBtn = $('#cancelSubscriptionBtn');
     const cancelSubscriptionModal = $('#cancelSubscriptionModal');
@@ -1287,7 +1414,6 @@
       }
       planSubmitBtn.setAttribute('disabled', 'disabled');
       setInlineAlert(planInlineNotice, 'warning', `Solicitação de troca para ${planNameMap[requested] || requested.toUpperCase()} já enviada e aguardando confirmação do ASAAS.`);
-      renderProtocol(planProtocolCard, normalizeProtocol(pending), 'Protocolo pendente');
     };
     const formatDate = (value, withTime = false) => {
       const raw = String(value || '').trim();
@@ -1387,6 +1513,19 @@
         if (paymentOverdueAlertText) {
           paymentOverdueAlertText.textContent = showPayNow ? ` Atraso atual: ${overdueDays} dia(s).` : '';
         }
+      }
+      if (anticipatePixBtn) {
+        const nextDueRaw = String(subscription?.next_due_date || '').trim();
+        let showAnticipate = false;
+        if (nextDueRaw) {
+          const now = new Date();
+          const due = new Date(nextDueRaw);
+          if (!Number.isNaN(due.getTime())) {
+            const days = Math.floor((due.setHours(0, 0, 0, 0) - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) / 86400000);
+            showAnticipate = days >= 0 && days <= 5;
+          }
+        }
+        anticipatePixBtn.classList.toggle('d-none', !showAnticipate);
       }
 
       const brand = String(profile?.card_brand || '').trim();
@@ -1516,6 +1655,7 @@
       const body = Object.fromEntries(new FormData(planForm).entries());
       const sid = String(body.asaas_subscription_id || '').trim();
       const nextPlanCode = String(body.plan_code || '').trim().toLowerCase();
+      const selectedUpgradePaymentMethod = String(planUpgradePaymentMethod?.value || 'CREDIT_CARD').toUpperCase();
       if (!sid) {
         setInlineAlert(planInlineNotice, 'danger', 'Assinatura não encontrada para troca de plano.');
         return;
@@ -1536,13 +1676,15 @@
         const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            ...body,
+            upgrade_payment_method: selectedUpgradePaymentMethod,
+          }),
         });
         const data = await parseApiJson(response);
-        const protocol = normalizeProtocol(data);
-        renderProtocol(planProtocolCard, protocol, 'Protocolo da troca de plano');
         if (!response.ok) {
-          const errMsg = `${data.error || 'Não foi possível enviar a solicitação de troca.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          const requestId = String(data?.request_id || '').trim();
+          const errMsg = `${data.error || 'Não foi possível enviar a solicitação de troca.'}${requestId ? ` (request_id: ${requestId})` : ''}`;
           setInlineAlert(planInlineNotice, 'danger', errMsg);
           setInlineAlert(planChangeConfirmNotice, 'danger', errMsg);
           showToast('danger', 'Falha na troca de plano', errMsg);
@@ -1553,16 +1695,27 @@
         const direction = String(data.direction || '').toUpperCase();
         if (direction === 'UPGRADE') {
           const prorataAmount = Number(data.prorata_amount || 0);
-          const prorataUrl = String(data.prorata_payment_url || '').trim();
+          const charge = data && typeof data.upgrade_charge === 'object' ? data.upgrade_charge : null;
+          const chargeMethod = String(charge?.method || selectedUpgradePaymentMethod || '').toUpperCase();
           const upgradeMsg = prorataAmount > 0
             ? `Upgrade solicitado. Diferença pró-rata: ${formatMoney(prorataAmount)}.`
             : 'Upgrade solicitado com sucesso.';
           setInlineAlert(planInlineNotice, 'success', upgradeMsg);
           setInlineAlert(planChangeConfirmNotice, 'success', upgradeMsg);
-          if (prorataUrl) {
-            const linkMsg = `${upgradeMsg} O link para pagamento da diferença foi gerado.`;
-            setInlineAlert(planInlineNotice, 'success', linkMsg);
-            window.open(prorataUrl, '_blank', 'noopener,noreferrer');
+          if (chargeMethod === 'PIX') {
+            const pixPayload = String(charge?.pix?.payload || '').trim();
+            if (planUpgradePixPayload) {
+              planUpgradePixPayload.value = pixPayload || 'PIX indisponível no momento.';
+            }
+            planUpgradePixWrap?.classList.remove('d-none');
+            const pixMsg = pixPayload
+              ? `${upgradeMsg} Copie o código PIX abaixo para concluir a diferença.`
+              : `${upgradeMsg} Não foi possível obter o código PIX agora.`;
+            setInlineAlert(planInlineNotice, pixPayload ? 'success' : 'warning', pixMsg);
+            setInlineAlert(planChangeConfirmNotice, pixPayload ? 'success' : 'warning', pixMsg);
+          } else {
+            planUpgradePixWrap?.classList.add('d-none');
+            if (planUpgradePixPayload) planUpgradePixPayload.value = '';
           }
           showToast('success', 'Upgrade solicitado', upgradeMsg);
           setPortalNotice(upgradeMsg, 'ok');
@@ -1581,8 +1734,8 @@
         } else if (featurePlanChangeWebhookConfirmed) {
           const payload = {
             requested_plan_code: nextPlanCode,
-            action_id: protocol?.actionId || null,
-            request_id: protocol?.requestId || null,
+            action_id: data?.action_id || null,
+            request_id: data?.request_id || null,
             created_at: new Date().toISOString(),
           };
           writePendingPlanChange(payload);
@@ -1602,7 +1755,9 @@
           setPortalNotice(successMsg, 'ok');
           await loadBillingSnapshot(false);
         }
-        closePortalModal(planChangeConfirmModal);
+        if (direction !== 'UPGRADE' || String(data?.upgrade_charge?.method || '').toUpperCase() !== 'PIX') {
+          closePortalModal(planChangeConfirmModal);
+        }
       } finally {
         planSubmitInFlight = false;
         setButtonLoading(planSubmitBtn, false);
@@ -1626,6 +1781,10 @@
       const selectedCode = String(planCodeSelect?.value || '').toLowerCase();
       const selectedName = planNameMap[selectedCode] || selectedCode.toUpperCase();
       const currentName = planNameMap[planCurrentCode] || planCurrentCode.toUpperCase();
+      const planPriceMap = { basic: 149.99, profissional: 249.00, pro: 399.00 };
+      const selectedValue = Number(planPriceMap[selectedCode] || 0);
+      const currentValue = Number(planPriceMap[planCurrentCode] || 0);
+      const isUpgrade = selectedValue > currentValue;
       if (!selectedCode || selectedCode === planCurrentCode) {
         setInlineAlert(planInlineNotice, 'warning', 'Selecione um plano diferente do atual para continuar.');
         return;
@@ -1637,6 +1796,18 @@
       if (planChangeConfirmText) {
         planChangeConfirmText.textContent = `Você está solicitando troca de ${currentName} para ${selectedName}. Deseja confirmar?`;
       }
+      if (planUpgradePaymentWrap) {
+        planUpgradePaymentWrap.classList.toggle('d-none', !isUpgrade);
+      }
+      if (planUpgradePixWrap) {
+        planUpgradePixWrap.classList.add('d-none');
+      }
+      if (planUpgradePixPayload) {
+        planUpgradePixPayload.value = '';
+      }
+      if (planUpgradePaymentMethod) {
+        planUpgradePaymentMethod.value = 'CREDIT_CARD';
+      }
       openPortalModal(planChangeConfirmModal);
       planChangeConfirmSubmitBtn?.focus();
     });
@@ -1645,48 +1816,77 @@
     planChangeConfirmCloseBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
     planChangeConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
 
-    payNowBtn?.addEventListener('click', async () => {
+    const openPaymentAlternativeModal = (mode) => {
+      paymentAlternativeMode = mode;
+      if (paymentAlternativeTitle) {
+        paymentAlternativeTitle.textContent = mode === 'ANTICIPATE' ? 'Antecipar cobrança via PIX/BOLETO' : 'Pagar cobrança em atraso';
+      }
+      if (paymentAlternativeMethod) {
+        paymentAlternativeMethod.value = mode === 'ANTICIPATE' ? 'PIX' : 'PIX';
+      }
+      if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = true;
+      if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = true;
+      if (paymentAlternativePixPayload) paymentAlternativePixPayload.value = '';
+      if (paymentAlternativeDigitableLine) paymentAlternativeDigitableLine.value = '';
+      setInlineAlert(paymentAlternativeNotice, '', '');
+      openPortalModal(paymentAlternativeModal);
+      paymentAlternativeMethod?.focus();
+    };
+    payNowBtn?.addEventListener('click', () => openPaymentAlternativeModal('OVERDUE'));
+    anticipatePixBtn?.addEventListener('click', () => openPaymentAlternativeModal('ANTICIPATE'));
+    paymentAlternativeCancelBtn?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
+    paymentAlternativeCloseBtn?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
+    paymentAlternativeModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
+    paymentAlternativeConfirmBtn?.addEventListener('click', async () => {
       const sid = String(payNowBtn?.dataset?.subscriptionId || '').trim();
-      if (!sid) return;
-      setInlineAlert(paymentInlineNotice, '', '');
-      setButtonLoading(payNowBtn, true);
+      if (!sid) {
+        setInlineAlert(paymentAlternativeNotice, 'danger', 'Assinatura inválida para cobrança.');
+        return;
+      }
+      const billingType = String(paymentAlternativeMethod?.value || 'PIX').toUpperCase();
+      setInlineAlert(paymentAlternativeNotice, '', '');
+      setButtonLoading(paymentAlternativeConfirmBtn, true);
       try {
         const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/retry`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ billing_type: billingType, mode: paymentAlternativeMode }),
         });
         const data = await parseApiJson(response);
         const protocol = normalizeProtocol(data);
         renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
         if (!response.ok) {
-          const msg = `${data.error || 'Não foi possível processar o pagamento agora.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          const msg = `${data.error || 'Não foi possível gerar cobrança alternativa.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          setInlineAlert(paymentAlternativeNotice, 'danger', msg);
           setInlineAlert(paymentInlineNotice, 'danger', msg);
-          setPortalNotice(msg, 'err');
-          showToast('danger', 'Falha ao pagar agora', msg);
           return;
         }
-        if (data.payment_redirect_url) {
-          window.open(data.payment_redirect_url, '_blank', 'noopener,noreferrer');
-          const okMsg = 'Pagamento aberto em nova aba.';
-          setInlineAlert(paymentInlineNotice, 'success', okMsg);
-          setPortalNotice(okMsg, 'ok');
-          showToast('success', 'Pagar agora', okMsg);
-          return;
+        if (data.billing_type === 'PIX') {
+          const payload = String(data?.pix?.payload || '').trim();
+          if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = false;
+          if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = true;
+          if (paymentAlternativePixPayload) paymentAlternativePixPayload.value = payload || 'Payload PIX indisponível no momento.';
+        } else {
+          const line = String(data.digitable_line || '').trim();
+          if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = false;
+          if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = true;
+          if (paymentAlternativeDigitableLine) {
+            paymentAlternativeDigitableLine.value = line || String(data.bank_slip_url || '').trim() || 'Linha digitável indisponível.';
+          }
         }
-        const emptyMsg = 'Nenhuma cobrança pendente encontrada no momento.';
-        setInlineAlert(paymentInlineNotice, 'warning', emptyMsg);
-        setPortalNotice(emptyMsg, 'err');
-        showToast('warning', 'Sem cobrança pendente', emptyMsg);
+        setInlineAlert(paymentAlternativeNotice, 'success', 'Cobrança alternativa gerada com sucesso.');
+        setInlineAlert(paymentInlineNotice, 'success', 'Cobrança alternativa pronta no modal.');
+        await loadBillingSnapshot(false);
       } finally {
-        setButtonLoading(payNowBtn, false);
+        setButtonLoading(paymentAlternativeConfirmBtn, false);
       }
     });
 
     updateCardBtn?.addEventListener('click', () => {
       setInlineAlert(updateCardNotice, '', '');
+      if (updateCardForm) updateCardForm.reset();
       openPortalModal(updateCardModal);
-      updateCardConfirmBtn?.focus();
+      $('#updateCardHolderName')?.focus();
     });
     updateCardCancelBtn?.addEventListener('click', () => closePortalModal(updateCardModal));
     updateCardCloseBtn?.addEventListener('click', () => closePortalModal(updateCardModal));
@@ -1697,6 +1897,15 @@
         setInlineAlert(updateCardNotice, 'danger', 'Assinatura sem vínculo no provedor de cobrança.');
         return;
       }
+      const holderName = String(updateCardForm?.querySelector('[name="holder_name"]')?.value || '').trim();
+      const number = onlyDigits(updateCardForm?.querySelector('[name="number"]')?.value || '');
+      const expiryMonth = onlyDigits(updateCardForm?.querySelector('[name="expiry_month"]')?.value || '');
+      const expiryYear = onlyDigits(updateCardForm?.querySelector('[name="expiry_year"]')?.value || '');
+      const ccv = onlyDigits(updateCardForm?.querySelector('[name="ccv"]')?.value || '');
+      if (!holderName || number.length < 13 || number.length > 19 || !expiryMonth || !expiryYear || ccv.length < 3 || ccv.length > 4) {
+        setInlineAlert(updateCardNotice, 'danger', 'Preencha os dados do cartão corretamente.');
+        return;
+      }
       setInlineAlert(updateCardNotice, '', '');
       setInlineAlert(paymentInlineNotice, '', '');
       setButtonLoading(updateCardConfirmBtn, true);
@@ -1704,27 +1913,29 @@
         const response = await apiFetch('/api/billing/card/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ asaas_subscription_id: sid || null }),
+          body: JSON.stringify({
+            asaas_subscription_id: sid || null,
+            card: {
+              holder_name: holderName,
+              number,
+              expiry_month: expiryMonth,
+              expiry_year: expiryYear,
+              ccv,
+            },
+          }),
         });
         const data = await parseApiJson(response);
-        const protocol = normalizeProtocol(data);
-        renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
         if (!response.ok) {
-          const msg = `${data.error || 'Atualização de cartão indisponível no momento.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          const requestId = String(data?.request_id || '').trim();
+          const msg = `${data.error || 'Atualização de cartão indisponível no momento.'}${requestId ? ` (request_id: ${requestId})` : ''}`;
           setInlineAlert(updateCardNotice, 'danger', msg);
           setInlineAlert(paymentInlineNotice, 'danger', msg);
           showToast('danger', 'Atualização de cartão', msg);
           setPortalNotice(msg, 'err');
           return;
         }
-        const cardUpdateUrl = String(data.card_update_url || '').trim();
         const providerFlow = String(data.provider_flow || '').trim();
-        if (cardUpdateUrl) {
-          window.open(cardUpdateUrl, '_blank', 'noopener,noreferrer');
-        }
-        const okMsg = cardUpdateUrl
-          ? `Página segura aberta (${providerFlow || 'CARD_UPDATE'}).`
-          : 'Solicitação registrada. Siga as instruções do suporte.';
+        const okMsg = `Cartão atualizado sem cobrança imediata (${providerFlow || 'ASAAS_SUBSCRIPTION_CREDITCARD_PUT'}).`;
         setInlineAlert(paymentInlineNotice, 'success', okMsg);
         showToast('success', 'Atualização de cartão', okMsg);
         setPortalNotice(okMsg, 'ok');

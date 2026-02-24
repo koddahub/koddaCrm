@@ -231,6 +231,62 @@ textarea { min-height: 86px; resize: vertical; }
 .step-label { font-size: .82rem; color: #b9cae0; margin-bottom: 10px; }
 .wizard-nav { margin-top: 16px; display: flex; justify-content: space-between; gap: 10px; }
 .card-preview { border: 1px solid rgba(255,255,255,.18); border-radius: 14px; padding: 14px; background: linear-gradient(135deg, rgba(12,140,224,.2), rgba(245,124,0,.2)); }
+.signup-card-preview {
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: 16px;
+  padding: 14px;
+  background: linear-gradient(145deg, rgba(4,18,35,.92), rgba(18,40,70,.85));
+  display: grid;
+  gap: 12px;
+}
+.signup-card-preview.brand-known {
+  border-color: rgba(12,140,224,.55);
+  box-shadow: 0 12px 24px rgba(12,140,224,.12);
+}
+.signup-card-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.signup-card-preview-title {
+  font-size: .8rem;
+  color: #b7cde3;
+  font-weight: 600;
+}
+.signup-card-brand {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.24);
+  color: #dbeeff;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+}
+.signup-card-number {
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: .09em;
+  color: #f4fbff;
+}
+.signup-card-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.signup-card-footer small {
+  display: block;
+  color: #9ab5d1;
+  font-size: .7rem;
+  margin-bottom: 2px;
+}
+.signup-card-footer strong {
+  color: #f4fbff;
+  font-size: .8rem;
+  letter-spacing: .02em;
+}
 .status-chip { display:inline-flex; padding:6px 10px; border-radius:999px; font-weight:700; font-size:.75rem; }
 .status-ok { background: rgba(34,197,94,.18); color: #9af5be; border:1px solid rgba(34,197,94,.4); }
 .status-bad { background: rgba(239,68,68,.18); color: #ffc6c6; border:1px solid rgba(239,68,68,.4); }

@@ -72,7 +72,15 @@ function isValidDomainName(string $domain): bool {
 }
 
 function getClientIp(): string {
-  return (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+  $forwarded = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+  if ($forwarded !== '') {
+    $parts = explode(',', $forwarded);
+    $candidate = trim((string)($parts[0] ?? ''));
+    if ($candidate !== '') {
+      return $candidate;
+    }
+  }
+  return (string)($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
 }
 
 function csrfToken(): string {
@@ -570,17 +578,40 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
                   </div>
                   <div class="form-col full">
                     <div class="status-note">
-                      Seus dados de pagamento serão informados diretamente no checkout hospedado do ASAAS.
-                      Nenhum dado bruto de cartão é processado por este portal.
+                      Seus dados são tokenizados e enviados ao Asaas para criar a assinatura recorrente de cartão de crédito.
                     </div>
                   </div>
+                  <div class="form-col full">
+                    <div class="signup-card-preview" id="signupCardPreview" aria-live="polite">
+                      <div class="signup-card-preview-head">
+                        <span class="signup-card-preview-title">Cartão para assinatura</span>
+                        <span class="signup-card-brand" id="card_brand_chip">Bandeira não identificada</span>
+                      </div>
+                      <div class="signup-card-number" id="card_preview_number">•••• •••• •••• ••••</div>
+                      <div class="signup-card-footer">
+                        <div>
+                          <small>Portador</small>
+                          <strong id="card_preview_holder">NOME DO TITULAR</strong>
+                        </div>
+                        <div>
+                          <small>Validade</small>
+                          <strong id="card_preview_expiry">MM/AAAA</strong>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="form-col full"><label for="card_holder_name">Nome impresso no cartão</label><input id="card_holder_name" name="card_holder_name" autocomplete="cc-name" data-required="true"></div>
+                  <div class="form-col full"><label for="card_number">Número do cartão</label><input id="card_number" name="card_number" inputmode="numeric" autocomplete="cc-number" placeholder="0000 0000 0000 0000" data-required="true"></div>
+                  <div class="form-col half"><label for="card_expiry_month">Mês de validade</label><input id="card_expiry_month" name="card_expiry_month" inputmode="numeric" autocomplete="cc-exp-month" maxlength="2" placeholder="MM" data-required="true"></div>
+                  <div class="form-col half"><label for="card_expiry_year">Ano de validade</label><input id="card_expiry_year" name="card_expiry_year" inputmode="numeric" autocomplete="cc-exp-year" maxlength="4" placeholder="AAAA" data-required="true"></div>
+                  <div class="form-col half"><label for="card_ccv">CVV</label><input id="card_ccv" name="card_ccv" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="3 ou 4 dígitos" data-required="true"></div>
                 </div>
               </div>
 
               <div class="wizard-nav">
                 <button type="button" class="btn btn-ghost" id="wizardPrev">Voltar</button>
                 <button type="button" class="btn btn-primary" id="wizardNext">Próximo</button>
-                <button type="submit" class="btn btn-accent hidden" id="wizardSubmit">Continuar para pagamento seguro</button>
+                <button type="submit" class="btn btn-accent hidden" id="wizardSubmit">Ativar assinatura</button>
               </div>
             </form>
           </div>
@@ -592,8 +623,8 @@ function renderAuthPage(string $plan = 'basic', string $alert = ''): string {
   <div id="authFlowOverlay" class="auth-flow-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authFlowTitle">
     <div class="auth-flow-card">
       <div class="auth-flow-spinner" aria-hidden="true"></div>
-      <h3 id="authFlowTitle">Redirecionando para pagamento seguro...</h3>
-      <p id="authFlowMessage">Aguarde alguns segundos enquanto abrimos sua cobrança em nova aba.</p>
+      <h3 id="authFlowTitle">Ativando assinatura no cartão...</h3>
+      <p id="authFlowMessage">Estamos validando o cartão e criando sua assinatura recorrente no Asaas.</p>
     </div>
   </div>
 
@@ -2014,10 +2045,16 @@ function renderDashboard(?string $notice = null): string {
                 <strong>Atenção:</strong> existem pagamentos em atraso.
                 <span id="paymentOverdueAlertText"></span>
               </div>
-              <button class="btn btn-warning" id="payNowBtn" type="button" data-subscription-id="<?= h((string)($sub['asaas_subscription_id'] ?? '')) ?>">
-                <span class="btn-label">Pagar agora</span>
-                <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
-              </button>
+              <div class="d-flex gap-2">
+                <button class="btn btn-warning" id="payNowBtn" type="button" data-subscription-id="<?= h((string)($sub['asaas_subscription_id'] ?? '')) ?>">
+                  <span class="btn-label">Pagar agora</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+                <button class="btn btn-outline-warning d-none" id="anticipatePixBtn" type="button" data-subscription-id="<?= h((string)($sub['asaas_subscription_id'] ?? '')) ?>">
+                  <span class="btn-label">Antecipar via Pix</span>
+                  <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+                </button>
+              </div>
             </div>
           </section>
           <section class="portal-card modern-card">
@@ -2097,7 +2134,6 @@ function renderDashboard(?string $notice = null): string {
               <span class="badge text-bg-info align-self-start">Plano atual: <?= h((string)($sub['plan_name'] ?? 'N/D')) ?></span>
             </div>
             <div id="planInlineNotice" class="alert d-none mb-3" role="alert"></div>
-            <div id="planProtocolCard" class="portal-protocol-card d-none mb-3" aria-live="polite"></div>
             <div class="alert alert-secondary py-2 mb-3">
               Mensalidade atual: <strong>R$ <?= h(number_format((float)($sub['effective_monthly_price'] ?? $sub['monthly_price'] ?? 0), 2, ',', '.')) ?></strong>
               <?php if (!empty($sub['next_due_date'])): ?>
@@ -2655,7 +2691,19 @@ function renderDashboard(?string $notice = null): string {
               </button>
             </header>
             <p id="planChangeConfirmText" class="mb-2">Revise sua solicitação antes de enviar.</p>
-            <p class="note mb-0">A solicitação será validada no ASAAS e pode ficar pendente até confirmação do webhook.</p>
+            <p class="note mb-0">No upgrade, a diferença é cobrada agora sem redirecionamento. No downgrade, a mudança agenda para o próximo vencimento.</p>
+            <div class="mt-3 d-none" id="planUpgradePaymentWrap">
+              <label class="form-label" for="planUpgradePaymentMethod">Como pagar a diferença do upgrade</label>
+              <select class="form-select" id="planUpgradePaymentMethod">
+                <option value="CREDIT_CARD">Cartão cadastrado</option>
+                <option value="PIX">PIX</option>
+              </select>
+              <div class="form-text">Cartão usa o token salvo da assinatura. PIX retorna o código para pagamento no próprio modal.</div>
+            </div>
+            <div class="mt-3 d-none" id="planUpgradePixWrap">
+              <label class="form-label" for="planUpgradePixPayload">PIX Copia e Cola</label>
+              <textarea class="form-control" id="planUpgradePixPayload" rows="3" readonly></textarea>
+            </div>
             <div class="alert d-none mt-3" id="planChangeConfirmNotice" role="alert"></div>
             <div class="operation-actions mt-3">
               <button type="button" class="btn btn-ghost" id="planChangeConfirmCancelBtn">Cancelar</button>
@@ -2676,13 +2724,73 @@ function renderDashboard(?string $notice = null): string {
                 <i class="bi bi-x-lg" aria-hidden="true"></i>
               </button>
             </header>
-            <p class="mb-2">Você será redirecionado para a página segura do Asaas para atualizar o cartão da assinatura.</p>
-            <p class="note mb-0">Nenhuma cobrança imediata será realizada neste passo.</p>
+            <p class="mb-2">Atualize o cartão sem cobrança imediata. Os dados são tokenizados antes de enviar ao Asaas.</p>
+            <form id="updateCardForm" class="row g-3">
+              <div class="col-12">
+                <label class="form-label" for="updateCardHolderName">Nome impresso no cartão</label>
+                <input class="form-control" id="updateCardHolderName" name="holder_name" required>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="updateCardNumber">Número do cartão</label>
+                <input class="form-control" id="updateCardNumber" name="number" inputmode="numeric" autocomplete="cc-number" required>
+              </div>
+              <div class="col-6">
+                <label class="form-label" for="updateCardExpMonth">Mês</label>
+                <input class="form-control" id="updateCardExpMonth" name="expiry_month" inputmode="numeric" maxlength="2" placeholder="MM" required>
+              </div>
+              <div class="col-6">
+                <label class="form-label" for="updateCardExpYear">Ano</label>
+                <input class="form-control" id="updateCardExpYear" name="expiry_year" inputmode="numeric" maxlength="4" placeholder="AAAA" required>
+              </div>
+              <div class="col-6">
+                <label class="form-label" for="updateCardCcv">CVV</label>
+                <input class="form-control" id="updateCardCcv" name="ccv" inputmode="numeric" maxlength="4" autocomplete="off" required>
+              </div>
+            </form>
             <div class="alert d-none mt-3" id="updateCardNotice" role="alert"></div>
             <div class="operation-actions mt-3">
               <button type="button" class="btn btn-ghost" id="updateCardCancelBtn">Voltar</button>
               <button type="button" class="btn btn-primary" id="updateCardConfirmBtn">
                 <span class="btn-label">Abrir página segura</span>
+                <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="portal-modal hidden" id="paymentAlternativeModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog">
+            <header class="portal-modal-header">
+              <h3 id="paymentAlternativeTitle">Pagar cobrança</h3>
+              <button type="button" class="icon-btn" id="paymentAlternativeCloseBtn" aria-label="Fechar">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+              </button>
+            </header>
+            <form id="paymentAlternativeForm" class="row g-3">
+              <div class="col-12">
+                <label class="form-label" for="paymentAlternativeMethod">Forma de pagamento</label>
+                <select class="form-select" id="paymentAlternativeMethod" name="billing_type">
+                  <option value="PIX">PIX</option>
+                  <option value="BOLETO">Boleto</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <div class="alert d-none" id="paymentAlternativeNotice" role="alert"></div>
+              </div>
+              <div class="col-12" id="paymentAlternativePixBox" hidden>
+                <div class="small text-body-secondary mb-1">PIX Copia e Cola</div>
+                <textarea class="form-control" id="paymentAlternativePixPayload" rows="3" readonly></textarea>
+              </div>
+              <div class="col-12" id="paymentAlternativeBoletoBox" hidden>
+                <div class="small text-body-secondary mb-1">Linha digitável</div>
+                <textarea class="form-control" id="paymentAlternativeDigitableLine" rows="2" readonly></textarea>
+              </div>
+            </form>
+            <div class="operation-actions mt-3">
+              <button type="button" class="btn btn-ghost" id="paymentAlternativeCancelBtn">Voltar</button>
+              <button type="button" class="btn btn-primary" id="paymentAlternativeConfirmBtn">
+                <span class="btn-label">Gerar cobrança</span>
                 <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
               </button>
             </div>
@@ -5086,8 +5194,17 @@ function registerContract(Request $request): void {
   }
   requireCsrf($request);
 
+  $previousErrorHandler = set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+    throw new \ErrorException($message, 0, $severity, $file, $line);
+  });
+
+  try {
   $d = $request->body;
-  $required = ['name','email','password','phone','person_type','cpf_cnpj','legal_name','billing_email','plan_code','billing_zip','billing_street','billing_number','billing_district','billing_city','billing_state'];
+  $required = [
+    'name','email','password','phone','person_type','cpf_cnpj','legal_name','billing_email','plan_code',
+    'billing_zip','billing_street','billing_number','billing_district','billing_city','billing_state',
+    'card_holder_name','card_number','card_expiry_month','card_expiry_year','card_ccv'
+  ];
   $errors = Validator::required($d, $required);
 
   if (!Validator::email($d['email'] ?? null) || !Validator::email($d['billing_email'] ?? null)) {
@@ -5127,6 +5244,22 @@ function registerContract(Request $request): void {
   $billingCity = trim((string)($d['billing_city'] ?? ''));
   if (mb_strlen($billingCity) < 2) {
     $errors['billing_city'] = 'Cidade inválida';
+  }
+  $cardNumberDigits = normalizeDigits((string)($d['card_number'] ?? ''));
+  if (strlen($cardNumberDigits) < 13 || strlen($cardNumberDigits) > 19) {
+    $errors['card_number'] = 'Número de cartão inválido';
+  }
+  $cardExpiryMonth = (int)normalizeDigits((string)($d['card_expiry_month'] ?? '0'));
+  if ($cardExpiryMonth < 1 || $cardExpiryMonth > 12) {
+    $errors['card_expiry_month'] = 'Mês de validade inválido';
+  }
+  $cardExpiryYear = (int)normalizeDigits((string)($d['card_expiry_year'] ?? '0'));
+  if ($cardExpiryYear < (int)date('Y') || $cardExpiryYear > ((int)date('Y') + 20)) {
+    $errors['card_expiry_year'] = 'Ano de validade inválido';
+  }
+  $cardCcv = normalizeDigits((string)($d['card_ccv'] ?? ''));
+  if (strlen($cardCcv) < 3 || strlen($cardCcv) > 4) {
+    $errors['card_ccv'] = 'CVV inválido';
   }
 
   if (!empty($errors)) {
@@ -5301,9 +5434,77 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
     return;
   }
 
+  $remoteIp = getClientIp();
+  $tokenPayload = [
+    'customer' => $customer['id'] ?? null,
+    'creditCard' => [
+      'holderName' => trim((string)($d['card_holder_name'] ?? '')),
+      'number' => $cardNumberDigits,
+      'expiryMonth' => str_pad((string)$cardExpiryMonth, 2, '0', STR_PAD_LEFT),
+      'expiryYear' => (string)$cardExpiryYear,
+      'ccv' => $cardCcv,
+    ],
+    'creditCardHolderInfo' => [
+      'name' => trim((string)$d['legal_name']),
+      'email' => trim((string)$d['billing_email']),
+      'cpfCnpj' => $docDigits,
+      'postalCode' => $zipDigits,
+      'addressNumber' => trim((string)$d['billing_number']),
+      'phone' => $phoneDigits,
+    ],
+    'remoteIp' => $remoteIp,
+  ];
+  $tokenizeResult = $asaas->tokenizeCreditCard($tokenPayload);
+  if ($usingAsaasApi && !(bool)($tokenizeResult['ok'] ?? false)) {
+    db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
+    db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
+    db()->exec("UPDATE crm.signup_session SET status='CHECKOUT_ERROR', metadata = coalesce(metadata,'{}'::jsonb) || :meta::jsonb, updated_at=now() WHERE id=:id", [
+      ':id' => $signupSessionId,
+      ':meta' => json_encode(['asaas_error' => ['tokenize' => $tokenizeResult['error_code'] ?? 'TOKENIZE_ERROR']], JSON_UNESCAPED_UNICODE),
+    ]);
+    $tokenizeErrorCode = strtoupper(trim((string)($tokenizeResult['error_code'] ?? '')));
+    if (str_contains($tokenizeErrorCode, 'TOKEN') || str_contains($tokenizeErrorCode, 'CREDIT_CARD')) {
+      apiError(
+        'Tokenização não habilitada na conta Asaas. Solicite liberação ao gerente de contas.',
+        422,
+        'ASAAS_TOKENIZATION_NOT_ENABLED',
+        'A tokenização de cartão precisa estar habilitada para concluir o cadastro.'
+      );
+      return;
+    }
+    apiError(
+      $tokenizeResult['error_message_safe'] ?? 'Falha ao tokenizar cartão no Asaas.',
+      502,
+      'ASAAS_TOKENIZE_ERROR',
+      'Revise os dados do cartão e tente novamente.'
+    );
+    return;
+  }
+  $tokenData = is_array($tokenizeResult['data'] ?? null) ? $tokenizeResult['data'] : [];
+  $creditCardToken = trim((string)($tokenData['creditCardToken'] ?? $tokenData['token'] ?? ''));
+  if ($creditCardToken === '' && !$usingAsaasApi) {
+    $creditCardToken = 'mock_card_token_' . substr((string)$orgId, 0, 8);
+  }
+  if ($creditCardToken === '') {
+    db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
+    db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
+    apiError('Falha ao tokenizar cartão para criar assinatura.', 502, 'ASAAS_TOKENIZE_ERROR', 'Tente novamente em instantes.');
+    return;
+  }
+
   $subscriptionPayload = [
     'customer' => $customer['id'] ?? null,
-    'billingType' => $paymentMethod,
+    'billingType' => 'CREDIT_CARD',
+    'creditCardToken' => $creditCardToken,
+    'creditCardHolderInfo' => [
+      'name' => trim((string)$d['legal_name']),
+      'email' => trim((string)$d['billing_email']),
+      'cpfCnpj' => $docDigits,
+      'postalCode' => $zipDigits,
+      'addressNumber' => trim((string)$d['billing_number']),
+      'phone' => $phoneDigits,
+    ],
+    'remoteIp' => $remoteIp,
     'value' => (float)$plan['monthly_price'],
     'nextDueDate' => date('Y-m-d'),
     'cycle' => 'MONTHLY',
@@ -5318,9 +5519,11 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
     ];
   }
 
-  $subscription = $asaas->createSubscription($subscriptionPayload);
-  if ($usingAsaasApi && empty($subscription['id'])) {
-    $firstError = is_array($subscription['errors'] ?? null) ? (string)($subscription['errors'][0]['description'] ?? '') : '';
+  $subscriptionResult = $asaas->createSubscriptionWithCreditCard($subscriptionPayload);
+  $subscriptionData = is_array($subscriptionResult['data'] ?? null) ? $subscriptionResult['data'] : [];
+  $subscriptionId = trim((string)($subscriptionData['id'] ?? ''));
+  if ($usingAsaasApi && $subscriptionId === '') {
+    $firstError = trim((string)($subscriptionResult['error_message_safe'] ?? ''));
     if ($firstError !== '' && (
       stripos($firstError, 'callback') !== false ||
       stripos($firstError, 'successUrl') !== false ||
@@ -5330,17 +5533,42 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
     )) {
       // Fallback resiliente: alguns fluxos ASAAS podem não aceitar callback em criação de assinatura.
       unset($subscriptionPayload['callback']);
-      $subscription = $asaas->createSubscription($subscriptionPayload);
+      $subscriptionResult = $asaas->createSubscriptionWithCreditCard($subscriptionPayload);
+      $subscriptionData = is_array($subscriptionResult['data'] ?? null) ? $subscriptionResult['data'] : [];
+      $subscriptionId = trim((string)($subscriptionData['id'] ?? ''));
     }
   }
-  if ($usingAsaasApi && empty($subscription['id'])) {
+  if ($usingAsaasApi && $subscriptionId === '') {
+    $tokenFailure = strtoupper(trim((string)($subscriptionResult['error_code'] ?? '')));
+    $tokenMessage = strtoupper(trim((string)($subscriptionResult['error_message_safe'] ?? '')));
+    if (
+      str_contains($tokenFailure, 'TOKEN')
+      || str_contains($tokenFailure, 'CREDIT_CARD')
+      || str_contains($tokenMessage, 'TOKEN')
+      || str_contains($tokenMessage, 'CREDIT CARD')
+    ) {
+      $fallbackPayload = $subscriptionPayload;
+      unset($fallbackPayload['creditCardToken']);
+      $fallbackPayload['creditCard'] = [
+        'holderName' => trim((string)($d['card_holder_name'] ?? '')),
+        'number' => $cardNumberDigits,
+        'expiryMonth' => str_pad((string)$cardExpiryMonth, 2, '0', STR_PAD_LEFT),
+        'expiryYear' => (string)$cardExpiryYear,
+        'ccv' => $cardCcv,
+      ];
+      $subscriptionResult = $asaas->createSubscriptionWithCreditCard($fallbackPayload);
+      $subscriptionData = is_array($subscriptionResult['data'] ?? null) ? $subscriptionResult['data'] : [];
+      $subscriptionId = trim((string)($subscriptionData['id'] ?? ''));
+    }
+  }
+  if ($usingAsaasApi && $subscriptionId === '') {
     db()->exec("DELETE FROM client.organizations WHERE id=:id", [':id' => $orgId]);
     db()->exec("DELETE FROM client.users WHERE id=:id", [':id' => $uid]);
     db()->exec("UPDATE crm.signup_session SET status='CHECKOUT_ERROR', metadata = coalesce(metadata,'{}'::jsonb) || :meta::jsonb, updated_at=now() WHERE id=:id", [
       ':id' => $signupSessionId,
-      ':meta' => json_encode(['asaas_error' => $subscription], JSON_UNESCAPED_UNICODE),
+      ':meta' => json_encode(['asaas_error' => $subscriptionResult], JSON_UNESCAPED_UNICODE),
     ]);
-    $gatewayMsg = is_array($subscription['errors'] ?? null) ? (($subscription['errors'][0]['description'] ?? null) ?: null) : null;
+    $gatewayMsg = $subscriptionResult['error_message_safe'] ?? null;
     apiError(
       'Falha ao iniciar assinatura no ASAAS. Revise wallet, webhook e credenciais sandbox.',
       502,
@@ -5350,30 +5578,13 @@ VALUES(:u,:pt,:doc,:ln,:tn,:be,:wa,:dom,:zip,:street,:num,:comp,:district,:city,
     );
     return;
   }
-  $paymentRedirectUrl = $asaas->extractPaymentRedirectUrl($subscription) ?? null;
-  if ($usingAsaasApi && (string)$paymentRedirectUrl === '' && !empty($subscription['id'])) {
-    for ($i = 0; $i < 4; $i++) {
-      usleep(350000);
-      $payments = $asaas->getPaymentsBySubscription((string)$subscription['id'], 1);
-      $payment = $payments['data'][0] ?? null;
-      if (is_array($payment)) {
-        $paymentRedirectUrl = (string)($payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? '');
-        if ($paymentRedirectUrl !== '') {
-          break;
-        }
-      }
-    }
-    if ($paymentRedirectUrl === '') {
-      $paymentRedirectUrl = null;
-    }
-  }
-  $subStatus = (!$usingAsaasApi && $paymentMethod === 'CREDIT_CARD') ? 'ACTIVE' : 'PENDING';
+  $subStatus = 'ACTIVE';
 
   $subId = db()->one("INSERT INTO client.subscriptions(organization_id,plan_id,asaas_customer_id,asaas_subscription_id,status,payment_method,next_due_date,grace_until) VALUES(:o,:p,:cid,:sid,:status,:pm,:due,:grace) RETURNING id", [
     ':o' => $orgId,
     ':p' => $plan['id'],
     ':cid' => $customer['id'] ?? null,
-    ':sid' => $subscription['id'] ?? ('mock_sub_' . substr((string)$orgId, 0, 8)),
+    ':sid' => $subscriptionId !== '' ? $subscriptionId : ('mock_sub_' . substr((string)$orgId, 0, 8)),
     ':status' => $subStatus,
     ':pm' => $paymentMethod,
     ':due' => date('Y-m-d', strtotime('+30 days')),
@@ -5385,21 +5596,36 @@ SET status=:status,
     metadata = coalesce(metadata, '{}'::jsonb) || :meta::jsonb,
     updated_at=now()
 WHERE id=:id", [
-    ':status' => $subStatus === 'ACTIVE' ? 'PAYMENT_CONFIRMED' : 'SUBSCRIPTION_CREATED',
+    ':status' => 'PAYMENT_CONFIRMED',
     ':meta' => json_encode([
       'subscription_id' => $subId,
-      'asaas_subscription_id' => $subscription['id'] ?? ('mock_sub_' . substr((string)$orgId, 0, 8)),
+      'asaas_subscription_id' => $subscriptionId !== '' ? $subscriptionId : ('mock_sub_' . substr((string)$orgId, 0, 8)),
       'payment_method' => $paymentMethod,
-      'payment_redirect_url' => $paymentRedirectUrl,
-      'payment_pending_until' => date('c', time() + 900),
+      'card_token_present' => true,
     ], JSON_UNESCAPED_UNICODE),
     ':id' => $signupSessionId,
   ]);
 
-  if ($subStatus === 'ACTIVE') {
-    db()->exec("UPDATE crm.signup_session SET payment_confirmed=true, updated_at=now() WHERE id=:id", [
-      ':id' => $signupSessionId,
+  db()->exec("UPDATE crm.signup_session SET payment_confirmed=true, updated_at=now() WHERE id=:id", [
+    ':id' => $signupSessionId,
+  ]);
+
+  try {
+    db()->exec("INSERT INTO client.billing_profiles(subscription_id, card_last4, card_brand, card_token, card_token_updated_at, is_validated, created_at)
+VALUES(CAST(:sid AS uuid), :last4, :brand, :token, now(), true, now())
+ON CONFLICT (subscription_id) DO UPDATE SET
+  card_last4 = COALESCE(EXCLUDED.card_last4, client.billing_profiles.card_last4),
+  card_brand = COALESCE(EXCLUDED.card_brand, client.billing_profiles.card_brand),
+  card_token = COALESCE(EXCLUDED.card_token, client.billing_profiles.card_token),
+  card_token_updated_at = now(),
+  is_validated = true", [
+      ':sid' => $subId,
+      ':last4' => strlen($cardNumberDigits) >= 4 ? substr($cardNumberDigits, -4) : null,
+      ':brand' => is_string($tokenData['creditCardBrand'] ?? null) ? trim((string)$tokenData['creditCardBrand']) : null,
+      ':token' => $creditCardToken,
     ]);
+  } catch (\Throwable) {
+    // best-effort: não bloqueia ativação se schema legado ainda não tiver card_token
   }
 
   if ((getenv('ASAAS_API_KEY') ?: '') === '') {
@@ -5417,7 +5643,9 @@ VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
   unset(
     $safeLeadPayload['password'],
     $safeLeadPayload['password_confirm'],
-    $safeLeadPayload['cf-turnstile-response']
+    $safeLeadPayload['cf-turnstile-response'],
+    $safeLeadPayload['card_number'],
+    $safeLeadPayload['card_ccv']
   );
 
   db()->exec("INSERT INTO crm.leads(source,source_ref,name,email,phone,interest,payload,stage) VALUES('assinatura','site',:name,:email,:phone,:interest,:payload,'NOVO')", [
@@ -5447,25 +5675,30 @@ VALUES(:sid,:pid,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
     'email' => $d['email'],
   ]);
 
-  $variantPaths = ['v1' => null, 'v2' => null, 'v3' => null];
-  foreach ((array)($releaseInfo['variants'] ?? []) as $variantMeta) {
-    $code = strtolower((string)($variantMeta['variantCode'] ?? ''));
-    if (!in_array($code, ['v1', 'v2', 'v3'], true)) {
-      continue;
-    }
-    $variantPaths[$code] = (string)($variantMeta['folderPath'] ?? '');
-  }
-
   Response::json([
     'ok' => true,
     'signup_session_id' => $signupSessionId,
     'subscription_id' => $subId,
-    'asaas_subscription_id' => ($subscription['id'] ?? null),
+    'asaas_subscription_id' => ($subscriptionId !== '' ? $subscriptionId : null),
     'status' => $subStatus,
-    'payment_redirect_url' => $paymentRedirectUrl,
-    'pending_until' => date('c', time() + 900),
-    'awaiting_payment' => $subStatus !== 'ACTIVE',
+    'payment_redirect_url' => null,
+    'pending_until' => null,
+    'awaiting_payment' => false,
   ], 201);
+  } catch (\Throwable) {
+    apiError(
+      'Falha inesperada ao concluir o cadastro da assinatura.',
+      500,
+      'REGISTER_CONTRACT_UNEXPECTED',
+      'Tente novamente em instantes. Se persistir, acione o suporte com o horário da tentativa.'
+    );
+  } finally {
+    if ($previousErrorHandler !== null) {
+      set_error_handler($previousErrorHandler);
+    } else {
+      restore_error_handler();
+    }
+  }
 }
 
 $router = new Router();
@@ -6161,6 +6394,10 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
   $requestId = requestCorrelationId($request);
   $sid = (string)($request->query['id'] ?? '');
   $planCode = trim((string)$request->input('plan_code', ''));
+  $upgradePaymentMethod = strtoupper(trim((string)$request->input('upgrade_payment_method', 'CREDIT_CARD')));
+  if (!in_array($upgradePaymentMethod, ['CREDIT_CARD', 'PIX'], true)) {
+    $upgradePaymentMethod = 'CREDIT_CARD';
+  }
   if ($sid === '' || $planCode === '') {
     Response::json(['error' => 'Dados obrigatórios ausentes', 'request_id' => $requestId], 422);
     return;
@@ -6275,6 +6512,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       'direction' => (string)($existingPayload['direction'] ?? $direction),
       'prorata_amount' => (float)($existingPayload['prorata_amount'] ?? 0),
       'prorata_payment_url' => isset($existingPayload['prorata_payment_url']) ? (string)$existingPayload['prorata_payment_url'] : null,
+      'upgrade_charge' => (isset($existingPayload['upgrade_charge']) && is_array($existingPayload['upgrade_charge'])) ? $existingPayload['upgrade_charge'] : null,
       'scheduled' => (bool)($existingPayload['scheduled'] ?? false),
       'effective_at' => isset($existingPayload['effective_at']) ? (string)$existingPayload['effective_at'] : null,
       'action_id' => $actionId,
@@ -6341,6 +6579,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       'to_plan' => $planCode,
       'direction' => $direction,
       'prorata_amount' => $prorataAmount,
+      'upgrade_payment_method' => $upgradePaymentMethod,
       'next_due_date' => $resolvedNextDueDate !== '' ? $resolvedNextDueDate : null,
     ],
     'source' => 'PORTAL_API',
@@ -6358,6 +6597,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
         'direction' => 'NOOP',
         'prorata_amount' => 0.0,
         'prorata_payment_url' => null,
+        'upgrade_charge' => null,
         'scheduled' => false,
         'effective_at' => null,
       ],
@@ -6367,6 +6607,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       'direction' => 'NOOP',
       'prorata_amount' => 0.0,
       'prorata_payment_url' => null,
+      'upgrade_charge' => null,
       'scheduled' => false,
       'effective_at' => null,
       'action_id' => $actionId,
@@ -6434,6 +6675,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
         'direction' => 'DOWNGRADE',
         'prorata_amount' => 0.0,
         'prorata_payment_url' => null,
+        'upgrade_charge' => null,
         'scheduled' => true,
         'effective_at' => $effectiveAt->format(DATE_ATOM),
       ],
@@ -6444,6 +6686,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       'direction' => 'DOWNGRADE',
       'prorata_amount' => 0.0,
       'prorata_payment_url' => null,
+      'upgrade_charge' => null,
       'scheduled' => true,
       'effective_at' => $effectiveAt->format(DATE_ATOM),
       'action_id' => $actionId,
@@ -6453,6 +6696,8 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
   }
 
   $prorataResult = ['ok' => true, 'data' => []];
+  $upgradeCharge = null;
+  $prorataPaymentUrl = null;
   if ($prorataAmount >= 0.01) {
     $customerId = trim((string)($sub['asaas_customer_id'] ?? ''));
     if ($customerId === '') {
@@ -6470,11 +6715,54 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       ], 422);
       return;
     }
-    $prorataResult = $asaas->createProrataCharge(
-      $customerId,
-      $prorataAmount,
-      sprintf('Upgrade de plano: %s -> %s', (string)($sub['current_plan_code'] ?? ''), $planCode)
-    );
+
+    $chargePayload = [
+      'customer' => $customerId,
+      'value' => $prorataAmount,
+      'dueDate' => date('Y-m-d'),
+      'description' => sprintf('Upgrade de plano: %s -> %s', (string)($sub['current_plan_code'] ?? ''), $planCode),
+      'externalReference' => sprintf('UPGRADE_PRORATA:%s:%s', $subscriptionUuid, $requestId),
+      'billingType' => $upgradePaymentMethod,
+    ];
+    if ($upgradePaymentMethod === 'CREDIT_CARD') {
+      $billingProfile = db()->one("
+        SELECT card_token
+        FROM client.billing_profiles
+        WHERE subscription_id=CAST(:sid AS uuid)
+        LIMIT 1
+      ", [':sid' => $subscriptionUuid]);
+      $cardToken = trim((string)($billingProfile['card_token'] ?? ''));
+      if ($cardToken === '') {
+        financialAuditNotifier()->recordActionFailed([
+          'action_id' => $actionId,
+          'error_reason' => 'Token de cartão ausente para cobrança pró-rata de upgrade',
+        ]);
+        Response::json([
+          'error' => 'Não encontramos cartão tokenizado para cobrança da diferença. Atualize o cartão ou use PIX.',
+          'action_id' => $actionId,
+          'request_id' => $requestId,
+        ], 422);
+        return;
+      }
+      $org = db()->one("
+        SELECT legal_name, billing_email, cpf_cnpj, billing_zip, billing_number, whatsapp
+        FROM client.organizations
+        WHERE id=CAST(:org_id AS uuid)
+        LIMIT 1
+      ", [':org_id' => $orgId]) ?: [];
+      $chargePayload['creditCardToken'] = $cardToken;
+      $chargePayload['remoteIp'] = getClientIp();
+      $chargePayload['creditCardHolderInfo'] = array_filter([
+        'name' => trim((string)($org['legal_name'] ?? '')),
+        'email' => trim((string)($org['billing_email'] ?? '')),
+        'cpfCnpj' => trim((string)($org['cpf_cnpj'] ?? '')),
+        'postalCode' => trim((string)($org['billing_zip'] ?? '')),
+        'addressNumber' => trim((string)($org['billing_number'] ?? '')),
+        'phone' => trim((string)($org['whatsapp'] ?? '')),
+      ], static fn($value): bool => is_string($value) && trim($value) !== '');
+    }
+
+    $prorataResult = $asaas->createPayment($chargePayload);
     if (!(bool)($prorataResult['ok'] ?? false)) {
       financialAuditNotifier()->recordActionFailed([
         'action_id' => $actionId,
@@ -6487,6 +6775,48 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
         'request_id' => $requestId,
       ], 502);
       return;
+    }
+
+    $chargeData = is_array($prorataResult['data'] ?? null) ? $prorataResult['data'] : [];
+    $chargePaymentId = trim((string)($chargeData['id'] ?? ''));
+    if ($chargePaymentId === '') {
+      Response::json([
+        'error' => 'Resposta inválida ao gerar cobrança da diferença.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 502);
+      return;
+    }
+
+    if ($upgradePaymentMethod === 'PIX') {
+      $pixPayload = null;
+      $pixEncodedImage = null;
+      $pixExpirationDate = null;
+      $pixResult = $asaas->getPixQrCode($chargePaymentId);
+      if ((bool)($pixResult['ok'] ?? false)) {
+        $pixData = is_array($pixResult['data'] ?? null) ? $pixResult['data'] : [];
+        $pixPayload = trim((string)($pixData['payload'] ?? ($pixData['copyPasteKey'] ?? ''))) ?: null;
+        $pixEncodedImage = trim((string)($pixData['encodedImage'] ?? '')) ?: null;
+        $pixExpirationDate = trim((string)($pixData['expirationDate'] ?? '')) ?: null;
+      }
+      $upgradeCharge = [
+        'method' => 'PIX',
+        'payment_id' => $chargePaymentId,
+        'status' => strtoupper(trim((string)($chargeData['status'] ?? 'PENDING'))),
+        'amount' => (float)$prorataAmount,
+        'pix' => [
+          'payload' => $pixPayload,
+          'encodedImage' => $pixEncodedImage,
+          'expirationDate' => $pixExpirationDate,
+        ],
+      ];
+    } else {
+      $upgradeCharge = [
+        'method' => 'CREDIT_CARD',
+        'payment_id' => $chargePaymentId,
+        'status' => strtoupper(trim((string)($chargeData['status'] ?? 'PENDING'))),
+        'amount' => (float)$prorataAmount,
+      ];
     }
   }
 
@@ -6514,16 +6844,6 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
     ':sid' => $subscriptionUuid,
   ]);
 
-  $prorataData = is_array($prorataResult['data'] ?? null) ? $prorataResult['data'] : [];
-  $prorataPaymentUrl = null;
-  foreach (['invoiceUrl', 'bankSlipUrl', 'paymentLink', 'checkoutUrl'] as $urlField) {
-    $candidate = trim((string)($prorataData[$urlField] ?? ''));
-    if ($candidate !== '') {
-      $prorataPaymentUrl = $candidate;
-      break;
-    }
-  }
-
   financialAuditNotifier()->recordActionConfirmed([
     'action_id' => $actionId,
     'after_state' => [
@@ -6536,6 +6856,8 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
       'direction' => 'UPGRADE',
       'prorata_amount' => $prorataAmount,
       'prorata_payment_url' => $prorataPaymentUrl,
+      'upgrade_charge' => $upgradeCharge,
+      'upgrade_payment_method' => $upgradePaymentMethod,
       'scheduled' => false,
       'effective_at' => null,
       'update_pending_payments' => !$isOverdue,
@@ -6547,6 +6869,7 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
     'direction' => 'UPGRADE',
     'prorata_amount' => $prorataAmount,
     'prorata_payment_url' => $prorataPaymentUrl,
+    'upgrade_charge' => $upgradeCharge,
     'scheduled' => false,
     'effective_at' => null,
     'action_id' => $actionId,
@@ -6616,7 +6939,7 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
   $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
   $userId = (string)($_SESSION['client_user']['id'] ?? '');
   $sub = db()->one("
-    SELECT s.asaas_subscription_id, s.organization_id::text AS organization_id, d.id::text AS deal_id
+    SELECT s.id::text AS id, s.asaas_customer_id, s.asaas_subscription_id, s.organization_id::text AS organization_id, d.id::text AS deal_id
     FROM client.subscriptions s
     LEFT JOIN LATERAL (
       SELECT id
@@ -6626,6 +6949,7 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
       LIMIT 1
     ) d ON true
     WHERE s.asaas_subscription_id=:sid
+       OR s.id::text=:sid
     LIMIT 1
   ", [':sid' => $sid]);
   if (!$sub) {
@@ -6640,47 +6964,210 @@ $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request
   $action = financialAuditNotifier()->recordActionRequested([
     'action_type' => 'RETRY_PAYMENT',
     'entity_type' => 'SUBSCRIPTION',
-    'entity_id' => $sid,
+    'entity_id' => (string)($sub['id'] ?? $sid),
     'org_id' => $orgId,
     'user_id' => $userId,
     'deal_id' => (string)($sub['deal_id'] ?? ''),
     'request_id' => $requestId,
     'correlation_id' => $requestId,
-    'payload' => ['asaas_subscription_id' => $sid],
+    'payload' => [
+      'asaas_subscription_id' => (string)($sub['asaas_subscription_id'] ?? ''),
+      'mode' => strtoupper(trim((string)$request->input('mode', 'OVERDUE'))),
+      'billing_type' => strtoupper(trim((string)$request->input('billing_type', 'PIX'))),
+    ],
     'source' => 'PORTAL_API',
   ]);
   $actionId = (string)($action['action_id'] ?? '');
 
   $asaas = new AsaasClient();
-  $retryResult = $asaas->createPaymentRetryLink($sid);
-  $retryData = is_array($retryResult['data'] ?? null) ? $retryResult['data'] : [];
-  $redirectUrl = (string)($retryData['payment_redirect_url'] ?? '');
-  $paymentId = (string)($retryData['payment_id'] ?? '');
-  if (!$retryResult['ok'] || $redirectUrl === '') {
+  $subscriptionUuid = (string)($sub['id'] ?? '');
+  $billingType = strtoupper(trim((string)$request->input('billing_type', 'PIX')));
+  if (!in_array($billingType, ['PIX', 'BOLETO'], true)) {
+    $billingType = 'PIX';
+  }
+  $mode = strtoupper(trim((string)$request->input('mode', 'OVERDUE')));
+  if (!in_array($mode, ['OVERDUE', 'ANTICIPATE'], true)) {
+    $mode = 'OVERDUE';
+  }
+
+  $original = db()->one("
+    SELECT asaas_payment_id, amount, status, due_date::text AS due_date, raw_payload
+    FROM client.payments
+    WHERE subscription_id=CAST(:sid AS uuid)
+      AND status IN ('PENDING','OVERDUE')
+    ORDER BY due_date ASC NULLS LAST, created_at ASC
+    LIMIT 1
+  ", [':sid' => $subscriptionUuid]);
+  if (!$original) {
     financialAuditNotifier()->recordActionFailed([
       'action_id' => $actionId,
-      'error_reason' => 'Nenhuma cobrança pendente encontrada para retentativa',
-      'payload' => ['payments_response' => FinancialAuditNotifier::sanitizePayload($retryResult)],
+      'error_reason' => 'Nenhuma cobrança pendente encontrada para pagamento alternativo',
     ]);
     Response::json([
-      'error' => $retryResult['error_message_safe'] ?? 'Nenhuma cobrança pendente encontrada no ASAAS',
+      'error' => 'Nenhuma cobrança pendente encontrada para pagamento.',
       'action_id' => $actionId,
       'request_id' => $requestId,
     ], 404);
     return;
   }
 
+  $originalDue = trim((string)($original['due_date'] ?? ''));
+  if ($mode === 'ANTICIPATE') {
+    if ($originalDue === '') {
+      Response::json([
+        'error' => 'Não foi possível antecipar sem data de vencimento.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 422);
+      return;
+    }
+    $daysToDue = (int)floor((strtotime($originalDue . ' 00:00:00') - strtotime(date('Y-m-d') . ' 00:00:00')) / 86400);
+    if ($daysToDue < 0 || $daysToDue > 5) {
+      Response::json([
+        'error' => 'Antecipação via Pix disponível apenas nos 5 dias anteriores ao vencimento.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 422);
+      return;
+    }
+  }
+
+  $originalPaymentId = trim((string)($original['asaas_payment_id'] ?? ''));
+  $existingAlt = db()->one("
+    SELECT asaas_payment_id
+    FROM client.payments
+    WHERE subscription_id=CAST(:sid AS uuid)
+      AND status IN ('PENDING','OVERDUE')
+      AND coalesce(raw_payload->>'alt_for','')=:alt_for
+      AND upper(coalesce(raw_payload->>'alt_billing_type',''))=:alt_billing_type
+    ORDER BY created_at DESC
+    LIMIT 1
+  ", [
+    ':sid' => $subscriptionUuid,
+    ':alt_for' => $originalPaymentId,
+    ':alt_billing_type' => $billingType,
+  ]);
+
+  $altPaymentId = trim((string)($existingAlt['asaas_payment_id'] ?? ''));
+  $createdRaw = [];
+  if ($altPaymentId === '') {
+    $value = isset($original['amount']) && is_numeric($original['amount']) ? (float)$original['amount'] : 0.0;
+    if ($value <= 0) {
+      Response::json([
+        'error' => 'Valor inválido para pagamento alternativo.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 422);
+      return;
+    }
+    $paymentPayload = [
+      'customer' => trim((string)($sub['asaas_customer_id'] ?? '')),
+      'billingType' => $billingType,
+      'value' => round($value, 2),
+      'dueDate' => $billingType === 'BOLETO' ? date('Y-m-d', strtotime('+1 day')) : date('Y-m-d'),
+      'description' => $mode === 'ANTICIPATE' ? 'Antecipação de cobrança da assinatura' : 'Pagamento alternativo de cobrança em atraso',
+      'externalReference' => sprintf('ALT_FOR:%s:%s', $originalPaymentId, $subscriptionUuid),
+    ];
+    $createResult = $asaas->createPayment($paymentPayload);
+    if (!(bool)($createResult['ok'] ?? false)) {
+      financialAuditNotifier()->recordActionFailed([
+        'action_id' => $actionId,
+        'error_reason' => 'Falha ao criar pagamento alternativo PIX/BOLETO',
+        'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($createResult)],
+      ]);
+      Response::json([
+        'error' => $createResult['error_message_safe'] ?? 'Não foi possível gerar pagamento alternativo.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 502);
+      return;
+    }
+    $createdRaw = is_array($createResult['data'] ?? null) ? $createResult['data'] : [];
+    $altPaymentId = trim((string)($createdRaw['id'] ?? ''));
+    if ($altPaymentId === '') {
+      Response::json([
+        'error' => 'Asaas não retornou identificador do pagamento alternativo.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 502);
+      return;
+    }
+    db()->exec(
+      "INSERT INTO client.payments(subscription_id, asaas_payment_id, amount, status, billing_type, due_date, raw_payload)
+       VALUES(CAST(:subscription_id AS uuid), :payment_id, :amount, 'PENDING', :billing_type, :due_date, CAST(:raw_payload AS jsonb))
+       ON CONFLICT (asaas_payment_id) DO UPDATE SET raw_payload=CAST(:raw_payload AS jsonb), billing_type=:billing_type, due_date=:due_date",
+      [
+        ':subscription_id' => $subscriptionUuid,
+        ':payment_id' => $altPaymentId,
+        ':amount' => round((float)$paymentPayload['value'], 2),
+        ':billing_type' => $billingType,
+        ':due_date' => (string)$paymentPayload['dueDate'],
+        ':raw_payload' => json_encode([
+          'alt_for' => $originalPaymentId,
+          'alt_mode' => $mode,
+          'alt_billing_type' => $billingType,
+          'created_from_request_id' => $requestId,
+          'provider_payment' => $createdRaw,
+        ], JSON_UNESCAPED_UNICODE),
+      ]
+    );
+  }
+
+  $pix = null;
+  $digitableLine = null;
+  $bankSlipUrl = null;
+  if ($billingType === 'PIX') {
+    $pixResult = $asaas->getPixQrCode($altPaymentId);
+    if ((bool)($pixResult['ok'] ?? false)) {
+      $pixData = is_array($pixResult['data'] ?? null) ? $pixResult['data'] : [];
+      $pix = [
+        'encodedImage' => $pixData['encodedImage'] ?? null,
+        'payload' => $pixData['payload'] ?? ($pixData['copyPasteKey'] ?? null),
+        'expirationDate' => $pixData['expirationDate'] ?? null,
+      ];
+    }
+  } else {
+    $digitableResult = $asaas->getDigitableLine($altPaymentId);
+    if ((bool)($digitableResult['ok'] ?? false)) {
+      $lineData = is_array($digitableResult['data'] ?? null) ? $digitableResult['data'] : [];
+      $digitableLine = (string)($lineData['identificationField'] ?? $lineData['digitableLine'] ?? '');
+    }
+    if ($createdRaw !== []) {
+      $bankSlipUrl = (string)($createdRaw['bankSlipUrl'] ?? '');
+    }
+  }
+
+  if ($altPaymentId === '') {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao preparar pagamento alternativo',
+    ]);
+    Response::json([
+      'error' => 'Não foi possível preparar pagamento alternativo.',
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+    ], 502);
+    return;
+  }
+
   financialAuditNotifier()->recordActionConfirmed([
     'action_id' => $actionId,
     'after_state' => [
-      'payment_id' => $paymentId !== '' ? $paymentId : null,
-      'payment_redirect_url' => $redirectUrl !== '' ? $redirectUrl : null,
+      'payment_id' => $altPaymentId,
+      'billing_type' => $billingType,
+      'original_payment_id' => $originalPaymentId !== '' ? $originalPaymentId : null,
+      'mode' => $mode,
     ],
   ]);
   Response::json([
     'ok' => true,
-    'payment_redirect_url' => $redirectUrl,
-    'retry_url' => $redirectUrl,
+    'mode' => $mode,
+    'billing_type' => $billingType,
+    'payment_id' => $altPaymentId,
+    'original_payment_id' => $originalPaymentId !== '' ? $originalPaymentId : null,
+    'pix' => $pix,
+    'digitable_line' => $digitableLine !== '' ? $digitableLine : null,
+    'bank_slip_url' => $bankSlipUrl !== '' ? $bankSlipUrl : null,
     'action_id' => $actionId,
     'request_id' => $requestId,
   ]);
@@ -6778,6 +7265,95 @@ $router->post('/api/billing/card/update', function(Request $request) {
 
   $asaas = new AsaasClient();
   $creditCardToken = trim((string)$request->input('creditCardToken', ''));
+  if ($creditCardToken === '') {
+    $cardNode = $request->input('card', []);
+    if (!is_array($cardNode)) {
+      $cardNode = [];
+    }
+    $holderName = trim((string)($cardNode['holder_name'] ?? ''));
+    $cardNumber = normalizeDigits((string)($cardNode['number'] ?? ''));
+    $expMonth = normalizeDigits((string)($cardNode['expiry_month'] ?? ''));
+    $expYear = normalizeDigits((string)($cardNode['expiry_year'] ?? ''));
+    $ccv = normalizeDigits((string)($cardNode['ccv'] ?? ''));
+    if ($holderName === '' || strlen($cardNumber) < 13 || strlen($cardNumber) > 19 || $expMonth === '' || $expYear === '' || strlen($ccv) < 3 || strlen($ccv) > 4) {
+      Response::json([
+        'error' => 'Dados do cartão inválidos para atualização.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 422);
+      return;
+    }
+
+    $org = db()->one("
+      SELECT legal_name, billing_email, cpf_cnpj, billing_zip, billing_number, whatsapp
+      FROM client.organizations
+      WHERE id=CAST(:org_id AS uuid)
+      LIMIT 1
+    ", [':org_id' => $orgId]) ?: [];
+
+    $forwardedFor = trim((string)(requestHeader($request, 'X-Forwarded-For') ?? ''));
+    $remoteIp = '';
+    if ($forwardedFor !== '') {
+      $parts = explode(',', $forwardedFor);
+      $remoteIp = trim((string)($parts[0] ?? ''));
+    }
+    if ($remoteIp === '') {
+      $remoteIp = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+    }
+    if ($remoteIp === '') {
+      $remoteIp = '127.0.0.1';
+    }
+
+    $tokenizePayload = [
+      'customer' => (string)($subscription['asaas_customer_id'] ?? ''),
+      'creditCard' => [
+        'holderName' => $holderName,
+        'number' => $cardNumber,
+        'expiryMonth' => str_pad($expMonth, 2, '0', STR_PAD_LEFT),
+        'expiryYear' => $expYear,
+        'ccv' => $ccv,
+      ],
+      'creditCardHolderInfo' => array_filter([
+        'name' => trim((string)($org['legal_name'] ?? $holderName)),
+        'email' => trim((string)($org['billing_email'] ?? '')),
+        'cpfCnpj' => trim((string)($org['cpf_cnpj'] ?? '')),
+        'postalCode' => trim((string)($org['billing_zip'] ?? '')),
+        'addressNumber' => trim((string)($org['billing_number'] ?? '')),
+        'phone' => trim((string)($org['whatsapp'] ?? '')),
+      ], static fn($v) => is_string($v) && trim($v) !== ''),
+      'remoteIp' => $remoteIp,
+    ];
+    $tokenizeResult = $asaas->tokenizeCreditCard($tokenizePayload);
+    if (!(bool)($tokenizeResult['ok'] ?? false)) {
+      $status = 502;
+      $errorCode = strtoupper(trim((string)($tokenizeResult['error_code'] ?? '')));
+      if (str_contains($errorCode, 'TOKEN')) {
+        $status = 422;
+      }
+      Response::json([
+        'error' => $status === 422
+          ? 'Tokenização não habilitada na conta Asaas. Solicite liberação ao gerente de contas.'
+          : ($tokenizeResult['error_message_safe'] ?? 'Não foi possível tokenizar o cartão.'),
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], $status);
+      return;
+    }
+    $tokenData = is_array($tokenizeResult['data'] ?? null) ? $tokenizeResult['data'] : [];
+    $creditCardToken = trim((string)($tokenData['creditCardToken'] ?? $tokenData['token'] ?? ''));
+    if ($creditCardToken === '' && trim((string)(getenv('ASAAS_API_KEY') ?: '')) === '') {
+      $creditCardToken = 'mock_card_token_' . substr((string)$subscriptionUuid, 0, 8);
+    }
+    if ($creditCardToken === '') {
+      Response::json([
+        'error' => 'Token do cartão não retornado pelo provedor.',
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+      ], 502);
+      return;
+    }
+  }
+
   if ($creditCardToken !== '') {
     $org = db()->one("
       SELECT legal_name, billing_email, cpf_cnpj, billing_zip, billing_number, whatsapp
@@ -6836,21 +7412,25 @@ $router->post('/api/billing/card/update', function(Request $request) {
       return;
     }
 
-    db()->exec("
-      INSERT INTO client.billing_profiles(subscription_id, card_token, card_token_updated_at, is_validated, created_at)
-      VALUES(CAST(:sid AS uuid), :card_token, now(), true, now())
-      ON CONFLICT(subscription_id)
-      DO UPDATE SET
-        card_token = COALESCE(EXCLUDED.card_token, client.billing_profiles.card_token),
-        card_token_updated_at = CASE
-          WHEN EXCLUDED.card_token IS NOT NULL THEN now()
-          ELSE client.billing_profiles.card_token_updated_at
-        END,
-        is_validated = client.billing_profiles.is_validated OR EXCLUDED.is_validated
-    ", [
-      ':sid' => $subscriptionUuid,
-      ':card_token' => $creditCardToken,
-    ]);
+    try {
+      db()->exec("
+        INSERT INTO client.billing_profiles(subscription_id, card_token, card_token_updated_at, is_validated, created_at)
+        VALUES(CAST(:sid AS uuid), :card_token, now(), true, now())
+        ON CONFLICT(subscription_id)
+        DO UPDATE SET
+          card_token = COALESCE(EXCLUDED.card_token, client.billing_profiles.card_token),
+          card_token_updated_at = CASE
+            WHEN EXCLUDED.card_token IS NOT NULL THEN now()
+            ELSE client.billing_profiles.card_token_updated_at
+          END,
+          is_validated = client.billing_profiles.is_validated OR EXCLUDED.is_validated
+      ", [
+        ':sid' => $subscriptionUuid,
+        ':card_token' => $creditCardToken,
+      ]);
+    } catch (\Throwable) {
+      // best-effort em schema legado
+    }
     db()->exec("
       UPDATE client.subscriptions
       SET billing_profile_updated_at=now(), updated_at=now()
@@ -6881,63 +7461,11 @@ $router->post('/api/billing/card/update', function(Request $request) {
     ]);
     return;
   }
-
-  $cardFlow = $asaas->createCardUpdateLinkForSubscription($sid);
-  if (!$cardFlow['ok']) {
-    financialAuditNotifier()->recordActionFailed([
-      'action_id' => $actionId,
-      'error_reason' => 'Fluxo de atualização de cartão indisponível sem cobrança',
-      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($cardFlow)],
-    ]);
-    Response::json([
-      'error' => $cardFlow['error_message_safe'] ?? 'Não foi possível abrir o fluxo de atualização de cartão sem cobrança.',
-      'action_id' => $actionId,
-      'request_id' => $requestId,
-    ], 503);
-    return;
-  }
-
-  $flowData = is_array($cardFlow['data'] ?? null) ? $cardFlow['data'] : [];
-  $cardUpdateUrl = trim((string)($flowData['card_update_url'] ?? ''));
-  $providerFlow = trim((string)($flowData['provider_flow'] ?? 'CUSTOMER_BILLING_UPDATE'));
-  if ($cardUpdateUrl === '') {
-    financialAuditNotifier()->recordActionFailed([
-      'action_id' => $actionId,
-      'error_reason' => 'Fluxo de atualização retornou sem URL',
-      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($cardFlow)],
-    ]);
-    Response::json([
-      'error' => 'Fluxo de atualização indisponível neste momento.',
-      'action_id' => $actionId,
-      'request_id' => $requestId,
-    ], 503);
-    return;
-  }
-
-  financialAuditNotifier()->recordActionConfirmed([
-    'action_id' => $actionId,
-    'after_state' => [
-      'provider_flow' => $providerFlow,
-      'updated' => false,
-      'card_update_url' => $cardUpdateUrl,
-    ],
-    'payload' => [
-      'asaas_subscription_id' => $sid,
-      'provider_flow' => $providerFlow,
-      'card_update_url' => $cardUpdateUrl,
-      'updated' => false,
-      'no_charge' => true,
-    ],
-  ]);
-
   Response::json([
-    'ok' => true,
-    'message' => 'Você será direcionado ao ASAAS para atualizar o cartão da assinatura. Nenhuma cobrança será gerada agora.',
-    'card_update_url' => $cardUpdateUrl,
-    'provider_flow' => $providerFlow,
+    'error' => 'Token do cartão não informado.',
     'action_id' => $actionId,
     'request_id' => $requestId,
-  ]);
+  ], 422);
 });
 
 $router->post('/api/billing/subscriptions/{id}/cancel', function(Request $request) {
