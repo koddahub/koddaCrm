@@ -299,6 +299,65 @@ function runSiteReleaseConsistencyCheck(string $logFile): void
     );
 }
 
+function runBillingReconciliationStrict(string $logFile, int $limit = 80): void
+{
+    if (!in_array(strtolower(envString('FEATURE_BILLING_RECONCILIATION_STRICT', '0')), ['1', 'true', 'yes', 'on'], true)) {
+        return;
+    }
+
+    $apiKey = envString('ASAAS_API_KEY', '');
+    if ($apiKey === '') {
+        file_put_contents($logFile, '[' . date('c') . '] billing_reconcile_strict_skip -> missing_asaas_api_key' . PHP_EOL, FILE_APPEND);
+        return;
+    }
+
+    $rows = db()->all("
+        SELECT id::text AS id, asaas_subscription_id, status
+        FROM client.subscriptions
+        WHERE coalesce(asaas_subscription_id,'') <> ''
+        ORDER BY updated_at DESC
+        LIMIT :lim
+    ", [':lim' => max(10, $limit)]);
+
+    $asaas = new \Shared\Infra\AsaasClient();
+    $updated = 0;
+    foreach ($rows as $row) {
+        $sid = trim((string)($row['asaas_subscription_id'] ?? ''));
+        if ($sid === '') {
+            continue;
+        }
+        $resp = $asaas->getPaymentsBySubscription($sid, 1);
+        if (!$asaas->isSuccess($resp)) {
+            continue;
+        }
+        $payment = $resp['data'][0] ?? null;
+        if (!is_array($payment)) {
+            continue;
+        }
+        $gatewayStatus = strtoupper((string)($payment['status'] ?? ''));
+        $localStatus = strtoupper((string)($row['status'] ?? ''));
+        $targetStatus = $localStatus;
+        if (in_array($gatewayStatus, ['RECEIVED', 'CONFIRMED'], true)) {
+            $targetStatus = 'ACTIVE';
+        } elseif (in_array($gatewayStatus, ['OVERDUE', 'FAILED'], true)) {
+            $targetStatus = 'OVERDUE';
+        }
+        if ($targetStatus !== $localStatus) {
+            db()->exec("UPDATE client.subscriptions SET status=:status, updated_at=now() WHERE id=CAST(:id AS uuid)", [
+                ':status' => $targetStatus,
+                ':id' => (string)$row['id'],
+            ]);
+            $updated++;
+        }
+    }
+
+    file_put_contents(
+        $logFile,
+        '[' . date('c') . '] billing_reconcile_strict -> scanned=' . count($rows) . ' updated=' . $updated . PHP_EOL,
+        FILE_APPEND
+    );
+}
+
 function cleanupPasswordResetTokens(string $logFile): void
 {
     db()->exec("
@@ -1784,6 +1843,7 @@ while (true) {
         queueDailyBriefingReminders($logFile);
         expireClientApprovalTokens($logFile);
         runPublicationStrictCheck($logFile, $publishConsecutiveChecks, $publishIntervalMinutes, $publicationChecksWindow);
+        runBillingReconciliationStrict($logFile);
 
         $emails = db()->all("SELECT id, email_to, subject, body, attachments FROM crm.email_queue WHERE status='PENDING' ORDER BY created_at ASC LIMIT 20");
         foreach ($emails as $mail) {
@@ -1849,6 +1909,19 @@ while (true) {
         foreach ($events as $ev) {
             db()->exec("UPDATE client.webhook_events SET processed=true WHERE id=:id", [':id' => $ev['id']]);
             file_put_contents($logFile, '[' . date('c') . '] webhook_processado -> ' . $ev['provider'] . ':' . $ev['event_type'] . PHP_EOL, FILE_APPEND);
+        }
+
+        $auditNotifier = new \Shared\Support\FinancialAuditNotifier(
+            db(),
+            in_array(strtolower(envString('FEATURE_FINANCIAL_AUDIT_NOTIFICATIONS', '1')), ['1', 'true', 'yes', 'on'], true)
+        );
+        $retriedNotifications = $auditNotifier->retryFailedNotifications(20);
+        if ($retriedNotifications > 0) {
+            file_put_contents(
+                $logFile,
+                '[' . date('c') . '] financial_notification_retry -> processed=' . $retriedNotifications . PHP_EOL,
+                FILE_APPEND
+            );
         }
 
         file_put_contents($logFile, '[' . date('c') . '] worker_loop_ok' . PHP_EOL, FILE_APPEND);
