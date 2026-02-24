@@ -1,0 +1,111 @@
+.crm-cliente-page .card {
+  border-color: var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  box-shadow: var(--bs-box-shadow-sm);
+}
+
+.crm-cliente-page .deal-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.crm-cliente-page .deal-summary-grid > div {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 0.75rem;
+  background: var(--bs-body-bg);
+}
+
+.crm-cliente-page .deal-summary-grid label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+
+.crm-cliente-page .deal-summary-grid strong {
+  color: var(--bs-emphasis-color);
+  font-size: 0.95rem;
+}
+
+.deal-detail-wrapper .modal-content {
+  border-color: var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  box-shadow: var(--bs-box-shadow);
+}
+
+.deal-detail-wrapper .modal {
+  --bs-modal-zindex: 1080;
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.deal-detail-wrapper .modal .modal-dialog {
+  position: relative;
+  z-index: 1;
+}
+
+.deal-detail-wrapper .modal-header,
+.deal-detail-wrapper .modal-footer {
+  border-color: var(--bs-border-color);
+}
+
+.deal-detail-wrapper .deal-tab-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.deal-detail-wrapper .deal-tab-panel .table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+}
+
+.deal-detail-wrapper .deal-tab-panel table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+}
+
+.deal-detail-wrapper .deal-tab-panel th,
+.deal-detail-wrapper .deal-tab-panel td {
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+
+.deal-detail-wrapper .deal-tab-panel th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--bs-secondary-color);
+  background: var(--bs-tertiary-bg);
+}
+
+.deal-detail-wrapper .modal .btn-close {
+  box-shadow: none;
+}
+
+.deal-detail-wrapper .crm-v2-modal {
+  z-index: 1090;
+}
+
+.deal-detail-wrapper .crm-v2-modal-backdrop {
+  background: rgba(2, 6, 23, 0.16);
+}
+
+.deal-detail-wrapper .crm-v2-modal-content {
+  border-color: var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  box-shadow: var(--bs-box-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deal-detail-wrapper .modal,
+  .deal-detail-wrapper .modal-dialog,
+  .deal-detail-wrapper .crm-v2-modal-backdrop {
+    transition: none;
+    animation: none;
+  }
+}

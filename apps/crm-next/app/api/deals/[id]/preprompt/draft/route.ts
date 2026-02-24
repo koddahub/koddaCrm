@@ -38,6 +38,15 @@ async function atomicWrite(filePath: string, content: string) {
 }
 
 function buildIdentityMarkdownFromPromptJson(promptJson: unknown, organizationName: string) {
+  const pick = (obj: Record<string, unknown>, keys: string[], fallback = 'nao informado') => {
+    for (const key of keys) {
+      const value = obj[key];
+      if (value === undefined || value === null) continue;
+      const str = String(value).trim();
+      if (str) return str;
+    }
+    return fallback;
+  };
   const payload = (promptJson && typeof promptJson === 'object' ? promptJson : {}) as Record<string, unknown>;
   const business = (payload.business && typeof payload.business === 'object' ? payload.business : {}) as Record<string, unknown>;
   const style = (payload.style && typeof payload.style === 'object' ? payload.style : {}) as Record<string, unknown>;
@@ -45,14 +54,37 @@ function buildIdentityMarkdownFromPromptJson(promptJson: unknown, organizationNa
   const content = (payload.content && typeof payload.content === 'object' ? payload.content : {}) as Record<string, unknown>;
   const assets = (payload.assets && typeof payload.assets === 'object' ? payload.assets : {}) as Record<string, unknown>;
 
-  const objective = String(business.objetivo_principal || business.objective || 'nao informado');
-  const audience = String(business.publico_alvo || business.audience || 'nao informado');
-  const tone = String(style.tom_voz || style.tone_of_voice || 'nao informado');
-  const cta = String(style.cta_principal || style.cta_text || 'Fale conosco');
-  const palette = String(identity.paleta_cores || style.paleta_cores || style.color_palette || 'nao informado');
-  const logoStatus = String(assets.logo_status || (identity.possui_logo ? 'received' : 'missing'));
-  const manualStatus = String(assets.manual_status || (identity.possui_manual_marca ? 'received' : 'missing'));
-  const contentStatus = String(assets.content_status || content.status_conteudo || 'nao informado');
+  const objective = pick(business, ['objetivo_principal', 'objective']);
+  const audience = pick(business, ['publico_alvo', 'audience']);
+  const tone = pick(style, ['tom_voz', 'tone_of_voice', 'toneOfVoice'], pick(identity, ['tone_of_voice', 'toneOfVoice']));
+  const cta = pick(style, ['cta_principal', 'cta_text', 'cta'], 'Fale conosco');
+
+  const identityPalette = identity.colorPalette;
+  const paletteFromArray = Array.isArray(identityPalette)
+    ? identityPalette.map((item) => String(item || '').trim()).filter(Boolean).join(', ')
+    : '';
+  const palette = pick(
+    {
+      paletteFromArray,
+      paleta_cores: identity.paleta_cores,
+      color_palette: style.color_palette,
+      style_paleta_cores: style.paleta_cores,
+      identity_colorPaletteRaw: identity.colorPaletteRaw,
+    } as Record<string, unknown>,
+    ['paletteFromArray', 'paleta_cores', 'style_paleta_cores', 'color_palette', 'identity_colorPaletteRaw'],
+  );
+
+  const logoStatus = pick(
+    assets,
+    ['logo_status', 'logoStatus'],
+    identity.possui_logo || identity.logoStatus === 'received' ? 'received' : 'missing',
+  );
+  const manualStatus = pick(
+    assets,
+    ['manual_status', 'manualStatus'],
+    identity.possui_manual_marca || identity.manualStatus === 'received' ? 'received' : 'missing',
+  );
+  const contentStatus = pick(assets, ['content_status', 'contentStatus'], pick(content, ['status_conteudo', 'statusConteudo']));
 
   return [
     '# Identidade Visual - Site24h',
@@ -91,6 +123,87 @@ function resolveClientRootFromRelease(projectRoot: string, orgSlug: string) {
   return path.resolve('/home/server/projects/clientes', orgSlug);
 }
 
+function pickNonEmpty(...values: Array<unknown>) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function normalizeOptionalArray(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+      }
+    } catch {
+      // keep split fallback below
+    }
+    return trimmed.split(/\r?\n|,/g).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function hydratePromptJsonWithBrief(promptJson: unknown, brief: Record<string, unknown> | null) {
+  const payload = (promptJson && typeof promptJson === 'object' ? promptJson : {}) as Record<string, unknown>;
+  if (!brief) return payload;
+
+  const business = (payload.business && typeof payload.business === 'object' ? payload.business : {}) as Record<string, unknown>;
+  const style = (payload.style && typeof payload.style === 'object' ? payload.style : {}) as Record<string, unknown>;
+  const identity = (payload.identity && typeof payload.identity === 'object' ? payload.identity : {}) as Record<string, unknown>;
+  const site = (payload.site && typeof payload.site === 'object' ? payload.site : {}) as Record<string, unknown>;
+
+  const nextBusiness = {
+    ...business,
+    objective: pickNonEmpty(business.objective, brief.objective),
+    audience: pickNonEmpty(business.audience, brief.audience),
+    differentials: pickNonEmpty(business.differentials, brief.differentials),
+    services: pickNonEmpty(business.services, brief.services),
+    integrations: pickNonEmpty(business.integrations, brief.integrations),
+    domainTarget: pickNonEmpty(business.domainTarget, brief.domain_target),
+    extraRequirements: pickNonEmpty(business.extraRequirements, brief.extra_requirements),
+    legalContent: pickNonEmpty(business.legalContent, brief.legal_content),
+    visualReferences: pickNonEmpty(business.visualReferences, brief.visual_references),
+  };
+
+  const nextStyle = {
+    ...style,
+    toneOfVoice: pickNonEmpty(style.toneOfVoice, brief.tone_of_voice),
+    cta: pickNonEmpty(style.cta, brief.cta_text, 'Fale conosco'),
+  };
+
+  const paletteArray = normalizeOptionalArray(identity.colorPalette || brief.color_palette);
+  const nextIdentity = {
+    ...identity,
+    toneOfVoice: pickNonEmpty(identity.toneOfVoice, brief.tone_of_voice),
+    colorPalette: paletteArray.length > 0 ? paletteArray : identity.colorPalette,
+    colorPaletteRaw: pickNonEmpty(identity.colorPaletteRaw, brief.color_palette),
+  };
+
+  const nextSite = {
+    ...site,
+    sections: Array.isArray(site.sections) && site.sections.length > 0
+      ? site.sections
+      : ['Hero', 'Sobre', 'Serviços', 'Diferenciais', 'Contato', 'FAQ', 'Rodapé'],
+  };
+
+  return {
+    ...payload,
+    business: nextBusiness,
+    style: nextStyle,
+    identity: nextIdentity,
+    site: nextSite,
+  };
+}
+
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
@@ -127,13 +240,27 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         where: { dealId: deal.id },
         orderBy: { version: 'desc' },
       });
+      const latestBriefRows = deal.organizationId
+        ? await tx.$queryRaw<Array<Record<string, unknown>>>`
+            SELECT *
+            FROM client.project_briefs
+            WHERE organization_id = CAST(${deal.organizationId} AS uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+          `
+        : [];
+      const latestBrief = latestBriefRows[0] || null;
+      const hydratedPromptJson = hydratePromptJsonWithBrief(
+        promptJson,
+        latestBrief,
+      );
 
       const revision = latest && latest.status !== 'APPROVED'
         ? await tx.dealPromptRevision.update({
             where: { id: latest.id },
             data: {
               promptText,
-              promptJson: promptJson as never,
+              promptJson: hydratedPromptJson as never,
               status: 'DRAFT',
               updatedAt: new Date(),
             },
@@ -143,7 +270,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
               dealId: deal.id,
               version: (latest?.version || 0) + 1,
               promptText,
-              promptJson: promptJson as never,
+              promptJson: hydratedPromptJson as never,
               status: 'DRAFT',
               createdBy: 'ADMIN',
             },
@@ -166,11 +293,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         organizationName: deal.organization?.legalName || '',
         revisionId: revision.id,
         version: revision.version,
+        promptJsonHydrated: hydratedPromptJson,
       };
     });
 
     let draftsPathClientRoot: string | null = null;
     let identityPathClientRoot: string | null = null;
+    let masterPromptPath: string | null = null;
     let fileWarning: string | null = null;
     const savedFiles: string[] = [];
     let identityUpdated = false;
@@ -179,9 +308,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const orgSlug = buildOrgSlug(out.organizationName, out.organizationId || out.dealId);
       const projectRoot = release?.project_root || path.resolve('/home/server/projects/clientes', orgSlug, 'releases', 'v1');
       const clientRoot = resolveClientRootFromRelease(projectRoot, orgSlug);
-      const variants = resolveVariantDrafts(promptText, promptJson);
+      const variants = resolveVariantDrafts(promptText, out.promptJsonHydrated);
 
       draftsPathClientRoot = clientRoot;
+      masterPromptPath = path.resolve(clientRoot, 'prompt_pai_orquestrador.md');
 
       const releaseFiles: Array<[string, string]> = [
         [path.resolve(clientRoot, 'prompt_v1_draft.md'), variants.V1],
@@ -202,7 +332,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
             savedAt: new Date().toISOString(),
             version: out.version,
             variant_prompts: variants,
-            prompt_json: promptJson,
+            prompt_json: out.promptJsonHydrated,
           },
           null,
           2,
@@ -213,7 +343,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         savedFiles.push(target);
       }
 
-      const identityMd = buildIdentityMarkdownFromPromptJson(promptJson, out.organizationName || 'Cliente');
+      const identityMd = buildIdentityMarkdownFromPromptJson(out.promptJsonHydrated, out.organizationName || 'Cliente');
       identityPathClientRoot = path.resolve(clientRoot, 'identidade_visual.md');
       await atomicWrite(identityPathClientRoot, identityMd);
       savedFiles.push(identityPathClientRoot);
@@ -239,6 +369,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       ...out,
       draftsPathClientRoot,
       identityPathClientRoot,
+      masterPromptPath,
+      masterPromptLocked: true,
       // Deprecated: manter por 1 versão para compatibilidade.
       draftsPathRelease: draftsPathClientRoot,
       identityPathRelease: identityPathClientRoot,

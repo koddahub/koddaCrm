@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Template institucional com chatbot Kodassauro" />
+  <meta name="description" content="Template institucional multipágina com chatbot e foco em conversão." />
   <title>Template V3 | Home</title>
   <link rel="icon" href="assets/logo/favicon.ico" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
@@ -12,15 +12,28 @@
   <link rel="stylesheet" href="css/kodassauro.css" />
 </head>
 <body>
+  <script>
+    window.TemplateConfig = {
+      brandName: 'Sua Empresa',
+      contactEmail: 'contato@suaempresa.com.br',
+      contactPhone: '(11) 99999-9999',
+      whatsappNumber: '5511999999999',
+      formMode: 'front-only',
+      formEndpoint: '',
+      brandPrimary: '#1d4ed8',
+      brandSecondary: '#0f172a'
+    };
+  </script>
+
   <header class="site-header" id="topo">
     <div class="container header-inner">
       <a href="index.html" class="brand" aria-label="Início">
-        <img src="assets/logo/koddahub-logo-v2.png" alt="KoddaHub" />
-        <span class="brand-text"><span>Kodda</span><span>Hub</span></span>
+        <img src="assets/logo/koddahub-logo-v2.png" alt="Logo da empresa" />
+        <span class="brand-text"><span>Sua</span><span>Empresa</span></span>
       </a>
-      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu">☰</button>
-      <nav class="site-nav" data-nav>
-        <a href="index.html">Home</a>
+      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu" aria-expanded="false" aria-controls="siteNav">☰</button>
+      <nav class="site-nav" data-nav id="siteNav">
+        <a href="index.html" class="active">Home</a>
         <a href="sobre.html">Sobre</a>
         <a href="contato.html" class="btn-nav">Contato</a>
       </nav>
@@ -31,27 +44,27 @@
     <section class="page-hero">
       <div class="container hero-grid">
         <div>
-          <span class="hero-kicker">V3 INSTITUCIONAL + CHATBOT</span>
-          <h1>Home completo com atendimento <strong>interativo</strong> e suporte digital.</h1>
-          <p>Template multipagina com WhatsApp, formulario e Kodassauro integrado.</p>
+          <span class="hero-kicker">TEMPLATE BASE V3</span>
+          <h1>Site institucional completo com atendimento inteligente em tempo real.</h1>
+          <p>Versão multipágina com formulário e chatbot integrado para elevar conversão e suporte.</p>
           <div class="hero-actions">
             <a class="btn-main" href="contato.html">Solicitar proposta</a>
-            <a class="btn-outline" href="sobre.html">Conhecer empresa</a>
+            <a class="btn-outline" href="sobre.html">Conhecer a empresa</a>
           </div>
         </div>
         <article class="hero-card">
-          <img src="assets/backgrounds/card-05-demo-ecommerce.jpg" alt="Home institucional com chatbot" />
+          <img src="assets/backgrounds/card-05-demo-ecommerce.jpg" alt="Template institucional com chatbot" />
         </article>
       </div>
     </section>
 
     <section class="section" id="servicos">
       <div class="container">
-        <h2 class="section-title">Solucoes principais</h2>
+        <h2 class="section-title">Soluções principais</h2>
         <div class="grid-3">
-          <article class="info-card"><h3>Site institucional</h3><p>Presenca digital profissional para sua marca.</p></article>
-          <article class="info-card"><h3>Jornada comercial</h3><p>Captação com CTA e canais de atendimento.</p></article>
-          <article class="info-card"><h3>Assistente virtual</h3><p>Kodassauro para triagem inicial e direcionamento.</p></article>
+          <article class="info-card"><h3>Presença digital</h3><p>Arquitetura web profissional alinhada ao posicionamento da marca.</p></article>
+          <article class="info-card"><h3>Captação de demanda</h3><p>Estrutura comercial com CTA claros e formulários de alta conversão.</p></article>
+          <article class="info-card"><h3>Atendimento inteligente</h3><p>Chatbot para triagem inicial e direcionamento de oportunidades.</p></article>
         </div>
       </div>
     </section>
@@ -60,34 +73,32 @@
   <footer class="footer">
     <div class="container">
       <div class="footer-grid">
-        <div><h4>KoddaHub</h4><p>Template institucional com chatbot integrado.</p></div>
-        <div><h4>Contato</h4><ul><li>(41) 99999-9999</li><li>contato@empresa.com.br</li><li>Curitiba - PR</li></ul></div>
-        <div><h4>Navegacao</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
+        <div><h4>Sua Empresa</h4><p>Modelo institucional premium com atendimento assistido por chatbot.</p></div>
+        <div><h4>Contato</h4><ul><li><a data-contact-phone href="#">(11) 99999-9999</a></li><li><a data-contact-email href="#">contato@suaempresa.com.br</a></li><li>São Paulo - SP</li></ul></div>
+        <div><h4>Navegação</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
       </div>
-      <div class="footer-bottom">© 2026 Template KoddaHub V3.</div>
+      <div class="footer-bottom">© 2026 Sua Empresa. Todos os direitos reservados.</div>
     </div>
   </footer>
 
-  <a class="whatsapp-float" href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>
-
   <div class="kodassauro" id="kodassauroRoot">
     <button class="kodassauro-toggle" type="button" aria-haspopup="dialog" aria-controls="kodassauroPanel" aria-expanded="false" title="Abrir assistente">
-      <img src="assets/logo/koddahub-logo-v2.png" alt="Ícone do KoddaHub" class="kodassauro-icon" />
+      <img src="assets/logo/koddahub-logo-v2.png" alt="Assistente virtual" class="kodassauro-icon" />
       <span class="kodassauro-badge" aria-label="Notificações do chat" hidden>0</span>
     </button>
     <section class="kodassauro-panel" id="kodassauroPanel" role="dialog" aria-modal="false" aria-labelledby="kodassauroTitle" aria-describedby="kodassauroSubtitle" tabindex="-1" hidden>
       <header class="kodassauro-header">
         <div class="kodassauro-avatar" aria-hidden="true">
-          <svg class="kodassauro-svg" viewBox="0 0 64 64" role="img" aria-label="Kodassauro">
-            <circle cx="32" cy="32" r="30" fill="#f57c00" opacity="0.95"></circle>
-            <circle cx="28" cy="33" r="2.6" fill="#1976D2"></circle>
-            <circle cx="36" cy="33" r="2.6" fill="#1976D2"></circle>
+          <svg class="kodassauro-svg" viewBox="0 0 64 64" role="img" aria-label="Assistente virtual">
+            <circle cx="32" cy="32" r="30" fill="#2563eb" opacity="0.95"></circle>
+            <circle cx="28" cy="33" r="2.6" fill="#fff"></circle>
+            <circle cx="36" cy="33" r="2.6" fill="#fff"></circle>
             <path d="M24 41c2.2 2 4.8 3 8 3s5.8-1 8-3" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"></path>
           </svg>
         </div>
         <div class="kodassauro-headings">
-          <h3 class="kodassauro-title" id="kodassauroTitle">Kodassauro</h3>
-          <p class="kodassauro-subtitle" id="kodassauroSubtitle">Assistente virtual pronto para ajudar.</p>
+          <h3 class="kodassauro-title" id="kodassauroTitle">Assistente</h3>
+          <p class="kodassauro-subtitle" id="kodassauroSubtitle">Pronto para ajudar com dúvidas e próximos passos.</p>
         </div>
         <div class="kodassauro-header-actions">
           <button class="kodassauro-close" type="button" aria-label="Fechar chat">×</button>
@@ -99,14 +110,13 @@
       <form class="kodassauro-composer" id="kodassauroComposer" autocomplete="off">
         <label class="kodassauro-sr-only" for="kodassauroInput">Mensagem</label>
         <input id="kodassauroInput" class="kodassauro-input" type="text" placeholder="Digite sua mensagem..." maxlength="360" />
-        <button class="kodassauro-send" type="submit" aria-label="Enviar mensagem">
-          <i class="fas fa-paper-plane" aria-hidden="true"></i>
-        </button>
+        <button class="kodassauro-send" type="submit" aria-label="Enviar mensagem"><i class="fas fa-paper-plane" aria-hidden="true"></i></button>
       </form>
     </section>
   </div>
 
   <script src="js/main.js"></script>
   <script src="js/kodassauro-chat.js"></script>
+  <script src="js/form-handler.js"></script>
 </body>
 </html>

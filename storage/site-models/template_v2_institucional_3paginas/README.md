@@ -1,19 +1,38 @@
-# Template V2 - Institucional de tres paginas
+# Template V2 - Institucional (3 páginas)
+
+## Escopo
+- `index.html`, `sobre.html`, `contato.html`
+- WhatsApp flutuante em todas as páginas
+- Formulário funcional no front em `contato.html`
+- Sem chatbot
 
 ## Estrutura
-- `index.html`: home com blocos comerciais.
-- `sobre.html`: historia, metodologia e posicionamento.
-- `contato.html`: formulario de contato (front-end).
-- `css/style.css`: estilo compartilhado de todas as paginas.
-- `js/main.js`: menu mobile e interacoes basicas.
-- `assets/`: logo, fundos, fontes e bibliotecas locais.
+- `css/style.css`: base visual white-label e componentes de formulário
+- `js/main.js`: menu mobile, estado ativo do menu, config de contato e WhatsApp
+- `js/form-handler.js`: validação, loading e feedback de envio
+- `assets/`: fontes, imagens, logo e vendors locais
 
-## Funcionalidades
-- Formulario funcional no front (sem backend por padrao).
-- Botao WhatsApp em todas as paginas.
-- Navegacao multipagina responsiva.
+## Contrato de configuração (frontend)
+Defina no `<script>` da página:
 
-## Personalizacao
-1. Trocar textos e imagens conforme o briefing do cliente.
-2. Atualizar link do WhatsApp e dados de contato.
-3. Integrar o formulario a um endpoint quando necessario.
+```js
+window.TemplateConfig = {
+  brandName: 'Sua Empresa',
+  contactEmail: 'contato@suaempresa.com.br',
+  contactPhone: '(11) 99999-9999',
+  whatsappNumber: '5511999999999',
+  formMode: 'front-only', // 'front-only' | 'api'
+  formEndpoint: '' // obrigatório quando formMode='api'
+}
+```
+
+## Formulário
+- Modo padrão: `front-only` (simula envio com feedback completo)
+- Modo integração: `api` (POST JSON para `formEndpoint`)
+- Campos obrigatórios: nome, email, telefone, assunto, mensagem
+
+## Critérios de conformidade
+- 3 páginas funcionais e navegáveis
+- WhatsApp ativo em todas as páginas
+- Sem chatbot
+- Sem links/arquivos quebrados

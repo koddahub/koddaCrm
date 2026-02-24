@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { ensureApiAuth } from '@/lib/api-auth';
-import { operationStagesByDealType } from '@/lib/deals';
+import { ensureDealOperation, operationStagesByDealType } from '@/lib/deals';
 import { buildOrgSlug, buildVsCodeLinks, resolveProjectPath } from '@/lib/site24h';
 import {
   ensurePublicationSubsteps,
@@ -42,6 +42,23 @@ async function safeStat(filePath: string) {
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
+
+  const bootstrapDeal = await prisma.deal.findUnique({
+    where: { id: params.id },
+    select: {
+      id: true,
+      dealType: true,
+      lifecycleStatus: true,
+    },
+  });
+  if (!bootstrapDeal) {
+    return NextResponse.json({ error: 'Deal não encontrado' }, { status: 404 });
+  }
+  if (bootstrapDeal.lifecycleStatus === 'CLIENT') {
+    await prisma.$transaction(async (tx) => {
+      await ensureDealOperation(tx, { id: bootstrapDeal.id, dealType: bootstrapDeal.dealType });
+    });
+  }
 
   const deal = await prisma.deal.findUnique({
     where: { id: params.id },
@@ -111,6 +128,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     promptV1Path: string | null;
     promptV2Path: string | null;
     promptV3Path: string | null;
+    masterPromptPath: string | null;
     identityPath: string | null;
   } = {
     clientRoot: null,
@@ -119,9 +137,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     promptV1Path: null,
     promptV2Path: null,
     promptV3Path: null,
+    masterPromptPath: null,
     identityPath: null,
   };
   let promptFileMtime: string | null = null;
+  let masterPromptSource: 'filesystem' | 'database_fallback' = 'database_fallback';
   let variantPromptsResolved: { V1: string; V2: string; V3: string } | null = null;
   let resolvedPromptText: string | null = latestPromptRevision?.promptText || null;
   let resolvedPromptJson: unknown = latestPromptRevision?.promptJson || null;
@@ -134,6 +154,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const promptV1Path = path.resolve(clientRoot, 'prompt_v1_draft.md');
     const promptV2Path = path.resolve(clientRoot, 'prompt_v2_draft.md');
     const promptV3Path = path.resolve(clientRoot, 'prompt_v3_draft.md');
+    const masterPromptPath = path.resolve(clientRoot, 'prompt_pai_orquestrador.md');
     const identityPath = path.resolve(clientRoot, 'identidade_visual.md');
     promptPaths = {
       clientRoot,
@@ -142,18 +163,23 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       promptV1Path,
       promptV2Path,
       promptV3Path,
+      masterPromptPath,
       identityPath,
     };
 
-    const [rawPromptJson, rawPromptMd, rawV1, rawV2, rawV3, jsonStat, mdStat] = await Promise.all([
+    const [rawPromptJson, rawPromptMd, rawV1, rawV2, rawV3, rawMasterPrompt, jsonStat, mdStat] = await Promise.all([
       safeReadFile(promptJsonPath),
       safeReadFile(promptMdPath),
       safeReadFile(promptV1Path),
       safeReadFile(promptV2Path),
       safeReadFile(promptV3Path),
+      safeReadFile(masterPromptPath),
       safeStat(promptJsonPath),
       safeStat(promptMdPath),
     ]);
+    if (rawMasterPrompt && rawMasterPrompt.trim()) {
+      masterPromptSource = 'filesystem';
+    }
 
     let parsedPromptJson: unknown = null;
     if (rawPromptJson) {
@@ -266,6 +292,60 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     publicationSummary = await publicationSubstepsStatus(deal.id);
   }
 
+  const promptRequests = await prisma.$queryRaw<Array<{
+    id: string;
+    subject: string;
+    request_items: unknown;
+    message: string;
+    due_at: Date | null;
+    status: string;
+    created_at: Date;
+    updated_at: Date;
+  }>>`
+    SELECT id::text, subject, request_items, message, due_at, status, created_at, updated_at
+    FROM crm.deal_prompt_request
+    WHERE deal_id = ${deal.id}::uuid
+    ORDER BY created_at DESC
+    LIMIT 20
+  `;
+  const promptRequestsNormalized = promptRequests.map((item) => ({
+    id: item.id,
+    subject: item.subject,
+    requestItems: Array.isArray(item.request_items)
+      ? item.request_items.map((entry) => String(entry || ''))
+      : [],
+    message: item.message,
+    dueAt: item.due_at ? item.due_at.toISOString() : null,
+    status: item.status,
+    createdAt: item.created_at.toISOString(),
+    updatedAt: item.updated_at.toISOString(),
+  }));
+  const publicationRequests = promptRequestsNormalized.filter((item) => {
+    const subject = String(item.subject || '').toLowerCase();
+    if (subject.includes('domínio/publicação') || subject.includes('dominio/publicacao')) return true;
+    return item.requestItems.some((entry) => String(entry || '').toLowerCase().includes('domínio para publicação')
+      || String(entry || '').toLowerCase().includes('dominio para publicacao'));
+  });
+  const latestPublicationRequest = publicationRequests[0] || null;
+  const latestPublicationRequestDomain = (() => {
+    if (!latestPublicationRequest) return null;
+    const fromItem = latestPublicationRequest.requestItems.find((entry) => String(entry || '').toLowerCase().includes('domínio para publicação')
+      || String(entry || '').toLowerCase().includes('dominio para publicacao'));
+    const parsed = String(fromItem || '').split(':').slice(1).join(':').trim();
+    if (parsed) return parsed;
+    const fromMessage = String(latestPublicationRequest.message || '').match(/[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] || '';
+    return fromMessage || null;
+  })();
+  const publicationDomainApproval = {
+    status: String(latestPublicationRequest?.status || '').toUpperCase() === 'RECEIVED' ? 'RECEIVED' : 'PENDING',
+    domain: latestPublicationRequestDomain || deal.organization?.domain || null,
+    requestedAt: latestPublicationRequest?.createdAt || null,
+    receivedAt: String(latestPublicationRequest?.status || '').toUpperCase() === 'RECEIVED'
+      ? (latestPublicationRequest?.updatedAt || null)
+      : null,
+    requestId: latestPublicationRequest?.id || null,
+  };
+
   return NextResponse.json({
     deal: {
       id: deal.id,
@@ -285,9 +365,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       latest: promptLatest,
       revisions: deal.promptRevisions,
       promptSource,
+      masterPromptSource,
       promptPaths,
       promptFileMtime,
       variantPromptsResolved,
+      requests: promptRequestsNormalized,
     },
     template: {
       latest: latestTemplate,
@@ -363,6 +445,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     },
     publication: {
       checks: deal.publishChecks,
+      requests: publicationRequests,
+      domainApproval: publicationDomainApproval,
       substeps: publicationSubsteps.map((item) => ({
         id: item.id,
         dealId: item.deal_id,

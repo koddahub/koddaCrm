@@ -1,0 +1,13 @@
+@media (min-width: 768px) {
+  .op-operacao .op-step {
+    padding: .95rem 1rem;
+  }
+
+  .op-operacao .op-step .op-step-title {
+    font-size: 1rem;
+  }
+
+  .op-operacao .op-history {
+    padding: .8rem .95rem;
+  }
+}

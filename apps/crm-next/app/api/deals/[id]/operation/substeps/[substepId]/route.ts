@@ -11,8 +11,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const body = await req.json().catch(() => ({}));
   const status = String(body.status || '').trim().toUpperCase();
-  const owner = body.owner === undefined ? undefined : String(body.owner || '').trim();
-  const notes = body.notes === undefined ? undefined : String(body.notes || '').trim();
+  const ownerProvided = body.owner !== undefined;
+  const notesProvided = body.notes !== undefined;
+  const owner = ownerProvided ? String(body.owner || '').trim() : undefined;
+  const notes = notesProvided ? String(body.notes || '').trim() : undefined;
 
   if (status && !ALLOWED_STATUS.has(status)) {
     return NextResponse.json({ error: 'Status de sub-etapa inválido.' }, { status: 422 });
@@ -40,12 +42,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
       const now = new Date();
       const nextStatus = status || current.status;
+      const shouldStart = nextStatus === 'IN_PROGRESS';
+      const shouldComplete = ['COMPLETED', 'SKIPPED'].includes(nextStatus);
+      const shouldResetStarted = nextStatus === 'PENDING';
+      const shouldResetCompleted = ['PENDING', 'IN_PROGRESS', 'BLOCKED'].includes(nextStatus);
       const updateData = {
         status: nextStatus,
-        owner: owner === undefined ? undefined : owner || null,
-        notes: notes === undefined ? undefined : notes || null,
-        startedAt: nextStatus === 'IN_PROGRESS' ? now : undefined,
-        completedAt: ['COMPLETED', 'SKIPPED'].includes(nextStatus) ? now : undefined,
+        owner: ownerProvided ? owner || null : null,
+        notes: notesProvided ? notes || null : null,
+        shouldStart,
+        shouldComplete,
+        shouldResetStarted,
+        shouldResetCompleted,
         updatedAt: now,
       };
 
@@ -53,14 +61,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         UPDATE crm.deal_operation_substep
         SET
           status = ${updateData.status},
-          owner = COALESCE(${updateData.owner ?? null}, owner),
-          notes = COALESCE(${updateData.notes ?? null}, notes),
+          owner = CASE
+            WHEN ${ownerProvided} = true THEN ${updateData.owner}
+            ELSE owner
+          END,
+          notes = CASE
+            WHEN ${notesProvided} = true THEN ${updateData.notes}
+            ELSE notes
+          END,
           started_at = CASE
-            WHEN ${updateData.startedAt ? true : false} = true AND started_at IS NULL THEN ${updateData.startedAt ?? null}
+            WHEN ${updateData.shouldStart} = true AND started_at IS NULL THEN now()
+            WHEN ${updateData.shouldResetStarted} = true THEN NULL
             ELSE started_at
           END,
           completed_at = CASE
-            WHEN ${updateData.completedAt ? true : false} = true THEN ${updateData.completedAt ?? null}
+            WHEN ${updateData.shouldComplete} = true THEN now()
+            WHEN ${updateData.shouldResetCompleted} = true THEN NULL
             ELSE completed_at
           END,
           updated_at = now()
@@ -77,6 +93,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
             stageCode: 'publicacao',
             status: nextStatus,
             owner: owner || null,
+            notes: notes ?? null,
           },
           createdBy: 'ADMIN',
         },

@@ -1,0 +1,21 @@
+@media (min-width: 992px) {
+  .crm-cliente-page .deal-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .deal-detail-wrapper .modal-dialog.modal-xl {
+    max-width: min(1280px, 96vw);
+  }
+}
+
+@media (min-width: 1200px) {
+  .deal-detail-wrapper .modal-dialog.modal-xl {
+    max-width: min(1380px, 94vw);
+  }
+}
+
+@media (min-width: 1400px) {
+  .deal-detail-wrapper .modal-dialog.modal-xl {
+    max-width: min(1500px, 92vw);
+  }
+}

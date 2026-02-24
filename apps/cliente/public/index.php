@@ -1112,6 +1112,11 @@ function renderPortalPaymentPendingPage(array $ctx): string {
 function renderDashboard(?string $notice = null): string {
   $user = $_SESSION['client_user'];
   $orgId = $user['organization_id'] ?? null;
+  $assetCssVersion = (string)@filemtime(__DIR__ . '/assets/app.css');
+  $assetOperacaoVersion = (string)@filemtime(__DIR__ . '/assets/operacao.css');
+  $assetOperacaoTabletVersion = (string)@filemtime(__DIR__ . '/assets/operacao-tablet.css');
+  $assetOperacaoDesktopVersion = (string)@filemtime(__DIR__ . '/assets/operacao-desktop.css');
+  $assetJsVersion = (string)@filemtime(__DIR__ . '/assets/app.js');
 
   if (empty($orgId)) {
     $foundOrg = db()->one("SELECT id FROM client.organizations WHERE user_id=:uid ORDER BY created_at DESC LIMIT 1", [':uid' => $user['id']]);
@@ -1175,8 +1180,11 @@ function renderDashboard(?string $notice = null): string {
     ['code' => 'publicado', 'name' => 'Publicado', 'description' => 'Site publicado e monitorado.'],
   ];
   $operationOrderByCode = [];
+  $operationCodeByOrder = [];
   foreach ($operationStagesBlueprint as $idx => $stage) {
-    $operationOrderByCode[$stage['code']] = $idx + 1;
+    $order = $idx + 1;
+    $operationOrderByCode[$stage['code']] = $order;
+    $operationCodeByOrder[$order] = $stage['code'];
   }
   $operationLegacyCodeMap = [
     'boas_vindas' => 'briefing_pendente',
@@ -1191,10 +1199,25 @@ function renderDashboard(?string $notice = null): string {
   };
 
   $operationDeal = $orgId ? db()->one("
-    SELECT d.id, d.title, d.deal_type, d.lifecycle_status, d.plan_code, d.product_code, d.updated_at
+    SELECT
+      d.id,
+      d.title,
+      d.deal_type,
+      d.lifecycle_status,
+      d.plan_code,
+      d.product_code,
+      d.updated_at,
+      COALESCE(op.last_operation_at, d.updated_at) AS operation_sort_at
     FROM crm.deal d
-    WHERE d.organization_id=:oid AND d.lifecycle_status='CLIENT'
-    ORDER BY d.updated_at DESC
+    LEFT JOIN LATERAL (
+      SELECT MAX(o.updated_at) AS last_operation_at
+      FROM crm.deal_operation o
+      WHERE o.deal_id = d.id
+    ) op ON true
+    WHERE d.organization_id=:oid
+      AND d.lifecycle_status='CLIENT'
+      AND upper(COALESCE(d.deal_type, ''))='HOSPEDAGEM'
+    ORDER BY COALESCE(op.last_operation_at, d.updated_at) DESC, d.updated_at DESC
     LIMIT 1
   ", [':oid' => $orgId]) : null;
   $operationRecordsRaw = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->all("
@@ -1207,6 +1230,7 @@ function renderDashboard(?string $notice = null): string {
   $operationActiveCode = null;
   $operationActiveOrder = 0;
   $operationCompletedMaxOrder = 0;
+  $operationLastUpdatedAt = !empty($operationDeal['updated_at']) ? (string)$operationDeal['updated_at'] : null;
   foreach ($operationRecordsRaw as $row) {
     $normalizedCode = $normalizeOperationCode((string)($row['stage_code'] ?? ''));
     if ($normalizedCode === '') {
@@ -1230,18 +1254,239 @@ function renderDashboard(?string $notice = null): string {
     if (strtoupper((string)($row['status'] ?? '')) === 'COMPLETED' && $normalizedOrder > $operationCompletedMaxOrder) {
       $operationCompletedMaxOrder = $normalizedOrder;
     }
+    $updatedCandidate = !empty($row['updated_at']) ? strtotime((string)$row['updated_at']) : false;
+    if ($updatedCandidate !== false && ($operationLastUpdatedAt === null || $updatedCandidate > strtotime($operationLastUpdatedAt))) {
+      $operationLastUpdatedAt = (string)$row['updated_at'];
+    }
   }
 
   $operationApprovalPending = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->one("
     SELECT
+      a.id AS approval_id,
+      a.status AS approval_status,
       a.expires_at,
-      tr.preview_url
+      a.created_at AS approval_created_at,
+      tr.preview_url,
+      tr.version AS template_version,
+      tr.created_at AS template_generated_at
     FROM crm.deal_client_approval a
     JOIN crm.deal_template_revision tr ON tr.id = a.template_revision_id
     WHERE a.deal_id=:did AND a.status='PENDING' AND a.expires_at > now()
     ORDER BY a.created_at DESC
     LIMIT 1
   ", [':did' => $operationDeal['id']]) : null;
+  $operationApprovalLatest = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->one("
+    SELECT
+      a.id AS approval_id,
+      a.status AS approval_status,
+      a.client_note,
+      a.expires_at,
+      a.created_at AS approval_created_at,
+      tr.preview_url,
+      tr.version AS template_version,
+      tr.created_at AS template_generated_at
+    FROM crm.deal_client_approval a
+    JOIN crm.deal_template_revision tr ON tr.id = a.template_revision_id
+    WHERE a.deal_id=:did
+    ORDER BY a.created_at DESC
+    LIMIT 1
+  ", [':did' => $operationDeal['id']]) : null;
+  $operationTemplateLatest = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->one("
+    SELECT status, version, created_at
+    FROM crm.deal_template_revision
+    WHERE deal_id=:did
+    ORDER BY version DESC, created_at DESC
+    LIMIT 1
+  ", [':did' => $operationDeal['id']]) : null;
+
+  $operationActivityRows = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->all("
+    SELECT activity_type, content, metadata, created_at
+    FROM crm.deal_activity
+    WHERE deal_id=:did
+      AND activity_type IN ('CLIENT_APPROVAL_REQUESTED','CLIENT_REQUESTED_CHANGES','CLIENT_APPROVED')
+    ORDER BY created_at DESC
+    LIMIT 20
+  ", [':did' => $operationDeal['id']]) : [];
+  $operationPromptRequestsRaw = (!empty($operationDeal) && !empty($operationDeal['id'])) ? db()->all("
+    SELECT id, subject, request_items, message, due_at, status, created_at, updated_at
+    FROM crm.deal_prompt_request
+    WHERE deal_id=:did
+    ORDER BY created_at DESC
+    LIMIT 8
+  ", [':did' => $operationDeal['id']]) : [];
+  $operationPromptRequests = [];
+  foreach ($operationPromptRequestsRaw as $requestRow) {
+    $requestItemsRaw = $requestRow['request_items'] ?? [];
+    if (is_string($requestItemsRaw)) {
+      $decodedItems = json_decode($requestItemsRaw, true);
+      $requestItemsRaw = is_array($decodedItems) ? $decodedItems : [];
+    }
+    $operationPromptRequests[] = [
+      'id' => (string)($requestRow['id'] ?? ''),
+      'subject' => (string)($requestRow['subject'] ?? ''),
+      'message' => (string)($requestRow['message'] ?? ''),
+      'status' => strtoupper((string)($requestRow['status'] ?? 'SENT')),
+      'due_at' => $requestRow['due_at'] ?? null,
+      'created_at' => $requestRow['created_at'] ?? null,
+      'items' => array_values(array_filter(array_map(static fn($item) => trim((string)$item), is_array($requestItemsRaw) ? $requestItemsRaw : []))),
+    ];
+  }
+  $operationHistory = [];
+  $hasApproveAfterByIndex = [];
+  foreach ($operationActivityRows as $idx => $row) {
+    if (strtoupper((string)($row['activity_type'] ?? '')) === 'CLIENT_APPROVED') {
+      $hasApproveAfterByIndex[$idx] = true;
+    }
+  }
+  $seenApprove = false;
+  foreach (array_reverse($operationActivityRows, true) as $idx => $row) {
+    if (strtoupper((string)($row['activity_type'] ?? '')) === 'CLIENT_APPROVED') {
+      $seenApprove = true;
+    }
+    $hasApproveAfterByIndex[$idx] = $seenApprove;
+  }
+  foreach ($operationActivityRows as $idx => $row) {
+    $type = strtoupper((string)($row['activity_type'] ?? ''));
+    $meta = $row['metadata'] ?? null;
+    if (is_string($meta)) {
+      $decoded = json_decode($meta, true);
+      if (is_array($decoded)) {
+        $meta = $decoded;
+      }
+    }
+    if (!is_array($meta)) {
+      $meta = [];
+    }
+    $status = 'enviado';
+    $statusLabel = 'Enviado';
+    $kind = 'Atualização';
+    if ($type === 'CLIENT_REQUESTED_CHANGES') {
+      $kind = 'Solicitação de ajustes';
+      $resolved = (bool)($hasApproveAfterByIndex[$idx] ?? false);
+      $status = $resolved ? 'resolvido' : 'em_andamento';
+      $statusLabel = $resolved ? 'Resolvido' : 'Em andamento';
+    } elseif ($type === 'CLIENT_APPROVED') {
+      $kind = 'Aprovação';
+      $status = 'resolvido';
+      $statusLabel = 'Resolvido';
+    } elseif ($type === 'CLIENT_APPROVAL_REQUESTED') {
+      $kind = 'Envio para aprovação';
+      $status = 'enviado';
+      $statusLabel = 'Enviado';
+    }
+    $description = trim((string)($meta['descricao'] ?? $meta['note'] ?? $row['content'] ?? ''));
+    if ($description === '') {
+      $description = (string)$row['content'];
+    }
+    $operationHistory[] = [
+      'date' => (string)($row['created_at'] ?? ''),
+      'kind' => $kind,
+      'status' => $status,
+      'status_label' => $statusLabel,
+      'description' => $description,
+      'response' => trim((string)($meta['response'] ?? '')),
+    ];
+  }
+
+  $operationUiStages = [
+    [
+      'code' => 'briefing',
+      'name' => 'Briefing',
+      'icon' => 'bi-clipboard-check',
+      'description' => 'Coleta de informações sobre seu negócio',
+      'internal_codes' => ['briefing_pendente'],
+    ],
+    [
+      'code' => 'producao',
+      'name' => 'Em produção',
+      'icon' => 'bi-gear',
+      'description' => 'Seu site está sendo desenvolvido',
+      'internal_codes' => ['pre_prompt', 'template_v1', 'ajustes'],
+    ],
+    [
+      'code' => 'aprovacao',
+      'name' => 'Aprovação',
+      'icon' => 'bi-check2-circle',
+      'description' => 'Você aprova o site ou solicita ajustes',
+      'internal_codes' => ['aprovacao_cliente'],
+    ],
+    [
+      'code' => 'publicacao',
+      'name' => 'Publicação',
+      'icon' => 'bi-globe-americas',
+      'description' => 'Configuração de domínio e e-mails',
+      'internal_codes' => ['publicacao'],
+    ],
+    [
+      'code' => 'publicado',
+      'name' => 'Publicado',
+      'icon' => 'bi-rocket-takeoff',
+      'description' => 'Seu site está no ar!',
+      'internal_codes' => ['publicado'],
+    ],
+  ];
+  $operationUiByInternal = [
+    'briefing_pendente' => 'briefing',
+    'pre_prompt' => 'producao',
+    'template_v1' => 'producao',
+    'ajustes' => 'producao',
+    'aprovacao_cliente' => 'aprovacao',
+    'publicacao' => 'publicacao',
+    'publicado' => 'publicado',
+  ];
+  $operationUiOrderByCode = [];
+  foreach ($operationUiStages as $idx => $stage) {
+    $operationUiOrderByCode[(string)$stage['code']] = $idx + 1;
+  }
+  $operationFallbackInternalCode = 'briefing_pendente';
+  $templateStatus = strtoupper((string)($operationTemplateLatest['status'] ?? ''));
+  if (!empty($operationApprovalPending)) {
+    $operationFallbackInternalCode = 'aprovacao_cliente';
+  } elseif (in_array($templateStatus, ['SENT_CLIENT', 'IN_REVIEW'], true)) {
+    $operationFallbackInternalCode = 'aprovacao_cliente';
+  } elseif ($templateStatus === 'APPROVED_CLIENT') {
+    $operationFallbackInternalCode = 'publicacao';
+  } elseif ($templateStatus === 'NEEDS_ADJUSTMENTS') {
+    $operationFallbackInternalCode = 'ajustes';
+  } elseif ($templateStatus !== '') {
+    $operationFallbackInternalCode = 'template_v1';
+  } elseif ($hasBriefing) {
+    $operationFallbackInternalCode = 'pre_prompt';
+  }
+
+  $operationCurrentInternalCode = $operationActiveCode
+    ?: ($operationCodeByOrder[$operationCompletedMaxOrder] ?? $operationFallbackInternalCode);
+  $operationCurrentUiCode = $operationUiByInternal[$operationCurrentInternalCode] ?? 'briefing';
+  $operationCurrentUiOrder = $operationUiOrderByCode[$operationCurrentUiCode] ?? 1;
+
+  $productionSubsteps = [
+    ['name' => 'Pré-prompt', 'code' => 'pre_prompt'],
+    ['name' => 'Template V1', 'code' => 'template_v1'],
+    ['name' => 'Ajustes', 'code' => 'ajustes'],
+  ];
+  $productionProgress = 0;
+  $productionCurrentText = 'Aguardando início da produção.';
+  if ($operationCurrentUiOrder > ($operationUiOrderByCode['producao'] ?? 2)) {
+    $productionProgress = 100;
+    $productionCurrentText = 'Produção concluída e aguardando aprovação.';
+  } else {
+    $activeProductionCode = in_array($operationActiveCode, ['pre_prompt', 'template_v1', 'ajustes'], true)
+      ? (string)$operationActiveCode
+      : null;
+    if ($activeProductionCode === 'pre_prompt') {
+      $productionProgress = 34;
+      $productionCurrentText = 'Pré-prompt em validação final.';
+    } elseif ($activeProductionCode === 'template_v1') {
+      $productionProgress = 66;
+      $productionCurrentText = 'Template V1 gerado, em ajustes finos.';
+    } elseif ($activeProductionCode === 'ajustes') {
+      $productionProgress = 90;
+      $productionCurrentText = 'Ajustes em andamento para nova aprovação.';
+    } elseif (!empty($operationRecords['ajustes']) && (string)($operationRecords['ajustes']['status'] ?? '') === 'COMPLETED') {
+      $productionProgress = 100;
+      $productionCurrentText = 'Ajustes concluídos e produção finalizada.';
+    }
+  }
 
   ob_start();
   ?>
@@ -1253,7 +1498,11 @@ function renderDashboard(?string $notice = null): string {
   <title>Portal do Cliente - KoddaHub</title>
   <link rel="icon" type="image/png" href="/assets/koddahub-logo-v2.png">
   <link rel="shortcut icon" type="image/png" href="/assets/koddahub-logo-v2.png">
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/assets/app.css?v=<?= h($assetCssVersion) ?>">
+  <link rel="stylesheet" href="/assets/operacao.css?v=<?= h($assetOperacaoVersion) ?>">
+  <link rel="stylesheet" href="/assets/operacao-tablet.css?v=<?= h($assetOperacaoTabletVersion) ?>">
+  <link rel="stylesheet" href="/assets/operacao-desktop.css?v=<?= h($assetOperacaoDesktopVersion) ?>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1274,10 +1523,10 @@ function renderDashboard(?string $notice = null): string {
       </div>
       <nav class="client-sidebar-nav">
         <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i> Dashboard</a>
-        <a data-nav-section="chamados" href="/portal/dashboard#chamados"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i> Chamados</a>
-        <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i> Pagamentos</a>
         <a data-nav-section="operacao" href="/portal/dashboard#operacao"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i> Operação</a>
+        <a data-nav-section="chamados" href="/portal/dashboard#chamados"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i> Chamados</a>
         <a data-nav-section="planos" href="/portal/dashboard#planos"><i class="bi bi-box-seam-fill" aria-hidden="true"></i> Planos</a>
+        <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i> Pagamento</a>
         <a data-nav-section="perfil" href="/portal/dashboard#perfil"><i class="bi bi-person-badge-fill" aria-hidden="true"></i> Perfil</a>
       </nav>
       <div class="client-sidebar-support">
@@ -1453,61 +1702,363 @@ function renderDashboard(?string $notice = null): string {
           </section>
         </section>
 
-        <section class="portal-section" data-section="operacao">
+        <section class="portal-section op-operacao" data-section="operacao">
           <section class="portal-card modern-card">
-            <h3>Operação do site 24h</h3>
+            <div class="mb-3">
+              <h3 class="mb-1"><i class="bi bi-rocket-takeoff me-2" aria-hidden="true"></i>Operação do Site</h3>
+              <p class="mb-0 text-body-secondary">Acompanhe o desenvolvimento do seu site em tempo real.</p>
+            </div>
             <?php if (!$operationDeal): ?>
               <p class="note">Ainda não existe uma operação ativa para este cliente. Assim que o pagamento e o fechamento forem confirmados, as etapas aparecem aqui automaticamente.</p>
             <?php else: ?>
-              <div class="contract-grid" style="margin-top:12px">
-                <div class="readonly-field"><label>Projeto</label><span><?= h((string)($operationDeal['title'] ?? 'Projeto')) ?></span></div>
-                <div class="readonly-field"><label>Tipo</label><span><?= h((string)($operationDeal['deal_type'] ?? 'HOSPEDAGEM')) ?></span></div>
-                <div class="readonly-field"><label>Plano / Produto</label><span><?= h((string)($operationDeal['plan_code'] ?? ($operationDeal['product_code'] ?? 'N/D'))) ?></span></div>
-                <div class="readonly-field"><label>Atualizado em</label><span><?= h(!empty($operationDeal['updated_at']) ? date('d/m/Y H:i', strtotime((string)$operationDeal['updated_at'])) : 'N/D') ?></span></div>
+              <div class="row g-3 mb-3">
+                <div class="col-12 col-sm-6 col-lg-3">
+                  <article class="card shadow-sm h-100 op-kpi-card">
+                    <div class="card-body">
+                      <div class="small text-uppercase fw-semibold text-body-secondary">Cliente</div>
+                      <div class="fs-6 fw-semibold"><?= h((string)($org['billing_email'] ?? ($user['email'] ?? ''))) ?></div>
+                    </div>
+                  </article>
+                </div>
+                <div class="col-12 col-sm-6 col-lg-3">
+                  <article class="card shadow-sm h-100 op-kpi-card">
+                    <div class="card-body">
+                      <div class="small text-uppercase fw-semibold text-body-secondary">Plano</div>
+                      <div class="fs-5 fw-semibold"><?= h((string)($sub['plan_name'] ?? 'PRO')) ?></div>
+                    </div>
+                  </article>
+                </div>
+                <div class="col-12 col-sm-6 col-lg-3">
+                  <article class="card shadow-sm h-100 op-kpi-card">
+                    <div class="card-body">
+                      <div class="small text-uppercase fw-semibold text-body-secondary">Status</div>
+                      <div class="fs-5 fw-semibold"><?= h(strtoupper(str_replace('_', ' ', $operationCurrentUiCode))) ?></div>
+                    </div>
+                  </article>
+                </div>
+                <div class="col-12 col-sm-6 col-lg-3">
+                  <article class="card shadow-sm h-100 op-kpi-card">
+                    <div class="card-body">
+                      <div class="small text-uppercase fw-semibold text-body-secondary">Última atualização</div>
+                      <div class="fs-6 fw-semibold"><?= h(!empty($operationLastUpdatedAt) ? date('d/m/Y H:i', strtotime((string)$operationLastUpdatedAt)) : 'N/D') ?></div>
+                    </div>
+                  </article>
+                </div>
               </div>
 
-              <?php if ($operationApprovalPending): ?>
-                <div class="alert ok" style="margin-top:12px">
-                  Sua aprovação está pendente nesta etapa. Valide a versão do site para seguirmos com a publicação.
-                  <?php if (!empty($operationApprovalPending['preview_url'])): ?>
-                    <a href="<?= h((string)$operationApprovalPending['preview_url']) ?>" target="_blank" rel="noreferrer">Abrir preview</a>
-                  <?php endif; ?>
-                  <div style="margin-top:10px">
-                    <button type="button" class="btn btn-primary" id="portalApprovalLinkBtn">Validar versão do site</button>
-                  </div>
-                </div>
-              <?php else: ?>
-                <div class="alert hidden" id="portalApprovalNotice"></div>
-              <?php endif; ?>
-
-              <div class="operation-flow-list">
-                <?php foreach ($operationStagesBlueprint as $index => $stage): ?>
-                  <?php
-                    $stageOrder = $index + 1;
-                    $stageCode = $stage['code'];
-                    $record = $operationRecords[$stageCode] ?? null;
-                    $isActive = $operationActiveCode === $stageCode;
-                    $isDone = ($record && $record['status'] === 'COMPLETED') || (!$isActive && $stageOrder <= $operationCompletedMaxOrder);
-                    $statusClass = $isDone ? 'done' : ($isActive ? 'active' : 'pending');
-                    $statusText = $isDone ? 'Concluído' : ($isActive ? 'Em andamento' : 'Pendente');
-                    if ($isDone && !empty($record['completed_at'])) {
-                      $statusText .= ' em ' . date('d/m/Y H:i', strtotime((string)$record['completed_at']));
-                    } elseif ($isActive && !empty($record['started_at'])) {
-                      $statusText .= ' desde ' . date('d/m/Y H:i', strtotime((string)$record['started_at']));
-                    }
-                  ?>
-                  <article class="operation-step <?= h($statusClass) ?>">
-                    <div class="operation-step-head">
-                      <strong><?= h((string)$stage['name']) ?></strong>
-                      <span class="status-chip status-<?= h($statusClass) ?>"><?= h($statusText) ?></span>
+              <div class="row g-3 align-items-start">
+                <aside class="col-12 col-lg-4">
+                  <div class="op-stepper card shadow-sm border-0">
+                    <div class="card-body d-flex flex-column gap-2">
+                  <?php foreach ($operationUiStages as $idx => $stage): ?>
+                    <?php
+                      $order = $idx + 1;
+                      $status = 'pending';
+                      $statusText = 'Pendente';
+                      $badgeClass = 'text-bg-secondary';
+                      $isApprovalWaiting = false;
+                      if ($order < $operationCurrentUiOrder) {
+                        $status = 'done';
+                        $statusText = 'Concluído';
+                        $badgeClass = 'text-bg-success';
+                      } elseif ($order === $operationCurrentUiOrder) {
+                        $status = 'active';
+                        if ((string)$stage['code'] === 'aprovacao') {
+                          $isApprovalWaiting = true;
+                          $statusText = 'Aguardando cliente';
+                          $badgeClass = 'text-bg-warning';
+                        } else {
+                          $statusText = 'Em andamento';
+                          $badgeClass = 'text-bg-primary';
+                        }
+                      }
+                    ?>
+                    <article class="op-step" data-status="<?= h($status) ?>" <?= $status === 'active' ? 'aria-current="step"' : '' ?>>
+                      <div class="d-flex justify-content-between align-items-center gap-2">
+                        <strong class="op-step-title">
+                          <i class="bi <?= h((string)($stage['icon'] ?? 'bi-circle')) ?> op-step-icon" aria-hidden="true"></i>
+                          <?= h((string)$stage['name']) ?>
+                        </strong>
+                        <span class="badge <?= h($badgeClass) ?> <?= $isApprovalWaiting ? 'op-badge-pulse' : '' ?>"><?= h($statusText) ?></span>
+                      </div>
+                      <p class="mb-0 text-body-secondary"><?= h((string)$stage['description']) ?></p>
+                    </article>
+                  <?php endforeach; ?>
                     </div>
-                    <p><?= h((string)$stage['description']) ?></p>
-                  </article>
-                <?php endforeach; ?>
+                  </div>
+                </aside>
+
+                <div class="col-12 col-lg-8">
+                  <div class="d-flex flex-column gap-3">
+                  <?php if ($operationCurrentUiCode === 'briefing'): ?>
+                    <div class="card shadow-sm border-0">
+                      <div class="card-body">
+                        <h4 class="h5"><i class="bi bi-clipboard-check me-2" aria-hidden="true"></i>Briefing do Projeto</h4>
+                        <p class="mb-0">Estamos aguardando o preenchimento completo do briefing para iniciar a produção do site.</p>
+                      </div>
+                    </div>
+                  <?php endif; ?>
+
+                  <?php if ($operationCurrentUiCode === 'producao'): ?>
+                    <div class="card shadow-sm border-0">
+                      <div class="card-body">
+                        <h4 class="h5"><i class="bi bi-gear me-2" aria-hidden="true"></i>Site em produção</h4>
+                        <p>Seu site está sendo desenvolvido pela nossa equipe.</p>
+                        <div class="mb-2">
+                          <div class="progress" role="progressbar" aria-label="Progresso da produção" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= h((string)$productionProgress) ?>">
+                            <div class="progress-bar" style="width: <?= h((string)$productionProgress) ?>%"></div>
+                          </div>
+                          <small class="text-body-secondary"><?= h((string)$productionProgress) ?>% concluído</small>
+                        </div>
+                        <ul class="list-group list-group-flush op-substages">
+                        <?php foreach ($productionSubsteps as $substep): ?>
+                          <?php
+                            $internalCode = (string)$substep['code'];
+                            $internalOrder = $operationOrderByCode[$internalCode] ?? 0;
+                            $subStatus = 'pending';
+                            if ($internalCode === $operationActiveCode) {
+                              $subStatus = 'current';
+                            } elseif (($operationCompletedMaxOrder >= $internalOrder && $internalOrder > 0) || $operationCurrentUiOrder > ($operationUiOrderByCode['producao'] ?? 2)) {
+                              $subStatus = 'completed';
+                            }
+                          ?>
+                          <li class="list-group-item d-flex justify-content-between align-items-center px-0 op-substage-item" data-status="<?= h($subStatus) ?>">
+                            <span><?= h((string)$substep['name']) ?></span>
+                            <span class="badge <?= $subStatus === 'completed' ? 'text-bg-success' : ($subStatus === 'current' ? 'text-bg-primary' : 'text-bg-secondary') ?>">
+                              <?= $subStatus === 'completed' ? 'Concluído' : ($subStatus === 'current' ? 'Atual' : 'Pendente') ?>
+                            </span>
+                          </li>
+                        <?php endforeach; ?>
+                        </ul>
+                        <p class="mt-2 mb-0 text-body-secondary">Status atual: <?= h($productionCurrentText) ?></p>
+                        <?php if (count($operationPromptRequests) > 0): ?>
+                        <div class="mt-3">
+                          <h5 class="h6 mb-2"><i class="bi bi-envelope-paper me-2" aria-hidden="true"></i>Solicitações pendentes da equipe</h5>
+                          <div class="d-flex flex-column gap-2">
+                            <?php foreach ($operationPromptRequests as $request): ?>
+                              <?php
+                                $requestStatus = strtoupper((string)($request['status'] ?? 'SENT'));
+                                $requestBadgeClass = $requestStatus === 'RECEIVED' ? 'text-bg-success' : ($requestStatus === 'SENT' ? 'text-bg-warning' : 'text-bg-secondary');
+                                $requestBadgeLabel = $requestStatus === 'RECEIVED' ? 'Recebido' : ($requestStatus === 'SENT' ? 'Aguardando envio' : $requestStatus);
+                              ?>
+                              <article class="card border">
+                                <div class="card-body py-2">
+                                  <div class="d-flex justify-content-between align-items-center gap-2">
+                                    <strong><?= h((string)($request['subject'] ?? 'Solicitação de informações')) ?></strong>
+                                    <span class="badge <?= h($requestBadgeClass) ?>"><?= h($requestBadgeLabel) ?></span>
+                                  </div>
+                                  <?php if (!empty($request['items'])): ?>
+                                    <small class="text-body-secondary d-block"><?= h(implode(', ', (array)$request['items'])) ?></small>
+                                  <?php elseif (!empty($request['message'])): ?>
+                                    <small class="text-body-secondary d-block"><?= h((string)$request['message']) ?></small>
+                                  <?php endif; ?>
+                                  <?php if (!empty($request['due_at'])): ?>
+                                    <small class="text-body-secondary d-block">Prazo: <?= h(date('d/m/Y H:i', strtotime((string)$request['due_at']))) ?></small>
+                                  <?php endif; ?>
+                                </div>
+                              </article>
+                            <?php endforeach; ?>
+                          </div>
+                        </div>
+                        <?php endif; ?>
+                      </div>
+                    </div>
+                  <?php endif; ?>
+
+                  <?php if ($operationCurrentUiCode === 'aprovacao'): ?>
+                    <div class="card shadow-sm border-0 op-active-panel">
+                      <div class="card-body">
+                        <div class="d-flex align-items-center justify-content-between mb-2 gap-2">
+                          <h4 class="h5 mb-0"><i class="bi bi-check2-circle me-2" aria-hidden="true"></i>Aprovação do Site</h4>
+                          <span class="badge text-bg-warning op-badge-pulse">Aguardando cliente</span>
+                        </div>
+                        <p class="mb-3">Visualize o template e aprove ou solicite ajustes.</p>
+                        <div class="row g-2 mb-3">
+                          <div class="col-12 col-md-4">
+                            <div class="card h-100 border">
+                              <div class="card-body py-2">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Versão</div>
+                                <div class="fw-semibold"><?= h('V' . (string)($operationApprovalPending['template_version'] ?? $operationApprovalLatest['template_version'] ?? '1')) ?></div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="col-12 col-md-4">
+                            <div class="card h-100 border">
+                              <div class="card-body py-2">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Gerado em</div>
+                                <div class="fw-semibold"><?= h(!empty($operationApprovalPending['template_generated_at']) ? date('d/m/Y H:i', strtotime((string)$operationApprovalPending['template_generated_at'])) : (!empty($operationApprovalLatest['template_generated_at']) ? date('d/m/Y H:i', strtotime((string)$operationApprovalLatest['template_generated_at'])) : 'N/D')) ?></div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="col-12 col-md-4">
+                            <div class="card h-100 border">
+                              <div class="card-body py-2">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Expira em</div>
+                                <div class="fw-semibold"><?= h(!empty($operationApprovalPending['expires_at']) ? date('d/m/Y H:i', strtotime((string)$operationApprovalPending['expires_at'])) : 'N/D') ?></div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <?php if (!empty($operationApprovalPending['preview_url']) || !empty($operationApprovalLatest['preview_url'])): ?>
+                        <div class="d-flex flex-wrap gap-2">
+                          <a class="btn btn-outline-primary" href="<?= h((string)($operationApprovalPending['preview_url'] ?? $operationApprovalLatest['preview_url'] ?? '')) ?>" target="_blank" rel="noreferrer">Abrir preview</a>
+                          <button type="button" class="btn btn-success" id="portalApproveBtn">Aprovar site</button>
+                          <button type="button" class="btn btn-warning" id="portalChangesBtn">Solicitar ajustes</button>
+                        </div>
+                        <?php else: ?>
+                        <div class="d-flex flex-wrap gap-2">
+                          <button type="button" class="btn btn-success" id="portalApproveBtn">Aprovar site</button>
+                          <button type="button" class="btn btn-warning" id="portalChangesBtn">Solicitar ajustes</button>
+                        </div>
+                        <?php endif; ?>
+                        <div class="alert hidden mt-3" id="portalApprovalNotice"></div>
+                      </div>
+                    </div>
+                  <?php endif; ?>
+
+                  <?php if ($operationCurrentUiCode === 'publicacao'): ?>
+                    <div class="card shadow-sm border-0">
+                      <div class="card-body">
+                        <h4 class="h5"><i class="bi bi-globe-americas me-2" aria-hidden="true"></i>Publicação do Site</h4>
+                        <p>Configure seu domínio e e-mails profissionais para concluirmos a publicação.</p>
+                        <div class="row g-2">
+                          <div class="col-12 col-md-6">
+                            <div class="card border h-100">
+                              <div class="card-body py-2">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">Domínio</div>
+                                <div class="fw-semibold"><?= h((string)($org['domain'] ?? 'Não informado')) ?></div>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="col-12 col-md-6">
+                            <div class="card border h-100">
+                              <div class="card-body py-2">
+                                <div class="small text-uppercase fw-semibold text-body-secondary">E-mail profissional</div>
+                                <div class="fw-semibold"><?= h('contato@' . ((string)($org['domain'] ?? 'dominio.com.br'))) ?></div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  <?php endif; ?>
+
+                  <?php if ($operationCurrentUiCode === 'publicado'): ?>
+                    <div class="card shadow-sm border-0">
+                      <div class="card-body">
+                        <h4 class="h5"><i class="bi bi-rocket-takeoff me-2" aria-hidden="true"></i>Site Publicado!</h4>
+                        <p>Seu site está no ar e sendo monitorado.</p>
+                      <?php if (!empty($org['domain'])): ?>
+                        <div class="d-flex flex-wrap gap-2">
+                          <a class="btn btn-primary" href="<?= h('https://' . (string)$org['domain']) ?>" target="_blank" rel="noreferrer">Acessar site</a>
+                          <a class="btn btn-outline-primary" href="<?= h('https://' . (string)$org['domain'] . '/admin') ?>" target="_blank" rel="noreferrer">Painel administrativo</a>
+                        </div>
+                      <?php endif; ?>
+                      </div>
+                    </div>
+                  <?php endif; ?>
+
+                  <section class="card shadow-sm border-0">
+                    <div class="card-body">
+                    <details class="op-history" open>
+                      <summary class="fw-semibold"><i class="bi bi-clock-history me-2" aria-hidden="true"></i>Histórico de solicitações</summary>
+                      <div class="d-flex flex-column gap-2 mt-2">
+                      <?php if (count($operationHistory) === 0): ?>
+                        <p class="note">Nenhum histórico de solicitações até o momento.</p>
+                      <?php else: ?>
+                        <?php foreach ($operationHistory as $item): ?>
+                          <article class="card border-0 op-history-item">
+                            <div class="card-body py-2">
+                            <div class="d-flex justify-content-between align-items-center gap-2">
+                              <strong><?= h((string)$item['kind']) ?></strong>
+                              <span class="badge <?= $item['status'] === 'resolvido' ? 'text-bg-success' : ($item['status'] === 'em_andamento' ? 'text-bg-primary' : 'text-bg-secondary') ?>"><?= h((string)$item['status_label']) ?></span>
+                            </div>
+                            <small class="text-body-secondary"><?= h(!empty($item['date']) ? date('d/m/Y H:i', strtotime((string)$item['date'])) : 'N/D') ?></small>
+                            <p class="mb-0"><?= h((string)$item['description']) ?></p>
+                            <?php if (!empty($item['response'])): ?>
+                              <p><strong>Resposta:</strong> <?= h((string)$item['response']) ?></p>
+                            <?php endif; ?>
+                            </div>
+                          </article>
+                        <?php endforeach; ?>
+                      <?php endif; ?>
+                      </div>
+                    </details>
+                    </div>
+                  </section>
+                </div>
+                </div>
               </div>
             <?php endif; ?>
           </section>
         </section>
+
+        <div class="portal-modal hidden" id="portalApprovalConfirmModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog">
+            <header class="portal-modal-header">
+              <h3>Confirmar aprovação</h3>
+            </header>
+            <p>Ao aprovar, seu site seguirá para a etapa de publicação. Deseja continuar?</p>
+            <div class="operation-actions">
+              <button type="button" class="btn btn-primary" id="portalApproveConfirmBtn">Sim, aprovar</button>
+              <button type="button" class="btn btn-ghost" id="portalApproveCancelBtn">Revisar novamente</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="portal-modal hidden" id="portalRequestChangesModal" aria-hidden="true">
+          <div class="portal-modal-backdrop"></div>
+          <div class="portal-modal-dialog approval-dialog">
+            <header class="portal-modal-header">
+              <h3>Solicitar ajustes no site</h3>
+            </header>
+            <form id="portalRequestChangesForm" enctype="multipart/form-data">
+              <div class="grid-2">
+                <div class="form-col full">
+                  <label for="portalTipoAjuste">Tipo de ajuste *</label>
+                  <select id="portalTipoAjuste" name="tipo_ajuste" required>
+                    <option value="">Selecione...</option>
+                    <option>Alteração de texto/conteúdo</option>
+                    <option>Alteração de cores/estilo</option>
+                    <option>Reorganização de seções</option>
+                    <option>Adicionar/remover seções</option>
+                    <option>Ajustes de imagens</option>
+                    <option>Funcionalidades adicionais</option>
+                    <option>Correções de responsividade (mobile/tablet)</option>
+                    <option>Outro</option>
+                  </select>
+                </div>
+                <div class="form-col full">
+                  <label for="portalDescricaoAjuste">Descreva detalhadamente o que deseja alterar *</label>
+                  <textarea id="portalDescricaoAjuste" name="descricao_ajuste" rows="6" maxlength="2000" required placeholder="Descreva com detalhes (mínimo 100 caracteres)."></textarea>
+                  <div class="approval-counter-wrap">
+                    <small id="portalDescricaoCounter">0 / 2000 (mínimo 100)</small>
+                    <div class="approval-counter-bar"><span id="portalDescricaoCounterFill" style="width:0%"></span></div>
+                  </div>
+                </div>
+                <div class="form-col">
+                  <label for="portalPrioridadeAjuste">Prioridade</label>
+                  <select id="portalPrioridadeAjuste" name="prioridade">
+                    <option>Baixa</option>
+                    <option selected>Média</option>
+                    <option>Alta</option>
+                  </select>
+                </div>
+                <div class="form-col">
+                  <label for="portalAnexosAjuste">Anexar referências (opcional)</label>
+                  <input id="portalAnexosAjuste" type="file" name="anexos[]" accept="image/*,.pdf" multiple>
+                  <small>Até 5 arquivos, máximo 10MB por arquivo.</small>
+                </div>
+              </div>
+              <div class="alert hidden" id="portalChangesNotice"></div>
+              <div class="operation-actions">
+                <button type="button" class="btn btn-ghost" id="portalChangesCancelBtn">Cancelar</button>
+                <button type="submit" class="btn btn-primary" id="portalChangesSubmitBtn" disabled>Enviar solicitação</button>
+              </div>
+            </form>
+          </div>
+        </div>
 
         <section class="portal-section" data-section="perfil">
           <section class="portal-card modern-card">
@@ -1557,10 +2108,11 @@ function renderDashboard(?string $notice = null): string {
   </div>
 
   <nav class="mobile-bottom-nav" aria-label="Navegação mobile">
-    <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><span class="icon"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i></span><span class="label">Início</span></a>
-    <a data-nav-section="chamados" href="/portal/dashboard#chamados"><span class="icon"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i></span><span class="label">Chamados</span></a>
+    <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><span class="icon"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i></span><span class="label">Dashboard</span></a>
     <a data-nav-section="operacao" href="/portal/dashboard#operacao"><span class="icon"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i></span><span class="label">Operação</span></a>
-    <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Financeiro</span></a>
+    <a data-nav-section="chamados" href="/portal/dashboard#chamados"><span class="icon"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i></span><span class="label">Chamados</span></a>
+    <a data-nav-section="planos" href="/portal/dashboard#planos"><span class="icon"><i class="bi bi-box-seam-fill" aria-hidden="true"></i></span><span class="label">Planos</span></a>
+    <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Pagamento</span></a>
     <a data-nav-section="perfil" href="/portal/dashboard#perfil"><span class="icon"><i class="bi bi-person-badge-fill" aria-hidden="true"></i></span><span class="label">Perfil</span></a>
   </nav>
 
@@ -1801,7 +2353,7 @@ function renderDashboard(?string $notice = null): string {
     </div>
   </div>
 
-  <script src="/assets/app.js"></script>
+  <script src="/assets/app.js?v=<?= h($assetJsVersion) ?>"></script>
 </body>
 </html>
 <?php
@@ -1962,12 +2514,21 @@ function normalizeUploadFiles(string $field): array {
       $out[] = [
         'name' => (string)$name,
         'tmp_name' => (string)($f['tmp_name'][$i] ?? ''),
+        'type' => (string)($f['type'][$i] ?? ''),
+        'size' => (int)($f['size'][$i] ?? 0),
+        'error' => (int)($f['error'][$i] ?? UPLOAD_ERR_NO_FILE),
       ];
     }
     return $out;
   }
   if (($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
-    $out[] = ['name' => (string)$f['name'], 'tmp_name' => (string)$f['tmp_name']];
+    $out[] = [
+      'name' => (string)$f['name'],
+      'tmp_name' => (string)$f['tmp_name'],
+      'type' => (string)($f['type'] ?? ''),
+      'size' => (int)($f['size'] ?? 0),
+      'error' => (int)($f['error'] ?? UPLOAD_ERR_NO_FILE),
+    ];
   }
   return $out;
 }
@@ -1995,6 +2556,88 @@ function storeBriefUploads(string $orgId, string $briefId): array {
     }
   }
   return $stored;
+}
+
+function textLength(string $value): int {
+  return function_exists('mb_strlen') ? (int)mb_strlen($value, 'UTF-8') : strlen($value);
+}
+
+function textSlice(string $value, int $limit): string {
+  return function_exists('mb_substr') ? (string)mb_substr($value, 0, $limit, 'UTF-8') : substr($value, 0, $limit);
+}
+
+function approvalAdjustmentsBaseDir(array $ctx): string {
+  $orgId = trim((string)($ctx['organization_id'] ?? ''));
+  $orgName = trim((string)($ctx['legal_name'] ?? 'Cliente'));
+  $dealId = trim((string)($ctx['deal_id'] ?? ''));
+  $orgSlug = site24hBuildOrgSlug($orgName !== '' ? $orgName : 'cliente', $orgId !== '' ? $orgId : '00000000');
+  return rtrim(site24hClientProjectsRoot(), '/') . '/' . $orgSlug . '/approval_requests/' . ($dealId !== '' ? $dealId : 'deal');
+}
+
+function storeApprovalRequestAttachments(array $ctx, string $ticketCode): array {
+  $files = normalizeUploadFiles('anexos');
+  if (count($files) === 0) {
+    return ['ok' => true, 'files' => []];
+  }
+  if (count($files) > 5) {
+    return ['ok' => false, 'error' => 'Envie no máximo 5 anexos por solicitação.'];
+  }
+
+  $finfo = function_exists('finfo_open') ? finfo_open(FILEINFO_MIME_TYPE) : null;
+  $targetDir = approvalAdjustmentsBaseDir($ctx) . '/' . date('Y/m');
+  if (!is_dir($targetDir)) {
+    @mkdir($targetDir, 0775, true);
+  }
+  $root = dirname(__DIR__, 3);
+  $stored = [];
+  $idx = 0;
+  foreach ($files as $file) {
+    $idx++;
+    $tmpName = (string)($file['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_file($tmpName)) {
+      continue;
+    }
+    $size = (int)($file['size'] ?? @filesize($tmpName) ?: 0);
+    if ($size > 10 * 1024 * 1024) {
+      if ($finfo) {
+        finfo_close($finfo);
+      }
+      return ['ok' => false, 'error' => 'Cada anexo pode ter no máximo 10MB.'];
+    }
+    $mime = $finfo ? (string)(finfo_file($finfo, $tmpName) ?: '') : (string)($file['type'] ?? '');
+    $allowed = str_starts_with($mime, 'image/') || $mime === 'application/pdf';
+    if (!$allowed) {
+      if ($finfo) {
+        finfo_close($finfo);
+      }
+      return ['ok' => false, 'error' => 'Formato de anexo inválido. Use apenas imagens ou PDF.'];
+    }
+    $originalName = (string)($file['name'] ?? ('arquivo_' . $idx));
+    $safeName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $originalName) ?: ('arquivo_' . $idx);
+    $ext = pathinfo($safeName, PATHINFO_EXTENSION);
+    $fileName = strtolower($ticketCode) . '_' . $idx . '_' . time() . ($ext !== '' ? '.' . strtolower($ext) : '');
+    $targetPath = rtrim($targetDir, '/') . '/' . $fileName;
+    $ok = @move_uploaded_file($tmpName, $targetPath);
+    if (!$ok && is_file($tmpName)) {
+      $ok = @copy($tmpName, $targetPath);
+    }
+    if (!$ok) {
+      if ($finfo) {
+        finfo_close($finfo);
+      }
+      return ['ok' => false, 'error' => 'Não foi possível salvar um dos anexos enviados.'];
+    }
+    $stored[] = [
+      'name' => $safeName,
+      'path' => str_replace($root . '/', '', $targetPath),
+      'mime' => $mime,
+      'size' => $size,
+    ];
+  }
+  if ($finfo) {
+    finfo_close($finfo);
+  }
+  return ['ok' => true, 'files' => $stored];
 }
 
 function site24hEnv(string $key, string $default = ''): string {
@@ -2371,6 +3014,23 @@ SVG;
   @file_put_contents($targetFile, $svg);
 }
 
+function site24hDefaultAssetSourceWhitelist(): array {
+  return [
+    'https://unsplash.com',
+    'https://www.pexels.com',
+    'https://pixabay.com',
+    'https://openverse.org',
+    'https://commons.wikimedia.org',
+    'https://burst.shopify.com',
+    'https://www.svgrepo.com',
+    'https://heroicons.com',
+    'https://tabler.io/icons',
+    'https://lucide.dev/icons',
+    'https://undraw.co',
+    'https://storyset.com',
+  ];
+}
+
 function site24hProvisionReleaseForBrief(array $params): ?array {
   site24hEnsureReleaseTables();
 
@@ -2418,8 +3078,10 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
 
   $promptJsonPath = $orgRoot . '/prompt_personalizacao.json';
   $promptMdPath = $orgRoot . '/prompt_personalizacao.md';
+  $masterPromptPath = $orgRoot . '/prompt_pai_orquestrador.md';
   $identityPath = $orgRoot . '/identidade_visual.md';
   $manifestPath = $orgRoot . '/release_manifest.json';
+  $assetsManifestPath = $assetsPath . '/assets_manifest.json';
 
   $prompt = is_array($params['prompt'] ?? null) ? $params['prompt'] : [];
   $promptJson = $prompt['json'] ?? [];
@@ -2434,6 +3096,13 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
   }
   if (!site24hWriteAtomic($promptMdPath, $promptMarkdown !== '' ? $promptMarkdown : '# Prompt de personalizacao')) {
     $fileWarnings[] = 'Falha ao salvar prompt_personalizacao.md na raiz do cliente.';
+  }
+  $masterPrompt = trim((string)($prompt['master_prompt_markdown'] ?? ($promptJson['master_prompt_markdown'] ?? '')));
+  if ($masterPrompt === '') {
+    $masterPrompt = "# Prompt Pai Orquestrador - Site24h\n\nEste arquivo define as regras globais de qualidade e completude para execucao dos prompts V1/V2/V3.\n";
+  }
+  if (!site24hWriteAtomic($masterPromptPath, $masterPrompt)) {
+    $fileWarnings[] = 'Falha ao salvar prompt_pai_orquestrador.md na raiz do cliente.';
   }
   $variantPrompts = is_array($promptJson['variant_prompts'] ?? null) ? $promptJson['variant_prompts'] : [];
   $variantDraftPaths = [
@@ -2587,9 +3256,14 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
 
   $manualAssets = [];
   $allAssets = [];
+  $allAssetRows = [];
   foreach (db()->all("SELECT asset_type, release_path FROM crm.deal_prompt_asset WHERE release_id=:rid ORDER BY created_at ASC", [':rid' => $releaseId]) as $assetRow) {
     $assetPath = (string)($assetRow['release_path'] ?? '');
     if ($assetPath === '') continue;
+    $allAssetRows[] = [
+      'asset_type' => (string)($assetRow['asset_type'] ?? 'outro'),
+      'release_path' => $assetPath,
+    ];
     $allAssets[] = $assetPath;
     if ((string)($assetRow['asset_type'] ?? '') === 'manual') {
       $manualAssets[] = $assetPath;
@@ -2607,6 +3281,39 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
   }
   if (!site24hWriteAtomic($identityPath, $identityMarkdown)) {
     $fileWarnings[] = 'Falha ao salvar identidade_visual.md na raiz do cliente.';
+  }
+
+  $sourceWhitelist = (array)($promptJson['assets_manifest_schema']['allowed_sources'] ?? []);
+  $sourceWhitelist = array_values(array_filter(array_map(static fn($item) => trim((string)$item), $sourceWhitelist)));
+  if (count($sourceWhitelist) === 0) {
+    $sourceWhitelist = site24hDefaultAssetSourceWhitelist();
+  }
+  $manifestAssets = [];
+  foreach ($allAssetRows as $assetRow) {
+    $localPath = trim((string)($assetRow['release_path'] ?? ''));
+    if ($localPath === '') {
+      continue;
+    }
+    $manifestAssets[] = [
+      'category' => (string)($assetRow['asset_type'] ?? 'outro'),
+      'local_path' => $localPath,
+      'source_url' => null,
+      'license' => 'local_upload_or_generated',
+      'attribution_required' => false,
+      'downloaded_at' => date('c'),
+    ];
+  }
+  if (!site24hWriteAtomic($assetsManifestPath, json_encode([
+    'version' => '1.0',
+    'generatedAt' => date('c'),
+    'organizationId' => $organizationId,
+    'organizationSlug' => $orgSlug,
+    'releaseId' => $releaseId,
+    'releaseLabel' => $releaseLabel,
+    'allowed_sources' => $sourceWhitelist,
+    'assets' => $manifestAssets,
+  ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))) {
+    $fileWarnings[] = 'Falha ao salvar assets/assets_manifest.json.';
   }
 
   if (!site24hWriteAtomic($manifestPath, json_encode([
@@ -2634,8 +3341,10 @@ function site24hProvisionReleaseForBrief(array $params): ?array {
     'assetsPath' => $assetsPath,
     'promptMdPath' => $promptMdPath,
     'promptJsonPath' => $promptJsonPath,
+    'masterPromptPath' => $masterPromptPath,
     'identityPath' => $identityPath,
     'manifestPath' => $manifestPath,
+    'assetsManifestPath' => $assetsManifestPath,
     'variantDraftPaths' => $variantDraftPaths,
     'fileWarnings' => $fileWarnings,
     'variants' => $variants,
@@ -2809,7 +3518,67 @@ function ensureInitialHospedagemOperationForDeal(string $dealId): void {
     LIMIT 1
   ", [':did' => $dealId]);
   if (!$active) {
-    moveDealOperationStage($dealId, 'briefing_pendente');
+    // Defensive recovery: infer the most advanced persisted stage instead of
+    // blindly resetting to briefing when no ACTIVE row exists.
+    $latestApproval = db()->one("
+      SELECT status
+      FROM crm.deal_client_approval
+      WHERE deal_id=:did
+      ORDER BY created_at DESC
+      LIMIT 1
+    ", [':did' => $dealId]);
+    $latestTemplate = db()->one("
+      SELECT status
+      FROM crm.deal_template_revision
+      WHERE deal_id=:did
+      ORDER BY version DESC, created_at DESC
+      LIMIT 1
+    ", [':did' => $dealId]);
+    $latestOperation = db()->one("
+      SELECT stage_code
+      FROM crm.deal_operation
+      WHERE deal_id=:did
+      ORDER BY stage_order DESC, updated_at DESC, started_at DESC
+      LIMIT 1
+    ", [':did' => $dealId]);
+    $latestActivity = db()->one("
+      SELECT activity_type
+      FROM crm.deal_activity
+      WHERE deal_id=:did
+        AND activity_type IN ('CLIENT_APPROVAL_REQUESTED','CLIENT_REQUESTED_CHANGES','CLIENT_APPROVED')
+      ORDER BY created_at DESC
+      LIMIT 1
+    ", [':did' => $dealId]);
+
+    $approvalStatus = strtoupper((string)($latestApproval['status'] ?? ''));
+    $templateStatus = strtoupper((string)($latestTemplate['status'] ?? ''));
+    $operationStage = trim((string)($latestOperation['stage_code'] ?? ''));
+    $activityType = strtoupper((string)($latestActivity['activity_type'] ?? ''));
+
+    $targetStage = 'briefing_pendente';
+    if ($approvalStatus === 'PENDING'
+      || in_array($templateStatus, ['SENT_CLIENT', 'IN_REVIEW'], true)
+      || $activityType === 'CLIENT_APPROVAL_REQUESTED'
+      || $operationStage === 'aprovacao_cliente'
+    ) {
+      $targetStage = 'aprovacao_cliente';
+    } elseif ($approvalStatus === 'CHANGES_REQUESTED'
+      || $templateStatus === 'NEEDS_ADJUSTMENTS'
+      || $activityType === 'CLIENT_REQUESTED_CHANGES'
+      || $operationStage === 'ajustes'
+    ) {
+      $targetStage = 'ajustes';
+    } elseif ($approvalStatus === 'APPROVED'
+      || $templateStatus === 'APPROVED_CLIENT'
+      || $activityType === 'CLIENT_APPROVED'
+      || $operationStage === 'publicacao'
+    ) {
+      $targetStage = 'publicacao';
+    } elseif ($templateStatus !== '' || in_array($operationStage, ['template_v1', 'pre_prompt'], true)) {
+      $targetStage = $operationStage !== '' ? $operationStage : 'template_v1';
+    }
+
+    moveDealOperationStage($dealId, $targetStage);
   }
 }
 
@@ -3130,6 +3899,42 @@ function approvalContextByToken(string $token): ?array {
   return $row ?: null;
 }
 
+function approvalPendingContextByOrganization(string $organizationId): ?array {
+  $row = db()->one("
+    SELECT
+      a.id AS approval_id,
+      a.deal_id,
+      a.template_revision_id,
+      a.expires_at,
+      a.status AS approval_status,
+      a.client_note,
+      a.acted_at,
+      tr.preview_url,
+      tr.source_hash,
+      tr.status AS template_status,
+      tr.version AS template_version,
+      d.title AS deal_title,
+      d.organization_id,
+      d.lifecycle_status,
+      o.legal_name,
+      o.domain,
+      o.billing_email
+    FROM crm.deal_client_approval a
+    JOIN crm.deal d ON d.id = a.deal_id
+    JOIN crm.deal_template_revision tr ON tr.id = a.template_revision_id
+    LEFT JOIN client.organizations o ON o.id = d.organization_id
+    WHERE d.organization_id = :oid
+      AND d.lifecycle_status = 'CLIENT'
+      AND upper(COALESCE(d.deal_type, '')) = 'HOSPEDAGEM'
+      AND a.status = 'PENDING'
+      AND a.expires_at > now()
+    ORDER BY a.created_at DESC
+    LIMIT 1
+  ", [':oid' => $organizationId]);
+
+  return $row ?: null;
+}
+
 function renderApprovalPage(array $ctx, string $token): string {
   $isPending = strtoupper((string)($ctx['approval_status'] ?? '')) === 'PENDING';
   $isExpired = !empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time();
@@ -3138,6 +3943,7 @@ function renderApprovalPage(array $ctx, string $token): string {
   $title = (string)($ctx['deal_title'] ?? 'Projeto');
   $orgName = (string)($ctx['legal_name'] ?? 'Cliente');
   $note = (string)($ctx['client_note'] ?? '');
+  $templateVersion = (string)($ctx['template_version'] ?? '1');
   ob_start();
   ?>
 <!doctype html>
@@ -3151,35 +3957,100 @@ function renderApprovalPage(array $ctx, string $token): string {
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body data-page="approval" data-csrf-token="<?= h(csrfToken()) ?>">
-  <div class="portal-wrap" style="max-width:900px;margin:24px auto;padding:0 12px;">
-    <div class="portal-card">
-      <h2 style="margin-top:0;">Aprovação do cliente</h2>
-      <p><strong>Projeto:</strong> <?= h($title) ?></p>
-      <p><strong>Empresa:</strong> <?= h($orgName) ?></p>
-      <p><strong>Status do link:</strong> <?= h((string)$statusText) ?><?= $isExpired ? ' (expirado)' : '' ?></p>
-      <p><strong>Expira em:</strong> <?= h(!empty($ctx['expires_at']) ? date('d/m/Y H:i', strtotime((string)$ctx['expires_at'])) : 'N/D') ?></p>
+  <div class="portal-wrap approval-wrap">
+    <div class="portal-card approval-card">
+      <h2>Aprovação do Site</h2>
+      <p class="note">Projeto: <strong><?= h($title) ?></strong> • Cliente: <strong><?= h($orgName) ?></strong></p>
+      <div class="approval-meta">
+        <div><label>Status do link</label><strong><?= h((string)$statusText) ?><?= $isExpired ? ' (expirado)' : '' ?></strong></div>
+        <div><label>Versão</label><strong><?= h('V' . $templateVersion) ?></strong></div>
+        <div><label>Expira em</label><strong><?= h(!empty($ctx['expires_at']) ? date('d/m/Y H:i', strtotime((string)$ctx['expires_at'])) : 'N/D') ?></strong></div>
+      </div>
       <?php if ($preview !== ''): ?>
-        <p><a class="btn btn-ghost" href="<?= h($preview) ?>" target="_blank" rel="noreferrer">Abrir prévia do site</a></p>
+        <div class="approval-preview">
+          <a class="btn btn-ghost" href="<?= h($preview) ?>" target="_blank" rel="noreferrer">Abrir preview em tela cheia</a>
+        </div>
       <?php endif; ?>
       <?php if ($note !== ''): ?>
         <div class="alert ok">Última observação enviada: <?= h($note) ?></div>
       <?php endif; ?>
       <div id="approvalNotice" class="alert hidden"></div>
       <?php if ($isPending && !$isExpired): ?>
-        <div class="grid-2">
-          <div class="form-col full">
-            <label for="approvalNote">Observação (opcional)</label>
-            <textarea id="approvalNote" rows="4" placeholder="Ex: ajustar botão do WhatsApp e aumentar contraste do título."></textarea>
-          </div>
-          <div class="form-col" style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button id="approveBtn" class="btn btn-primary" type="button">Aprovar versão</button>
-            <button id="changesBtn" class="btn btn-ghost" type="button">Solicitar micro ajustes</button>
-          </div>
+        <div class="approval-actions">
+          <button id="approveBtn" class="btn btn-primary" type="button">Aprovar site</button>
+          <button id="changesBtn" class="btn btn-ghost" type="button">Solicitar ajustes</button>
         </div>
       <?php else: ?>
-        <p>Este link já foi utilizado ou expirou. Solicite um novo envio pelo atendimento KoddaHub.</p>
+        <p>Este link já foi utilizado ou expirou. Solicite um novo envio pelo atendimento.</p>
       <?php endif; ?>
-      <p style="margin-top:14px;"><a href="/portal/dashboard#operacao">Voltar para o painel</a></p>
+      <p><a href="/portal/dashboard#operacao">Voltar para o painel</a></p>
+    </div>
+  </div>
+
+  <div class="portal-modal hidden" id="approvalConfirmModal" aria-hidden="true">
+    <div class="portal-modal-backdrop"></div>
+    <div class="portal-modal-dialog approval-dialog">
+      <header class="portal-modal-header">
+        <h3>Confirmar aprovação</h3>
+      </header>
+      <p>Ao aprovar, seu site seguirá para a etapa de publicação. Deseja continuar?</p>
+      <div class="operation-actions">
+        <button type="button" class="btn btn-primary" id="approveConfirmBtn">Sim, aprovar</button>
+        <button type="button" class="btn btn-ghost" id="approveCancelBtn">Revisar novamente</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="portal-modal hidden" id="requestChangesModal" aria-hidden="true">
+    <div class="portal-modal-backdrop"></div>
+    <div class="portal-modal-dialog approval-dialog">
+      <header class="portal-modal-header">
+        <h3>Solicitar ajustes no site</h3>
+      </header>
+      <form id="requestChangesForm" enctype="multipart/form-data">
+        <div class="grid-2">
+          <div class="form-col full">
+            <label for="tipoAjuste">Tipo de ajuste *</label>
+            <select id="tipoAjuste" name="tipo_ajuste" required>
+              <option value="">Selecione...</option>
+              <option>Alteração de texto/conteúdo</option>
+              <option>Alteração de cores/estilo</option>
+              <option>Reorganização de seções</option>
+              <option>Adicionar/remover seções</option>
+              <option>Ajustes de imagens</option>
+              <option>Funcionalidades adicionais</option>
+              <option>Correções de responsividade (mobile/tablet)</option>
+              <option>Outro</option>
+            </select>
+          </div>
+          <div class="form-col full">
+            <label for="descricaoAjuste">Descreva detalhadamente o que deseja alterar *</label>
+            <textarea id="descricaoAjuste" name="descricao_ajuste" rows="6" maxlength="2000" required placeholder="Descreva com detalhes (mínimo 100 caracteres)."></textarea>
+            <div class="approval-counter-wrap">
+              <small id="descricaoCounter">0 / 2000 (mínimo 100)</small>
+              <div class="approval-counter-bar"><span id="descricaoCounterFill" style="width:0%"></span></div>
+            </div>
+          </div>
+          <div class="form-col">
+            <label for="prioridadeAjuste">Prioridade</label>
+            <select id="prioridadeAjuste" name="prioridade">
+              <option>Baixa</option>
+              <option selected>Média</option>
+              <option>Alta</option>
+            </select>
+          </div>
+          <div class="form-col">
+            <label for="anexosAjuste">Anexar referências (opcional)</label>
+            <input id="anexosAjuste" type="file" name="anexos[]" accept="image/*,.pdf" multiple>
+            <small>Até 5 arquivos, máximo 10MB por arquivo.</small>
+          </div>
+        </div>
+        <div class="alert hidden" id="changesNotice"></div>
+        <div class="operation-actions">
+          <button type="button" class="btn btn-ghost" id="changesCancelBtn">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="changesSubmitBtn" disabled>Enviar solicitação</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -3187,10 +4058,18 @@ function renderApprovalPage(array $ctx, string $token): string {
     (function () {
       const token = <?= json_encode($token, JSON_UNESCAPED_UNICODE) ?>;
       const notice = document.getElementById('approvalNotice');
-      const noteEl = document.getElementById('approvalNote');
       const approveBtn = document.getElementById('approveBtn');
       const changesBtn = document.getElementById('changesBtn');
       const csrfToken = document.body?.dataset?.csrfToken || '';
+      const approvalConfirmModal = document.getElementById('approvalConfirmModal');
+      const requestChangesModal = document.getElementById('requestChangesModal');
+      const requestChangesForm = document.getElementById('requestChangesForm');
+      const descricaoEl = document.getElementById('descricaoAjuste');
+      const counterEl = document.getElementById('descricaoCounter');
+      const counterFillEl = document.getElementById('descricaoCounterFill');
+      const changesSubmitBtn = document.getElementById('changesSubmitBtn');
+      const changesNotice = document.getElementById('changesNotice');
+      let sending = false;
 
       function show(msg, ok) {
         if (!notice) return;
@@ -3199,27 +4078,104 @@ function renderApprovalPage(array $ctx, string $token): string {
         notice.classList.add(ok ? 'ok' : 'err');
       }
 
-      async function send(kind) {
-        const endpoint = kind === 'approve'
-          ? `/api/portal/approval/${token}/approve`
-          : `/api/portal/approval/${token}/request-changes`;
-        const note = noteEl ? noteEl.value : '';
-        const res = await fetch(endpoint, {
+      function showChangesNotice(message, ok) {
+        if (!changesNotice) return;
+        changesNotice.textContent = message || '';
+        changesNotice.classList.remove('hidden', 'ok', 'err');
+        changesNotice.classList.add(ok ? 'ok' : 'err');
+      }
+
+      function openModal(el) {
+        if (!el) return;
+        el.classList.remove('hidden');
+        el.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeModal(el) {
+        if (!el) return;
+        el.classList.add('hidden');
+        el.setAttribute('aria-hidden', 'true');
+      }
+
+      function updateCounter() {
+        if (!descricaoEl || !counterEl || !counterFillEl || !changesSubmitBtn) return;
+        const value = String(descricaoEl.value || '');
+        const len = value.trim().length;
+        const ratio = Math.max(0, Math.min(100, Math.round((len / 100) * 100)));
+        counterEl.textContent = `${len} / 2000 (mínimo 100)`;
+        counterEl.classList.toggle('counter-valid', len >= 100);
+        counterEl.classList.toggle('counter-invalid', len < 100);
+        counterFillEl.style.width = `${ratio}%`;
+        changesSubmitBtn.disabled = len < 100 || sending;
+      }
+
+      async function sendApprove() {
+        if (sending) return;
+        sending = true;
+        approveBtn?.setAttribute('disabled', 'disabled');
+        const res = await fetch(`/api/portal/approval/${token}/approve`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-          body: JSON.stringify({ note })
+          body: JSON.stringify({ note: 'Aprovação registrada pelo cliente.' })
         });
-        const data = await res.json();
+        const payload = await res.json();
+        sending = false;
+        approveBtn?.removeAttribute('disabled');
+        closeModal(approvalConfirmModal);
         if (!res.ok) {
-          show(data.error || 'Falha ao registrar resposta.', false);
+          show(payload.error || 'Falha ao registrar aprovação.', false);
           return;
         }
-        show(kind === 'approve' ? 'Aprovação registrada com sucesso.' : 'Solicitação de ajustes enviada com sucesso.', true);
+        show('Aprovação registrada com sucesso.', true);
         setTimeout(() => { window.location.href = '/portal/dashboard#operacao'; }, 900);
       }
 
-      if (approveBtn) approveBtn.addEventListener('click', () => send('approve'));
-      if (changesBtn) changesBtn.addEventListener('click', () => send('changes'));
+      if (approveBtn) {
+        approveBtn.addEventListener('click', () => openModal(approvalConfirmModal));
+      }
+      document.getElementById('approveCancelBtn')?.addEventListener('click', () => closeModal(approvalConfirmModal));
+      document.getElementById('approveConfirmBtn')?.addEventListener('click', sendApprove);
+
+      if (changesBtn) {
+        changesBtn.addEventListener('click', () => {
+          showChangesNotice('', true);
+          openModal(requestChangesModal);
+          updateCounter();
+        });
+      }
+      document.getElementById('changesCancelBtn')?.addEventListener('click', () => closeModal(requestChangesModal));
+      descricaoEl?.addEventListener('input', updateCounter);
+      updateCounter();
+
+      requestChangesForm?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (sending) return;
+        updateCounter();
+        const descricao = String(descricaoEl?.value || '').trim();
+        if (descricao.length < 100) {
+          showChangesNotice('Descreva sua solicitação com no mínimo 100 caracteres.', false);
+          return;
+        }
+        const formData = new FormData(requestChangesForm);
+        sending = true;
+        changesSubmitBtn?.setAttribute('disabled', 'disabled');
+        const res = await fetch(`/api/portal/approval/${token}/request-changes`, {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': csrfToken },
+          body: formData
+        });
+        const payload = await res.json();
+        sending = false;
+        changesSubmitBtn?.removeAttribute('disabled');
+        updateCounter();
+        if (!res.ok) {
+          showChangesNotice(payload.error || 'Falha ao enviar solicitação.', false);
+          return;
+        }
+        showChangesNotice(`Solicitação enviada! Protocolo ${payload.ticket || '-'}.`, true);
+        show('Solicitação de ajustes enviada com sucesso.', true);
+        setTimeout(() => { window.location.href = '/portal/dashboard#operacao'; }, 1000);
+      });
     })();
   </script>
 </body>
@@ -4682,7 +5638,7 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     ':cta' => $data['cta_text'] ?? null,
     ':tone' => $data['tone_of_voice'] ?? null,
     ':color' => $data['color_palette'] ?? null,
-    ':vref' => $data['references'] ?? null,
+    ':vref' => $data['visual_references'] ?? ($data['references'] ?? null),
     ':legal' => $data['legal_content'] ?? null,
     ':int' => $data['integrations'] ?? null,
     ':dom' => $data['domain_target'] ?? null,
@@ -4742,6 +5698,20 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     }
 
     moveDealOperationStage((string)$deal['id'], 'pre_prompt');
+    db()->exec("
+      UPDATE crm.deal_prompt_request
+      SET status='RECEIVED', updated_at=now()
+      WHERE id IN (
+        SELECT id
+        FROM crm.deal_prompt_request
+        WHERE deal_id=:did
+          AND status IN ('SENT', 'PENDING', 'OPEN')
+        ORDER BY created_at DESC
+        LIMIT 1
+      )
+    ", [
+      ':did' => $deal['id'],
+    ]);
 
     $maxPromptVersion = db()->one("SELECT COALESCE(MAX(version),0) AS version FROM crm.deal_prompt_revision WHERE deal_id=:did", [
       ':did' => $deal['id'],
@@ -4817,6 +5787,8 @@ $router->post('/api/onboarding/site-brief', function(Request $request) {
     'releaseVersion' => $releaseInfo['releaseVersion'] ?? null,
     'releaseRoot' => $releaseInfo['releaseRoot'] ?? null,
     'clientRoot' => $releaseInfo['clientRoot'] ?? null,
+    'masterPromptPath' => $releaseInfo['masterPromptPath'] ?? null,
+    'assetsManifestPath' => $releaseInfo['assetsManifestPath'] ?? null,
     'identityPathRelease' => $releaseInfo['identityPath'] ?? null,
     'identityPathRoot' => $releaseInfo['identityPath'] ?? null,
     'fileWarnings' => $releaseInfo['fileWarnings'] ?? [],
@@ -4932,6 +5904,159 @@ $router->post('/api/portal/approval/request-link', function(Request $request) {
   ]);
 });
 
+$router->post('/api/portal/approval/current/approve', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não encontrada.'], 404);
+    return;
+  }
+
+  $ctx = approvalPendingContextByOrganization($orgId);
+  if (!$ctx) {
+    Response::json(['error' => 'Nenhuma aprovação pendente encontrada para este cliente.'], 404);
+    return;
+  }
+
+  if (!empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time()) {
+    db()->exec("UPDATE crm.deal_client_approval SET status='EXPIRED', updated_at=now() WHERE id=:id", [':id' => $ctx['approval_id']]);
+    Response::json(['error' => 'Link expirado'], 410);
+    return;
+  }
+
+  $note = trim((string)($request->input('note', '')));
+
+  db()->exec("UPDATE crm.deal_client_approval SET status='APPROVED', client_note=:note, acted_at=now(), updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['approval_id'],
+    ':note' => $note !== '' ? $note : null,
+  ]);
+  db()->exec("UPDATE crm.deal_template_revision SET status='APPROVED_CLIENT', updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['template_revision_id'],
+  ]);
+  syncReleaseStateByTemplateRevision((string)$ctx['template_revision_id'], 'APPROVED_CLIENT', 'APPROVED_CLIENT');
+  moveDealOperationStage((string)$ctx['deal_id'], 'publicacao');
+
+  db()->exec("
+    INSERT INTO crm.deal_publish_check(deal_id, template_revision_id, target_domain, expected_hash, matches, checked_at)
+    VALUES(:deal_id, :template_revision_id, :target_domain, :expected_hash, false, now())
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':template_revision_id' => $ctx['template_revision_id'],
+    ':target_domain' => !empty($ctx['domain']) ? $ctx['domain'] : null,
+    ':expected_hash' => !empty($ctx['source_hash']) ? $ctx['source_hash'] : null,
+  ]);
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id,'CLIENT_APPROVED','Cliente aprovou o template para publicação.',:metadata,'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':metadata' => json_encode([
+      'approval_id' => $ctx['approval_id'],
+      'action' => 'approved',
+      'approved_at' => date('c'),
+      'note' => $note,
+      'origin' => 'dashboard',
+    ], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  Response::json(['ok' => true]);
+});
+
+$router->post('/api/portal/approval/current/request-changes', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não encontrada.'], 404);
+    return;
+  }
+
+  $ctx = approvalPendingContextByOrganization($orgId);
+  if (!$ctx) {
+    Response::json(['error' => 'Nenhuma aprovação pendente encontrada para este cliente.'], 404);
+    return;
+  }
+
+  if (!empty($ctx['expires_at']) && strtotime((string)$ctx['expires_at']) < time()) {
+    db()->exec("UPDATE crm.deal_client_approval SET status='EXPIRED', updated_at=now() WHERE id=:id", [':id' => $ctx['approval_id']]);
+    Response::json(['error' => 'Link expirado'], 410);
+    return;
+  }
+
+  $contentType = strtolower((string)(requestHeader($request, 'Content-Type') ?? ''));
+  $isMultipart = str_contains($contentType, 'multipart/form-data');
+  $payload = is_array($request->body) ? $request->body : [];
+  if ($isMultipart && count($payload) === 0 && !empty($_POST)) {
+    $payload = $_POST;
+  }
+
+  $tipoAjuste = trim((string)($payload['tipo_ajuste'] ?? ''));
+  $descricaoAjuste = trim((string)($payload['descricao_ajuste'] ?? $payload['note'] ?? ''));
+  $prioridade = trim((string)($payload['prioridade'] ?? 'Média'));
+  if ($tipoAjuste === '') {
+    $tipoAjuste = 'Outro';
+  }
+  if (!in_array($prioridade, ['Baixa', 'Média', 'Alta'], true)) {
+    $prioridade = 'Média';
+  }
+
+  $descricaoLen = textLength($descricaoAjuste);
+  if ($descricaoLen < 100) {
+    Response::json(['error' => 'Descreva sua solicitação com no mínimo 100 caracteres para garantir clareza.'], 422);
+    return;
+  }
+  if ($descricaoLen > 2000) {
+    Response::json(['error' => 'A descrição deve ter no máximo 2000 caracteres.'], 422);
+    return;
+  }
+
+  $ticketCode = 'AJ' . date('ymdHis') . strtoupper(substr(bin2hex(random_bytes(2)), 0, 4));
+  $attachmentsResult = storeApprovalRequestAttachments($ctx, $ticketCode);
+  if (!(bool)($attachmentsResult['ok'] ?? false)) {
+    Response::json(['error' => (string)($attachmentsResult['error'] ?? 'Falha ao processar anexos.')], 422);
+    return;
+  }
+  $attachments = (array)($attachmentsResult['files'] ?? []);
+  $summary = textSlice($descricaoAjuste, 500);
+
+  db()->exec("UPDATE crm.deal_client_approval SET status='CHANGES_REQUESTED', client_note=:note, acted_at=now(), updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['approval_id'],
+    ':note' => $summary,
+  ]);
+  db()->exec("UPDATE crm.deal_template_revision SET status='NEEDS_ADJUSTMENTS', updated_at=now() WHERE id=:id", [
+    ':id' => $ctx['template_revision_id'],
+  ]);
+  syncReleaseStateByTemplateRevision((string)$ctx['template_revision_id'], 'IN_ADJUSTMENT', 'READY');
+  moveDealOperationStage((string)$ctx['deal_id'], 'ajustes');
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(:deal_id,'CLIENT_REQUESTED_CHANGES','Cliente solicitou ajustes no template.',:metadata,'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => $ctx['deal_id'],
+    ':metadata' => json_encode([
+      'approval_id' => $ctx['approval_id'],
+      'ticket' => '#' . $ticketCode,
+      'tipo_ajuste' => $tipoAjuste,
+      'descricao' => $descricaoAjuste,
+      'prioridade' => $prioridade,
+      'anexos' => $attachments,
+      'origin' => 'dashboard',
+    ], JSON_UNESCAPED_UNICODE),
+  ]);
+
+  Response::json([
+    'ok' => true,
+    'ticket' => '#' . $ticketCode,
+    'created_at' => date('c'),
+    'sla_hint' => '24h para resposta',
+  ]);
+});
+
 $router->post('/api/portal/approval/{token}/approve', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
@@ -4990,7 +6115,12 @@ $router->post('/api/portal/approval/{token}/approve', function(Request $request)
     VALUES(:deal_id,'CLIENT_APPROVED','Cliente aprovou o template para publicação.',:metadata,'CLIENT_PORTAL')
   ", [
     ':deal_id' => $ctx['deal_id'],
-    ':metadata' => json_encode(['approval_id' => $ctx['approval_id'], 'note' => $note], JSON_UNESCAPED_UNICODE),
+    ':metadata' => json_encode([
+      'approval_id' => $ctx['approval_id'],
+      'action' => 'approved',
+      'approved_at' => date('c'),
+      'note' => $note,
+    ], JSON_UNESCAPED_UNICODE),
   ]);
 
   Response::json(['ok' => true]);
@@ -5027,11 +6157,45 @@ $router->post('/api/portal/approval/{token}/request-changes', function(Request $
     return;
   }
 
-  $note = trim((string)($request->input('note', '')));
+  $contentType = strtolower((string)(requestHeader($request, 'Content-Type') ?? ''));
+  $isMultipart = str_contains($contentType, 'multipart/form-data');
+  $payload = is_array($request->body) ? $request->body : [];
+  if ($isMultipart && count($payload) === 0 && !empty($_POST)) {
+    $payload = $_POST;
+  }
+
+  $tipoAjuste = trim((string)($payload['tipo_ajuste'] ?? ''));
+  $descricaoAjuste = trim((string)($payload['descricao_ajuste'] ?? $payload['note'] ?? ''));
+  $prioridade = trim((string)($payload['prioridade'] ?? 'Média'));
+  if ($tipoAjuste === '') {
+    $tipoAjuste = 'Outro';
+  }
+  if (!in_array($prioridade, ['Baixa', 'Média', 'Alta'], true)) {
+    $prioridade = 'Média';
+  }
+
+  $descricaoLen = textLength($descricaoAjuste);
+  if ($descricaoLen < 100) {
+    Response::json(['error' => 'Descreva sua solicitação com no mínimo 100 caracteres para garantir clareza.'], 422);
+    return;
+  }
+  if ($descricaoLen > 2000) {
+    Response::json(['error' => 'A descrição deve ter no máximo 2000 caracteres.'], 422);
+    return;
+  }
+
+  $ticketCode = 'AJ' . date('ymdHis') . strtoupper(substr(bin2hex(random_bytes(2)), 0, 4));
+  $attachmentsResult = storeApprovalRequestAttachments($ctx, $ticketCode);
+  if (!(bool)($attachmentsResult['ok'] ?? false)) {
+    Response::json(['error' => (string)($attachmentsResult['error'] ?? 'Falha ao processar anexos.')], 422);
+    return;
+  }
+  $attachments = (array)($attachmentsResult['files'] ?? []);
+  $summary = textSlice($descricaoAjuste, 500);
 
   db()->exec("UPDATE crm.deal_client_approval SET status='CHANGES_REQUESTED', client_note=:note, acted_at=now(), updated_at=now() WHERE id=:id", [
     ':id' => $ctx['approval_id'],
-    ':note' => $note !== '' ? $note : 'Cliente solicitou micro ajustes.',
+    ':note' => $summary,
   ]);
   db()->exec("UPDATE crm.deal_template_revision SET status='NEEDS_ADJUSTMENTS', updated_at=now() WHERE id=:id", [
     ':id' => $ctx['template_revision_id'],
@@ -5041,13 +6205,49 @@ $router->post('/api/portal/approval/{token}/request-changes', function(Request $
 
   db()->exec("
     INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
-    VALUES(:deal_id,'CLIENT_REQUESTED_CHANGES','Cliente solicitou micro ajustes no template.',:metadata,'CLIENT_PORTAL')
+    VALUES(:deal_id,'CLIENT_REQUESTED_CHANGES','Cliente solicitou ajustes no template.',:metadata,'CLIENT_PORTAL')
   ", [
     ':deal_id' => $ctx['deal_id'],
-    ':metadata' => json_encode(['approval_id' => $ctx['approval_id'], 'note' => $note], JSON_UNESCAPED_UNICODE),
+    ':metadata' => json_encode([
+      'approval_id' => $ctx['approval_id'],
+      'ticket' => '#' . $ticketCode,
+      'tipo_ajuste' => $tipoAjuste,
+      'descricao' => $descricaoAjuste,
+      'prioridade' => $prioridade,
+      'anexos' => $attachments,
+    ], JSON_UNESCAPED_UNICODE),
   ]);
 
-  Response::json(['ok' => true]);
+  $teamEmail = site24hEnv('TEAM_APPROVAL_EMAIL', 'suporte@koddahub.com.br');
+  if ($teamEmail !== '') {
+    db()->exec("
+      INSERT INTO crm.email_queue(organization_id, email_to, subject, body, status, created_at)
+      VALUES(:oid, :email, :subject, :body, 'PENDING', now())
+    ", [
+      ':oid' => (string)($ctx['organization_id'] ?? ''),
+      ':email' => $teamEmail,
+      ':subject' => '🔧 Solicitação de ajuste - ' . (string)($ctx['legal_name'] ?? 'Cliente'),
+      ':body' => "Cliente solicitou ajustes no template.\n\nTipo: {$tipoAjuste}\nPrioridade: {$prioridade}\nDescrição: {$descricaoAjuste}\nProtocolo: #{$ticketCode}\n\nAcesse o CRM para mais detalhes.",
+    ]);
+  }
+  if (!empty($ctx['billing_email'])) {
+    db()->exec("
+      INSERT INTO crm.email_queue(organization_id, email_to, subject, body, status, created_at)
+      VALUES(:oid, :email, :subject, :body, 'PENDING', now())
+    ", [
+      ':oid' => (string)($ctx['organization_id'] ?? ''),
+      ':email' => (string)$ctx['billing_email'],
+      ':subject' => 'Solicitação de ajustes recebida - ' . (string)($ctx['legal_name'] ?? 'Cliente'),
+      ':body' => "Recebemos sua solicitação de ajustes.\n\nProtocolo: #{$ticketCode}\nPrazo: até 24h para retorno inicial.",
+    ]);
+  }
+
+  Response::json([
+    'ok' => true,
+    'ticket' => '#' . $ticketCode,
+    'created_at' => date('c'),
+    'sla_hint' => '24h para resposta',
+  ]);
 });
 
 $router->post('/api/tickets', function(Request $request) {

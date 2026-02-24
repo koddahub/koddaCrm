@@ -722,6 +722,246 @@ body[data-page='dashboard'][data-theme='dark'] .status-chip.status-active {
 body[data-page='dashboard'][data-theme='dark'] .status-chip.status-pending {
   color: #d2deea;
 }
+body[data-page='dashboard'] .status-chip.status-completed {
+  background: rgba(16, 185, 129, .14);
+  border: 1px solid rgba(16, 185, 129, .35);
+  color: #0f8b62;
+}
+body[data-page='dashboard'] .status-chip.status-current {
+  background: rgba(59, 130, 246, .12);
+  border: 1px solid rgba(59, 130, 246, .35);
+  color: #1d4ed8;
+}
+body[data-page='dashboard'] .status-chip.status-waiting_client {
+  background: rgba(245, 158, 11, .14);
+  border: 1px solid rgba(245, 158, 11, .35);
+  color: #9a6700;
+}
+body[data-page='dashboard'] .status-chip.status-resolvido {
+  background: rgba(16, 185, 129, .14);
+  border: 1px solid rgba(16, 185, 129, .35);
+  color: #0f8b62;
+}
+body[data-page='dashboard'] .status-chip.status-em_andamento {
+  background: rgba(59, 130, 246, .12);
+  border: 1px solid rgba(59, 130, 246, .35);
+  color: #1d4ed8;
+}
+body[data-page='dashboard'] .status-chip.status-enviado {
+  background: rgba(148, 163, 184, .16);
+  border: 1px solid rgba(148, 163, 184, .4);
+  color: #475569;
+}
+body[data-page='dashboard'] .operation-header h3 {
+  margin: 0;
+}
+body[data-page='dashboard'] .operation-header p {
+  margin: 8px 0 0;
+  color: var(--dash-muted);
+}
+body[data-page='dashboard'] .operation-project-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+body[data-page='dashboard'] .operation-layout {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(260px, 30%) minmax(0, 1fr);
+  gap: 16px;
+}
+body[data-page='dashboard'] .operation-timeline {
+  display: grid;
+  gap: 10px;
+}
+body[data-page='dashboard'] .operation-timeline-item {
+  border: 1px solid var(--dash-line);
+  border-left-width: 4px;
+  border-radius: 12px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--dash-surface) 94%, #000 6%);
+}
+body[data-page='dashboard'] .operation-timeline-item.completed {
+  border-left-color: #10b981;
+}
+body[data-page='dashboard'] .operation-timeline-item.current {
+  border-left-color: #3b82f6;
+  background: color-mix(in srgb, #eff6ff 45%, var(--dash-surface) 55%);
+}
+body[data-page='dashboard'] .operation-timeline-item.waiting_client {
+  border-left-color: #f59e0b;
+  background: color-mix(in srgb, #fef3c7 45%, var(--dash-surface) 55%);
+}
+body[data-page='dashboard'] .operation-timeline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+body[data-page='dashboard'] .operation-timeline-item p {
+  margin: 8px 0 0;
+  color: var(--dash-muted);
+}
+body[data-page='dashboard'] .operation-main-content {
+  display: grid;
+  gap: 12px;
+}
+body[data-page='dashboard'] .operation-content-card {
+  border: 1px solid var(--dash-line);
+  border-radius: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--dash-surface) 94%, #000 6%);
+}
+body[data-page='dashboard'] .operation-content-card h4 {
+  margin: 0 0 8px;
+}
+body[data-page='dashboard'] .operation-progress-wrap small {
+  color: var(--dash-muted);
+}
+body[data-page='dashboard'] .operation-progress-bar {
+  margin: 10px 0 6px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--dash-line);
+  overflow: hidden;
+}
+body[data-page='dashboard'] .operation-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+}
+body[data-page='dashboard'] .operation-substages {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+body[data-page='dashboard'] .operation-substages li {
+  margin-bottom: 4px;
+}
+body[data-page='dashboard'] .operation-substages li.current {
+  font-weight: 700;
+  color: #2563eb;
+}
+body[data-page='dashboard'] .operation-substages li.completed {
+  color: #10b981;
+}
+body[data-page='dashboard'] .operation-approval-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+body[data-page='dashboard'] .operation-approval-card div {
+  border: 1px solid var(--dash-line);
+  border-radius: 10px;
+  padding: 10px;
+}
+body[data-page='dashboard'] .operation-approval-card label,
+body[data-page='dashboard'] .operation-approval-card strong {
+  display: block;
+}
+body[data-page='dashboard'] .operation-history {
+  border-top: 1px solid var(--dash-line);
+  padding-top: 10px;
+}
+body[data-page='dashboard'] .operation-history-toggle {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--dash-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--dash-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+body[data-page='dashboard'] .operation-history-body {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+body[data-page='dashboard'] .operation-history-item {
+  border: 1px solid var(--dash-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+body[data-page='dashboard'] .operation-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+body[data-page='dashboard'] .operation-history-item p {
+  margin: 8px 0 0;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-completed,
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-resolvido {
+  color: #76f2c3;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-current,
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-em_andamento {
+  color: #b8d6ff;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-waiting_client {
+  color: #ffdf9b;
+}
+body[data-page='dashboard'][data-theme='dark'] .status-chip.status-enviado {
+  color: #d2deea;
+}
+body[data-page='approval'] .approval-wrap {
+  max-width: 980px;
+  margin: 24px auto;
+  padding: 0 12px;
+}
+body[data-page='approval'] .approval-card h2 {
+  margin: 0 0 10px;
+}
+body[data-page='approval'] .approval-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+body[data-page='approval'] .approval-meta div {
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 10px;
+  padding: 10px;
+}
+body[data-page='approval'] .approval-meta label,
+body[data-page='approval'] .approval-meta strong {
+  display: block;
+}
+body[data-page='approval'] .approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+body[data-page='approval'] .approval-dialog {
+  width: min(760px, calc(100vw - 24px));
+}
+body[data-page='approval'] .approval-counter-wrap {
+  margin-top: 8px;
+}
+body[data-page='approval'] .approval-counter-bar {
+  margin-top: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.18);
+  overflow: hidden;
+}
+body[data-page='approval'] .approval-counter-bar span {
+  display: block;
+  height: 100%;
+  background: #3b82f6;
+}
+body[data-page='approval'] .counter-valid {
+  color: #10b981;
+}
+body[data-page='approval'] .counter-invalid {
+  color: #ef4444;
+  font-weight: 700;
+}
 body[data-page='dashboard'] .portal-modal-dialog {
   background: #ffffff;
   border-color: #e2e8f0;
@@ -752,6 +992,22 @@ body[data-page='dashboard'] .brief-progress span {
   }
   body[data-page='dashboard'] .plans-grid {
     grid-template-columns: 1fr;
+  }
+  body[data-page='dashboard'] .operation-project-meta,
+  body[data-page='dashboard'] .operation-layout,
+  body[data-page='dashboard'] .operation-approval-card,
+  body[data-page='approval'] .approval-meta {
+    grid-template-columns: 1fr;
+  }
+  body[data-page='dashboard'] .operation-timeline {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  body[data-page='dashboard'] .operation-timeline-item {
+    min-width: 250px;
+    flex: 0 0 auto;
   }
 }
 

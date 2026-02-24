@@ -1,0 +1,203 @@
+.crm-operacao-modal .modal-body {
+  background: linear-gradient(180deg, rgba(var(--bs-light-rgb), 0.35), transparent 45%);
+}
+
+.crm-operacao-modal .operation-progress-block {
+  padding: 0.75rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  background: var(--bs-body-bg);
+}
+
+.crm-operacao-modal .operation-stage-nav {
+  padding-bottom: 0.25rem;
+}
+
+.crm-operacao-modal .operation-stage-nav .operation-stage-btn {
+  white-space: nowrap;
+  border-radius: var(--bs-border-radius-pill);
+}
+
+.crm-operacao-modal .operation-stage-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.crm-operacao-modal .operation-card {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 1rem;
+  background: var(--bs-body-bg);
+}
+
+.crm-operacao-modal .operation-card .muted {
+  color: var(--bs-secondary-color);
+}
+
+.crm-operacao-modal .operation-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.crm-operacao-modal .operation-meta-grid > div {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 0.65rem 0.75rem;
+  background: var(--bs-tertiary-bg);
+}
+
+.crm-operacao-modal .operation-meta-grid label {
+  display: block;
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  margin-bottom: 0.15rem;
+}
+
+.crm-operacao-modal .operation-meta-grid strong {
+  color: var(--bs-emphasis-color);
+}
+
+.crm-operacao-modal .preprompt-topbar,
+.crm-operacao-modal .preprompt-content-grid,
+.crm-operacao-modal .template-showcase-grid,
+.crm-operacao-modal .template-form-grid,
+.crm-operacao-modal .publication-request-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.crm-operacao-modal .preprompt-topbar .operation-actions,
+.crm-operacao-modal .operation-actions,
+.crm-operacao-modal .template-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.crm-operacao-modal .preprompt-block {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 0.85rem;
+  background: var(--bs-body-bg);
+}
+
+.crm-operacao-modal .preprompt-block h5 {
+  font-size: 0.95rem;
+  margin-bottom: 0.6rem;
+}
+
+.crm-operacao-modal .template-showcase-card {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  padding: 0.85rem;
+  background: var(--bs-body-bg);
+  cursor: pointer;
+}
+
+.crm-operacao-modal .template-showcase-card.selected {
+  border-color: var(--bs-primary);
+  box-shadow: 0 0 0 0.15rem rgba(var(--bs-primary-rgb), 0.15);
+}
+
+.crm-operacao-modal .template-showcase-card ul {
+  margin: 0.5rem 0;
+  padding-left: 1rem;
+}
+
+.crm-operacao-modal .template-selection-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.crm-operacao-modal .publication-request-grid {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  background: var(--bs-tertiary-bg);
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.crm-operacao-modal .publication-request-grid label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--bs-secondary-color);
+  margin-bottom: 0.2rem;
+}
+
+.crm-operacao-modal .publication-request-grid strong {
+  color: var(--bs-emphasis-color);
+}
+
+.crm-operacao-modal .publication-request-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.crm-operacao-modal .publication-history-wrap table {
+  min-width: 520px;
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn {
+  border-radius: var(--bs-border-radius);
+  min-width: auto;
+  height: auto;
+  border-width: 1px;
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-outline-secondary {
+  color: var(--bs-secondary-color);
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-success {
+  color: #fff;
+}
+
+.crm-operacao-modal .publication-table .proposal-row-actions .btn.btn-outline-warning {
+  color: #856404;
+}
+
+.crm-operacao-modal .prompt-variant-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 0.4rem;
+}
+
+.crm-operacao-modal .prompt-variant-tabs button {
+  border: 1px solid var(--bs-border-color);
+  background: var(--bs-body-bg);
+  border-radius: var(--bs-border-radius-pill);
+  padding: 0.3rem 0.7rem;
+}
+
+.crm-operacao-modal .prompt-variant-tabs button.active {
+  background: var(--bs-primary);
+  color: var(--bs-white);
+  border-color: var(--bs-primary);
+}
+
+.crm-operacao-modal textarea,
+.crm-operacao-modal input,
+.crm-operacao-modal select {
+  width: 100%;
+}
+
+.crm-operacao-modal .brand-palette-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.crm-operacao-modal .brand-palette-inline span {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--bs-border-color);
+}

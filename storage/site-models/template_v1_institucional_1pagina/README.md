@@ -1,21 +1,24 @@
-# Template V1 - Institucional de uma pagina
+# Template V1 - Institucional (1 página)
+
+## Escopo
+- Página única (`index.html`) com âncoras internas.
+- Sem formulário.
+- Sem WhatsApp flutuante.
+- Sem chatbot.
 
 ## Estrutura
-- `index.html`: pagina unica com navegacao por ancora.
-- `css/style.css`: estilo base fiel ao padrao visual KoddaHub.
-- `js/main.js`: menu mobile e scroll suave.
-- `assets/`: logo, backgrounds, fontes e vendors locais.
+- `index.html`: layout principal com seções de conversão.
+- `css/style.css`: identidade visual base white-label.
+- `js/main.js`: navegação mobile, smooth scroll e estado ativo do menu.
+- `assets/`: fontes, imagens, logo e vendors locais.
 
-## Personalizacao rapida
-1. Troque textos das secoes `servicos`, `sobre`, `diferenciais` e `depoimentos`.
-2. Atualize dados do footer (telefone, email, endereco, redes).
-3. Substitua imagens em `assets/backgrounds/` mantendo os mesmos nomes.
+## Personalização rápida
+1. Trocar logo em `assets/logo/`.
+2. Ajustar textos de hero/serviços/depoimentos.
+3. Atualizar dados no footer.
+4. Trocar imagens em `assets/backgrounds/`.
 
-## Blocos principais
-- Header com menu ancora
-- Hero
-- Servicos/produtos
-- Sobre
-- Diferenciais
-- Depoimentos
-- Footer de contato (sem formulario)
+## Critérios de conformidade
+- 1 página somente.
+- Nenhum elemento de formulário/WhatsApp/chatbot.
+- Responsivo em mobile/tablet/desktop.

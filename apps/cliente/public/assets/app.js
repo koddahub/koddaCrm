@@ -979,30 +979,150 @@
       setPortalNotice('Nenhuma cobrança pendente encontrada no momento.', 'err');
     });
 
-    $('#portalApprovalLinkBtn')?.addEventListener('click', async () => {
-      const btn = $('#portalApprovalLinkBtn');
-      if (!btn) return;
-      btn.setAttribute('disabled', 'disabled');
+    const portalApprovalNotice = $('#portalApprovalNotice');
+    const setPortalApprovalNotice = (msg, ok = false) => {
+      if (!portalApprovalNotice) {
+        setPortalNotice(msg, ok ? 'ok' : 'err');
+        return;
+      }
+      portalApprovalNotice.textContent = msg || '';
+      portalApprovalNotice.classList.remove('hidden', 'ok', 'err');
+      portalApprovalNotice.classList.add(ok ? 'ok' : 'err');
+    };
+
+    const portalApprovalConfirmModal = $('#portalApprovalConfirmModal');
+    const portalRequestChangesModal = $('#portalRequestChangesModal');
+    const portalApproveBtn = $('#portalApproveBtn');
+    const portalChangesBtn = $('#portalChangesBtn');
+    const portalApproveConfirmBtn = $('#portalApproveConfirmBtn');
+    const portalApproveCancelBtn = $('#portalApproveCancelBtn');
+    const portalChangesCancelBtn = $('#portalChangesCancelBtn');
+    const portalRequestChangesForm = $('#portalRequestChangesForm');
+    const portalDescricaoAjuste = $('#portalDescricaoAjuste');
+    const portalDescricaoCounter = $('#portalDescricaoCounter');
+    const portalDescricaoCounterFill = $('#portalDescricaoCounterFill');
+    const portalChangesSubmitBtn = $('#portalChangesSubmitBtn');
+    const portalChangesNotice = $('#portalChangesNotice');
+    let portalApproveSending = false;
+    let portalChangesSending = false;
+
+    const openPortalModal = (el) => {
+      if (!el) return;
+      el.classList.remove('hidden');
+      el.setAttribute('aria-hidden', 'false');
+    };
+    const closePortalModal = (el) => {
+      if (!el) return;
+      el.classList.add('hidden');
+      el.setAttribute('aria-hidden', 'true');
+    };
+    const setPortalChangesNotice = (msg, ok = false) => {
+      if (!portalChangesNotice) return;
+      portalChangesNotice.textContent = msg || '';
+      portalChangesNotice.classList.remove('hidden', 'ok', 'err');
+      portalChangesNotice.classList.add(ok ? 'ok' : 'err');
+    };
+    const clearPortalChangesNotice = () => {
+      if (!portalChangesNotice) return;
+      portalChangesNotice.textContent = '';
+      portalChangesNotice.classList.add('hidden');
+      portalChangesNotice.classList.remove('ok', 'err');
+    };
+    const updatePortalDescricaoCounter = () => {
+      if (!portalDescricaoAjuste || !portalDescricaoCounter || !portalDescricaoCounterFill || !portalChangesSubmitBtn) return;
+      const length = String(portalDescricaoAjuste.value || '').trim().length;
+      const pct = Math.min(100, (length / 100) * 100);
+      portalDescricaoCounter.textContent = `${length} / 2000 (mínimo 100)`;
+      portalDescricaoCounterFill.style.width = `${pct}%`;
+      const valid = length >= 100;
+      portalChangesSubmitBtn.disabled = !valid || portalChangesSending;
+      portalDescricaoCounter.classList.toggle('text-success', valid);
+      portalDescricaoCounter.classList.toggle('text-danger', !valid);
+    };
+
+    portalApproveBtn?.addEventListener('click', () => {
+      setPortalApprovalNotice('', true);
+      portalApprovalNotice?.classList.add('hidden');
+      openPortalModal(portalApprovalConfirmModal);
+    });
+    portalApproveCancelBtn?.addEventListener('click', () => closePortalModal(portalApprovalConfirmModal));
+    portalApprovalConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(portalApprovalConfirmModal));
+
+    portalApproveConfirmBtn?.addEventListener('click', async () => {
+      if (portalApproveSending) return;
+      portalApproveSending = true;
+      portalApproveConfirmBtn.setAttribute('disabled', 'disabled');
+      portalApproveBtn?.setAttribute('disabled', 'disabled');
       try {
-        const r = await apiFetch('/api/portal/approval/request-link', {
+        const res = await apiFetch('/api/portal/approval/current/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ note: 'Aprovação confirmada via portal do cliente.' }),
         });
-        const d = await r.json();
-        if (!r.ok) {
-          setPortalNotice(d.error || 'Não foi possível gerar o link de validação agora.', 'err');
-          return;
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Não foi possível aprovar o site neste momento.');
         }
-        if (d.approval_url) {
-          window.open(d.approval_url, '_blank', 'noopener,noreferrer');
-          setPortalNotice('Link temporário de validação aberto em nova guia.', 'ok');
-          return;
-        }
-        setPortalNotice('Link de validação indisponível no momento.', 'err');
+        closePortalModal(portalApprovalConfirmModal);
+        setPortalApprovalNotice('Site aprovado com sucesso. Movendo para publicação...', true);
+        setTimeout(() => window.location.reload(), 900);
+      } catch (err) {
+        setPortalApprovalNotice(err?.message || 'Erro ao aprovar o site.', false);
       } finally {
-        btn.removeAttribute('disabled');
+        portalApproveSending = false;
+        portalApproveConfirmBtn.removeAttribute('disabled');
+        portalApproveBtn?.removeAttribute('disabled');
       }
+    });
+
+    portalChangesBtn?.addEventListener('click', () => {
+      clearPortalChangesNotice();
+      openPortalModal(portalRequestChangesModal);
+      portalDescricaoAjuste?.focus();
+      updatePortalDescricaoCounter();
+    });
+    portalChangesCancelBtn?.addEventListener('click', () => closePortalModal(portalRequestChangesModal));
+    portalRequestChangesModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(portalRequestChangesModal));
+    portalDescricaoAjuste?.addEventListener('input', updatePortalDescricaoCounter);
+    updatePortalDescricaoCounter();
+
+    portalRequestChangesForm?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (portalChangesSending) return;
+      clearPortalChangesNotice();
+      const descriptionLength = String(portalDescricaoAjuste?.value || '').trim().length;
+      if (descriptionLength < 100) {
+        setPortalChangesNotice('Descreva sua solicitação com no mínimo 100 caracteres.', false);
+        updatePortalDescricaoCounter();
+        return;
+      }
+      portalChangesSending = true;
+      portalChangesSubmitBtn?.setAttribute('disabled', 'disabled');
+      try {
+        const formData = new FormData(portalRequestChangesForm);
+        const res = await apiFetch('/api/portal/approval/current/request-changes', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Não foi possível enviar sua solicitação de ajustes.');
+        }
+        closePortalModal(portalRequestChangesModal);
+        setPortalApprovalNotice(`Solicitação enviada com sucesso (${data.ticket || 'protocolo gerado'}).`, true);
+        setTimeout(() => window.location.reload(), 900);
+      } catch (err) {
+        setPortalChangesNotice(err?.message || 'Erro ao enviar solicitação de ajustes.', false);
+      } finally {
+        portalChangesSending = false;
+        updatePortalDescricaoCounter();
+      }
+    });
+
+    $('#operationHistoryToggle')?.addEventListener('click', () => {
+      const body = $('#operationHistoryBody');
+      if (!body) return;
+      body.classList.toggle('hidden');
     });
 
     const profileForm = $('#profileForm');

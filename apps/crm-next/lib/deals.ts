@@ -72,13 +72,95 @@ export async function ensureDealOperation(
   stageCode?: string,
 ) {
   const operationStages = operationStagesByDealType(deal.dealType);
-  const selected = stageCode
-    ? operationStages.find((item) => item.code === stageCode)
-    : operationStages[0];
+  const inferStageFromArtifacts = async (): Promise<string | null> => {
+    const activeOperation = await tx.dealOperation.findFirst({
+      where: {
+        dealId: deal.id,
+        operationType: deal.dealType,
+        status: 'ACTIVE',
+      },
+      orderBy: { stageOrder: 'desc' },
+      select: { stageCode: true, stageOrder: true },
+    });
+    const highestCompleted = await tx.dealOperation.findFirst({
+      where: {
+        dealId: deal.id,
+        operationType: deal.dealType,
+        status: 'COMPLETED',
+      },
+      orderBy: { stageOrder: 'desc' },
+      select: { stageCode: true, stageOrder: true },
+    });
 
-  if (!selected) {
-    throw new Error('Etapa operacional inválida');
-  }
+    if (
+      activeOperation
+      && highestCompleted
+      && Number(highestCompleted.stageOrder || 0) > Number(activeOperation.stageOrder || 0)
+      && highestCompleted.stageCode
+    ) {
+      return highestCompleted.stageCode;
+    }
+
+    if (deal.dealType !== 'HOSPEDAGEM') return null;
+    const [latestApproval, latestTemplate, latestActivity, latestPromptRevision] = await Promise.all([
+      tx.dealClientApproval.findFirst({
+        where: { dealId: deal.id },
+        orderBy: { createdAt: 'desc' },
+        select: { status: true },
+      }),
+      tx.dealTemplateRevision.findFirst({
+        where: { dealId: deal.id },
+        orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+        select: { status: true },
+      }),
+      tx.dealActivity.findFirst({
+        where: {
+          dealId: deal.id,
+          activityType: { in: ['CLIENT_APPROVAL_REQUESTED', 'CLIENT_REQUESTED_CHANGES', 'CLIENT_APPROVED'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { activityType: true },
+      }),
+      tx.dealPromptRevision.findFirst({
+        where: { dealId: deal.id },
+        orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+        select: { id: true },
+      }),
+    ]);
+
+    const approvalStatus = String(latestApproval?.status || '').toUpperCase();
+    const templateStatus = String(latestTemplate?.status || '').toUpperCase();
+    const activityType = String(latestActivity?.activityType || '').toUpperCase();
+
+    if (
+      approvalStatus === 'APPROVED'
+      || templateStatus === 'APPROVED_CLIENT'
+      || activityType === 'CLIENT_APPROVED'
+    ) {
+      return 'publicacao';
+    }
+    if (
+      approvalStatus === 'CHANGES_REQUESTED'
+      || templateStatus === 'NEEDS_ADJUSTMENTS'
+      || activityType === 'CLIENT_REQUESTED_CHANGES'
+    ) {
+      return 'ajustes';
+    }
+    if (
+      approvalStatus === 'PENDING'
+      || ['SENT_CLIENT', 'IN_REVIEW'].includes(templateStatus)
+      || activityType === 'CLIENT_APPROVAL_REQUESTED'
+    ) {
+      return 'aprovacao_cliente';
+    }
+    if (templateStatus) {
+      return 'template_v1';
+    }
+    if (latestPromptRevision?.id) {
+      return 'pre_prompt';
+    }
+    return null;
+  };
 
   const active = await tx.dealOperation.findFirst({
     where: {
@@ -88,6 +170,33 @@ export async function ensureDealOperation(
     },
     orderBy: { stageOrder: 'desc' },
   });
+
+  let desiredStageCode = stageCode;
+  if (!desiredStageCode) {
+    const inferred = await inferStageFromArtifacts();
+    if (!inferred && active) {
+      // No explicit stage and no stronger signal: keep current active stage.
+      return active;
+    }
+    if (inferred && active) {
+      const inferredOrder = operationStages.find((item) => item.code === inferred)?.order || 0;
+      const activeOrder = Number(active.stageOrder || 0);
+      if (inferredOrder <= activeOrder) {
+        return active;
+      }
+    }
+    if (inferred) {
+      desiredStageCode = inferred;
+    }
+  }
+
+  const selected = desiredStageCode
+    ? operationStages.find((item) => item.code === desiredStageCode)
+    : operationStages[0];
+
+  if (!selected) {
+    throw new Error('Etapa operacional inválida');
+  }
 
   if (active?.stageCode === selected.code) {
     return active;

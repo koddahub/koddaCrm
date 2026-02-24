@@ -1,0 +1,9 @@
+@media (min-width: 768px) {
+  .crm-cliente-page .deal-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .deal-detail-wrapper .deal-tab-panel {
+    gap: 1.25rem;
+  }
+}

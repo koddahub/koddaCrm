@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Template institucional de tres paginas - Contato" />
+  <meta name="description" content="Página de contato com formulário funcional e canais de atendimento." />
   <title>Template V2 | Contato</title>
   <link rel="icon" href="assets/logo/favicon.ico" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
@@ -11,14 +11,27 @@
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+  <script>
+    window.TemplateConfig = {
+      brandName: 'Sua Empresa',
+      contactEmail: 'contato@suaempresa.com.br',
+      contactPhone: '(11) 99999-9999',
+      whatsappNumber: '5511999999999',
+      formMode: 'front-only',
+      formEndpoint: '',
+      brandPrimary: '#1d4ed8',
+      brandSecondary: '#0f172a'
+    };
+  </script>
+
   <header class="site-header" id="topo">
     <div class="container header-inner">
-      <a href="index.html" class="brand"><img src="assets/logo/koddahub-logo-v2.png" alt="KoddaHub" /><span class="brand-text"><span>Kodda</span><span>Hub</span></span></a>
-      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu">☰</button>
-      <nav class="site-nav" data-nav>
+      <a href="index.html" class="brand"><img src="assets/logo/koddahub-logo-v2.png" alt="Logo da empresa" /><span class="brand-text"><span>Sua</span><span>Empresa</span></span></a>
+      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu" aria-expanded="false" aria-controls="siteNav">☰</button>
+      <nav class="site-nav" data-nav id="siteNav">
         <a href="index.html">Home</a>
         <a href="sobre.html">Sobre</a>
-        <a href="contato.html" class="btn-nav">Contato</a>
+        <a href="contato.html" class="btn-nav active">Contato</a>
       </nav>
     </div>
   </header>
@@ -26,49 +39,55 @@
   <main>
     <section class="page-hero compact">
       <div class="container">
-        <h1 class="section-title">Fale com a equipe</h1>
-        <p class="section-subtitle">Formulario pronto para integrar com backend quando necessario.</p>
+        <h1 class="section-title">Fale com um especialista</h1>
+        <p class="section-subtitle">Formulário com validação e feedback para captação de contato.</p>
       </div>
     </section>
 
     <section class="section" style="padding-top:10px">
       <div class="container page-grid-2">
         <article class="page-panel">
-          <h2 class="section-title" style="font-size:1.5rem">Formulario de contato</h2>
-          <form class="contact-form" action="#" method="post">
-            <label>Nome
-              <input type="text" name="nome" required />
+          <h2 class="section-title" style="font-size:1.5rem">Formulário de contato</h2>
+          <form class="contact-form" data-template-contact="true" novalidate>
+            <label for="nome">Nome
+              <input id="nome" type="text" name="nome" required data-feedback-id="feedback-nome" />
+              <small class="field-error" id="feedback-nome" aria-live="polite"></small>
             </label>
-            <label>E-mail
-              <input type="email" name="email" required />
+            <label for="email">E-mail
+              <input id="email" type="email" name="email" required data-feedback-id="feedback-email" />
+              <small class="field-error" id="feedback-email" aria-live="polite"></small>
             </label>
-            <label>Telefone
-              <input type="tel" name="telefone" />
+            <label for="telefone">Telefone
+              <input id="telefone" type="tel" name="telefone" required data-feedback-id="feedback-telefone" />
+              <small class="field-error" id="feedback-telefone" aria-live="polite"></small>
             </label>
-            <label>Assunto
-              <select name="assunto" required>
+            <label for="assunto">Assunto
+              <select id="assunto" name="assunto" required data-feedback-id="feedback-assunto">
                 <option value="">Selecione</option>
                 <option value="site">Novo site</option>
-                <option value="sistema">Sistema</option>
-                <option value="suporte">Suporte</option>
+                <option value="suporte">Suporte técnico</option>
+                <option value="comercial">Comercial</option>
               </select>
+              <small class="field-error" id="feedback-assunto" aria-live="polite"></small>
             </label>
-            <label>Mensagem
-              <textarea name="mensagem" required></textarea>
+            <label for="mensagem">Mensagem
+              <textarea id="mensagem" name="mensagem" required data-feedback-id="feedback-mensagem"></textarea>
+              <small class="field-error" id="feedback-mensagem" aria-live="polite"></small>
             </label>
             <div class="form-actions">
               <button class="btn-main" type="submit">Enviar mensagem</button>
               <button class="btn-outline" type="reset">Limpar</button>
             </div>
+            <p class="form-status" data-form-status aria-live="polite"></p>
           </form>
         </article>
         <article class="page-panel">
-          <h2 class="section-title" style="font-size:1.5rem">Informacoes</h2>
+          <h2 class="section-title" style="font-size:1.5rem">Canais de atendimento</h2>
           <ul class="list-clean">
-            <li>Telefone: (41) 99999-9999</li>
-            <li>E-mail: contato@empresa.com.br</li>
-            <li>Endereco: Rua Exemplo, 100 - Curitiba/PR</li>
-            <li>Atendimento: Segunda a Sexta, 9h as 18h</li>
+            <li>Telefone: <a data-contact-phone href="#">(11) 99999-9999</a></li>
+            <li>E-mail: <a data-contact-email href="#">contato@suaempresa.com.br</a></li>
+            <li>Horário: Segunda a Sexta, 9h às 18h</li>
+            <li>Atendimento consultivo com retorno rápido.</li>
           </ul>
         </article>
       </div>
@@ -78,15 +97,16 @@
   <footer class="footer">
     <div class="container">
       <div class="footer-grid">
-        <div><h4>KoddaHub</h4><p>Template institucional multipagina.</p></div>
-        <div><h4>Contato</h4><ul><li>(41) 99999-9999</li><li>contato@empresa.com.br</li><li>Curitiba - PR</li></ul></div>
-        <div><h4>Navegacao</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
+        <div><h4>Sua Empresa</h4><p>Atendimento humanizado com foco em solução real para o cliente.</p></div>
+        <div><h4>Contato</h4><ul><li><a data-contact-phone href="#">(11) 99999-9999</a></li><li><a data-contact-email href="#">contato@suaempresa.com.br</a></li><li>São Paulo - SP</li></ul></div>
+        <div><h4>Navegação</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
       </div>
-      <div class="footer-bottom">© 2026 Template KoddaHub V2.</div>
+      <div class="footer-bottom">© 2026 Sua Empresa. Todos os direitos reservados.</div>
     </div>
   </footer>
 
-  <a class="whatsapp-float" href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>
+  <a class="whatsapp-float" data-whatsapp-link data-whatsapp-message="Olá! Quero atendimento sobre o meu projeto." href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>
   <script src="js/main.js"></script>
+  <script src="js/form-handler.js"></script>
 </body>
 </html>

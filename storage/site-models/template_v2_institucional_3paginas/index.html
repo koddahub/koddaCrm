@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Template institucional de tres paginas - KoddaHub" />
+  <meta name="description" content="Template institucional multipágina com foco em conversão e credibilidade." />
   <title>Template V2 | Home</title>
   <link rel="icon" href="assets/logo/favicon.ico" />
   <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.min.css" />
@@ -11,15 +11,28 @@
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+  <script>
+    window.TemplateConfig = {
+      brandName: 'Sua Empresa',
+      contactEmail: 'contato@suaempresa.com.br',
+      contactPhone: '(11) 99999-9999',
+      whatsappNumber: '5511999999999',
+      formMode: 'front-only',
+      formEndpoint: '',
+      brandPrimary: '#1d4ed8',
+      brandSecondary: '#0f172a'
+    };
+  </script>
+
   <header class="site-header" id="topo">
     <div class="container header-inner">
       <a href="index.html" class="brand" aria-label="Início">
-        <img src="assets/logo/koddahub-logo-v2.png" alt="KoddaHub" />
-        <span class="brand-text"><span>Kodda</span><span>Hub</span></span>
+        <img src="assets/logo/koddahub-logo-v2.png" alt="Logo da empresa" />
+        <span class="brand-text"><span>Sua</span><span>Empresa</span></span>
       </a>
-      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu">☰</button>
-      <nav class="site-nav" data-nav>
-        <a href="index.html">Home</a>
+      <button class="nav-toggle" data-nav-toggle aria-label="Abrir menu" aria-expanded="false" aria-controls="siteNav">☰</button>
+      <nav class="site-nav" data-nav id="siteNav">
+        <a href="index.html" class="active">Home</a>
         <a href="sobre.html">Sobre</a>
         <a href="contato.html" class="btn-nav">Contato</a>
       </nav>
@@ -30,27 +43,27 @@
     <section class="page-hero">
       <div class="container hero-grid">
         <div>
-          <span class="hero-kicker">V2 INSTITUCIONAL</span>
-          <h1>Home com foco em <strong>servicos</strong>, diferencial e prova social.</h1>
-          <p>Template de tres paginas com navegação entre Home, Sobre e Contato.</p>
+          <span class="hero-kicker">TEMPLATE BASE V2</span>
+          <h1>Site institucional com 3 páginas e jornada comercial completa.</h1>
+          <p>Estrutura robusta para apresentar posicionamento, autoridade e facilitar geração de contatos.</p>
           <div class="hero-actions">
             <a class="btn-main" href="contato.html">Solicitar proposta</a>
-            <a class="btn-outline" href="sobre.html">Conhecer empresa</a>
+            <a class="btn-outline" href="sobre.html">Conhecer a empresa</a>
           </div>
         </div>
         <article class="hero-card">
-          <img src="assets/backgrounds/card-03-demo-servicos.jpg" alt="Home institucional" />
+          <img src="assets/backgrounds/card-03-demo-servicos.jpg" alt="Template institucional multipágina" />
         </article>
       </div>
     </section>
 
     <section class="section" id="servicos">
       <div class="container">
-        <h2 class="section-title">Solucoes principais</h2>
+        <h2 class="section-title">Soluções principais</h2>
         <div class="grid-3">
-          <article class="info-card"><h3>Presenca digital</h3><p>Site responsivo e otimizado para performance.</p></article>
-          <article class="info-card"><h3>Captação de leads</h3><p>Estrutura de conteudo com chamadas estrategicas.</p></article>
-          <article class="info-card"><h3>Operacao escalavel</h3><p>Base pronta para evoluir com novas paginas e funis.</p></article>
+          <article class="info-card"><h3>Estratégia digital</h3><p>Planejamento de presença online alinhado aos objetivos de negócio.</p></article>
+          <article class="info-card"><h3>Design e posicionamento</h3><p>Comunicação visual consistente para transmitir confiança e valor.</p></article>
+          <article class="info-card"><h3>Operação contínua</h3><p>Base preparada para evolução e ajustes rápidos sem retrabalho.</p></article>
         </div>
       </div>
     </section>
@@ -59,9 +72,9 @@
       <div class="container testimonial-wrap">
         <h2 class="section-title">Diferenciais</h2>
         <div class="grid-3">
-          <article class="info-card"><h3>Agilidade</h3><p>Processo padronizado para acelerar entrega.</p></article>
-          <article class="info-card"><h3>Suporte</h3><p>Acompanhamento continuo e evolucao do projeto.</p></article>
-          <article class="info-card"><h3>Confianca</h3><p>Arquitetura e visual alinhados ao posicionamento.</p></article>
+          <article class="info-card"><h3>Entrega previsível</h3><p>Prazos e etapas claras para manter velocidade com qualidade.</p></article>
+          <article class="info-card"><h3>Qualidade técnica</h3><p>Código organizado, responsivo e preparado para produção.</p></article>
+          <article class="info-card"><h3>Foco em conversão</h3><p>Elementos de prova, CTA e conteúdo orientados a resultado.</p></article>
         </div>
       </div>
     </section>
@@ -70,9 +83,9 @@
       <div class="container">
         <h2 class="section-title">Depoimentos</h2>
         <div class="grid-3">
-          <article class="info-card"><h3>Cliente 1</h3><p>"Projeto claro e resultado consistente."</p></article>
-          <article class="info-card"><h3>Cliente 2</h3><p>"A navegacao melhorou nossa taxa de contato."</p></article>
-          <article class="info-card"><h3>Cliente 3</h3><p>"Conseguimos passar mais credibilidade no digital."</p></article>
+          <article class="info-card"><h3>Cliente 1</h3><p>"Processo simples, rápido e com excelente resultado final."</p></article>
+          <article class="info-card"><h3>Cliente 2</h3><p>"Conseguimos aumentar contatos qualificados com o novo site."</p></article>
+          <article class="info-card"><h3>Cliente 3</h3><p>"Layout profissional e comunicação muito mais clara."</p></article>
         </div>
       </div>
     </section>
@@ -81,15 +94,22 @@
   <footer class="footer">
     <div class="container">
       <div class="footer-grid">
-        <div><h4>KoddaHub</h4><p>Template institucional multipagina.</p></div>
-        <div><h4>Contato</h4><ul><li>(41) 99999-9999</li><li>contato@empresa.com.br</li><li>Curitiba - PR</li></ul></div>
-        <div><h4>Navegacao</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
+        <div><h4>Sua Empresa</h4><p>Soluções digitais para empresas que buscam crescimento previsível.</p></div>
+        <div>
+          <h4>Contato</h4>
+          <ul>
+            <li><a data-contact-phone href="#">(11) 99999-9999</a></li>
+            <li><a data-contact-email href="#">contato@suaempresa.com.br</a></li>
+            <li>São Paulo - SP</li>
+          </ul>
+        </div>
+        <div><h4>Navegação</h4><ul><li><a href="index.html">Home</a></li><li><a href="sobre.html">Sobre</a></li><li><a href="contato.html">Contato</a></li></ul></div>
       </div>
-      <div class="footer-bottom">© 2026 Template KoddaHub V2.</div>
+      <div class="footer-bottom">© 2026 Sua Empresa. Todos os direitos reservados.</div>
     </div>
   </footer>
 
-  <a class="whatsapp-float" href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" aria-label="WhatsApp">
+  <a class="whatsapp-float" data-whatsapp-link data-whatsapp-message="Olá! Vim pelo site e gostaria de um atendimento." href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" aria-label="WhatsApp">
     <i class="fab fa-whatsapp" aria-hidden="true"></i>
   </a>
 

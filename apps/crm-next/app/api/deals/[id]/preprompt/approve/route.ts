@@ -93,23 +93,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if ((assetCounts.get('manual') || 0) <= 0) {
       missing.push('manual de marca');
     }
-    if (missing.length > 0) {
-      return NextResponse.json(
-        {
-          error: 'Aprovação bloqueada por pendências de assets obrigatórios.',
-          error_code: 'PREPROMPT_REQUIRED_ASSETS_MISSING',
-          action_hint: 'Anexe logo e manual de marca antes de aprovar o pré-prompt.',
+    const assetsWarning = missing.length > 0
+      ? {
+          warning_code: 'PREPROMPT_REQUIRED_ASSETS_MISSING',
+          warning_message: 'Pré-prompt aprovado com pendências de assets. Complete logo/manual para reduzir retrabalho.',
           missing_assets: missing,
-          release: {
-            id: release.id,
-            version: release.version,
-            label: prepared.releaseLabel,
-            assetsPath: release.assets_path,
-          },
-        },
-        { status: 422 },
-      );
-    }
+        }
+      : null;
 
     const latestRevision = await prisma.dealPromptRevision.findFirst({
       where: { dealId: deal.id },
@@ -246,6 +236,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         entryFile: item.entry_file,
         previewUrl: item.preview_url,
       })),
+      warnings: assetsWarning,
       paths: {
         releaseRoot: release.project_root,
         clientRoot,

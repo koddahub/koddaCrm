@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type DealDetailProps = {
   dealId: string;
@@ -163,6 +164,16 @@ type OperationFlowData = {
       V2: string;
       V3: string;
     } | null;
+    requests?: Array<{
+      id: string;
+      subject: string;
+      requestItems: string[];
+      message: string;
+      dueAt: string | null;
+      status: string;
+      createdAt: string;
+      updatedAt: string;
+    }>;
   };
   template: {
     latest: {
@@ -292,6 +303,23 @@ type OperationFlowData = {
       matches: boolean;
       checkedAt: string;
     }>;
+    requests?: Array<{
+      id: string;
+      subject: string;
+      requestItems: string[];
+      message: string;
+      dueAt: string | null;
+      status: string;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    domainApproval?: {
+      status: 'PENDING' | 'RECEIVED';
+      domain: string | null;
+      requestedAt: string | null;
+      receivedAt: string | null;
+      requestId: string | null;
+    };
     substeps: Array<{
       id: string;
       dealId: string;
@@ -321,6 +349,15 @@ type OperationFlowData = {
   };
 };
 
+type ClientModalKey =
+  | 'proposta'
+  | 'operacao'
+  | 'pagamentos'
+  | 'documentos'
+  | 'agenda'
+  | 'atividades'
+  | 'tickets';
+
 const STAGE_LABEL: Record<string, string> = {
   briefing_pendente: 'Briefing pendente',
   pre_prompt: 'Pré-prompt',
@@ -330,6 +367,30 @@ const STAGE_LABEL: Record<string, string> = {
   publicacao: 'Publicação',
   publicado: 'Publicado',
 };
+
+const CLIENT_MODAL_LABEL: Record<ClientModalKey, string> = {
+  proposta: 'Proposta',
+  operacao: 'Operação',
+  pagamentos: 'Pagamentos',
+  documentos: 'Documentos',
+  agenda: 'Agenda',
+  atividades: 'Atividades',
+  tickets: 'Tickets',
+};
+
+const OPERATION_STAGE_QUERY_MAP: Record<string, string> = {
+  briefing_pendente: 'briefing',
+  pre_prompt: 'pre-prompt',
+  template_v1: 'template-v1',
+  ajustes: 'ajustes',
+  aprovacao_cliente: 'aprovacao-cliente',
+  publicacao: 'publicacao',
+  publicado: 'publicado',
+};
+
+const QUERY_STEP_OPERATION_MAP = Object.fromEntries(
+  Object.entries(OPERATION_STAGE_QUERY_MAP).map(([stageCode, queryStep]) => [queryStep, stageCode]),
+) as Record<string, string>;
 
 const TEMPLATE_VARIANT_SHOWCASE: Record<'V1' | 'V2' | 'V3', {
   title: string;
@@ -419,10 +480,43 @@ function sanitizeColor(value?: string) {
   return valid;
 }
 
+function approvalSendErrorMessage(payload: { error?: string; error_code?: string }) {
+  const code = String(payload?.error_code || '').trim();
+  if (code === 'DEAL_NOT_CLIENT') return 'O deal precisa estar em CLIENTE FECHADO para envio de aprovação.';
+  if (code === 'RELEASE_VARIANT_NOT_FOUND') return 'A release/variante selecionada não foi encontrada. Atualize o fluxo e selecione novamente.';
+  if (code === 'REVISION_NOT_FOUND') return 'Não existe revisão de template para a variante selecionada. Gere a variante antes de enviar.';
+  if (code === 'REVISION_VARIANT_MISMATCH') return 'A revisão escolhida não pertence à release/variante informada.';
+  if (code === 'VARIANT_REQUIRED') return 'Selecione a variante (V1, V2 ou V3) antes de enviar.';
+  if (code === 'DEAL_NOT_HOSPEDAGEM') return 'Envio de aprovação é permitido apenas para deals de hospedagem.';
+  if (code === 'DEAL_NOT_FOUND') return 'Deal não encontrado. Atualize a página e tente novamente.';
+  return payload?.error || 'Falha ao enviar link de aprovação';
+}
+
+function normalizeClientModal(value?: string | null): ClientModalKey | null {
+  const modal = String(value || '').trim().toLowerCase();
+  if (modal === 'proposta') return 'proposta';
+  if (modal === 'operacao') return 'operacao';
+  if (modal === 'pagamentos') return 'pagamentos';
+  if (modal === 'documentos') return 'documentos';
+  if (modal === 'agenda') return 'agenda';
+  if (modal === 'atividades') return 'atividades';
+  if (modal === 'tickets') return 'tickets';
+  return null;
+}
+
+function normalizeOperationStageByQueryStep(value?: string | null) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  return QUERY_STEP_OPERATION_MAP[normalized] || (STAGE_LABEL[normalized] ? normalized : null);
+}
+
 export function DealDetail({ dealId, setNotice }: DealDetailProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<DealData | null>(null);
-  const [tab, setTab] = useState('resumo');
+  const [activeModal, setActiveModal] = useState<ClientModalKey | null>(null);
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
   const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
@@ -489,6 +583,21 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   });
   const [approvalSending, setApprovalSending] = useState(false);
   const [updatingSubstepId, setUpdatingSubstepId] = useState<string | null>(null);
+  const [publicationRequestSending, setPublicationRequestSending] = useState(false);
+  const [publicationMonitorSending, setPublicationMonitorSending] = useState(false);
+  const [publicationRequestModalOpen, setPublicationRequestModalOpen] = useState(false);
+  const [publicationRequestFeedback, setPublicationRequestFeedback] = useState<{ type: 'success' | 'danger'; message: string } | null>(null);
+  const [publicationAutoMonitorTried, setPublicationAutoMonitorTried] = useState(false);
+  const [publicationNoteModal, setPublicationNoteModal] = useState<{
+    substepId: string;
+    substepName: string;
+    notes: string;
+  } | null>(null);
+  const [publicationRequestForm, setPublicationRequestForm] = useState({
+    domain: '',
+    message: 'Confirme o domínio final e os dados necessários para concluir a publicação.',
+    dueAt: '',
+  });
 
   const [activityForm, setActivityForm] = useState({ activityType: 'NOTE', content: '' });
   const [agendaForm, setAgendaForm] = useState({ title: '', description: '', dueAt: '' });
@@ -505,6 +614,87 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   });
 
   const canShowClientTabs = useMemo(() => data?.deal.lifecycleStatus === 'CLIENT', [data]);
+
+  function replaceModalQuery(nextModal: ClientModalKey | null, nextStep?: string | null) {
+    const params = new URLSearchParams(searchParams?.toString() || '');
+    if (!nextModal) {
+      params.delete('modal');
+      params.delete('step');
+    } else {
+      params.set('modal', nextModal);
+      if (nextModal === 'operacao' && nextStep) {
+        params.set('step', nextStep);
+      } else {
+        params.delete('step');
+      }
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  function openClientModal(modal: ClientModalKey, options?: { step?: string | null }) {
+    setActiveModal(modal);
+    if (modal === 'operacao' && options?.step) {
+      setOperationStageTab(options.step);
+    }
+    const queryStep = modal === 'operacao'
+      ? OPERATION_STAGE_QUERY_MAP[options?.step || operationStageTab] || OPERATION_STAGE_QUERY_MAP[operationStageTab] || null
+      : null;
+    replaceModalQuery(modal, queryStep);
+  }
+
+  function resetNestedClientOverlays() {
+    setShowBrandModal(false);
+    setShowSectionsModal(false);
+    setShowSeoModal(false);
+    setShowEmailPreview(false);
+    setPreviewModal(null);
+    setDeletingProposalId(null);
+    setPublicationRequestModalOpen(false);
+    setPublicationNoteModal(null);
+  }
+
+  function closeTopMostNestedOverlay() {
+    if (publicationNoteModal) {
+      setPublicationNoteModal(null);
+      return true;
+    }
+    if (publicationRequestModalOpen) {
+      setPublicationRequestModalOpen(false);
+      return true;
+    }
+    if (deletingProposalId) {
+      setDeletingProposalId(null);
+      return true;
+    }
+    if (previewModal) {
+      setPreviewModal(null);
+      return true;
+    }
+    if (showEmailPreview) {
+      setShowEmailPreview(false);
+      return true;
+    }
+    if (showSeoModal) {
+      setShowSeoModal(false);
+      return true;
+    }
+    if (showSectionsModal) {
+      setShowSectionsModal(false);
+      return true;
+    }
+    if (showBrandModal) {
+      setShowBrandModal(false);
+      return true;
+    }
+    return false;
+  }
+
+  function closeClientModal() {
+    setActiveModal(null);
+    resetNestedClientOverlays();
+    replaceModalQuery(null);
+  }
 
   async function loadDeal() {
     setLoading(true);
@@ -540,6 +730,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     setOperationFlow(body);
     setOperationStageTab(body.operation?.activeStageCode || body.operation?.stageTabs?.[0]?.code || 'briefing_pendente');
+    setPublicationRequestForm((prev) => ({
+      ...prev,
+      domain: prev.domain || body.deal?.organizationDomain || '',
+    }));
     if (body.prompt?.latest?.promptText || body.prompt?.latest?.requestedNotes) {
       setPrePromptForm((prev) => ({
         ...prev,
@@ -655,10 +849,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }, [dealId]);
 
   useEffect(() => {
-    if (tab === 'operacao' && canShowClientTabs) {
+    if (activeModal === 'operacao' && canShowClientTabs) {
       loadOperationFlow();
     }
-  }, [tab, canShowClientTabs]);
+  }, [activeModal, canShowClientTabs]);
 
   useEffect(() => {
     const current = variantPrompts[promptVariantTab];
@@ -668,12 +862,69 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }, [promptVariantTab, variantPrompts, prePromptForm.promptText]);
 
   useEffect(() => {
-    if (tab !== 'operacao' || operationStageTab !== 'pre_prompt') return;
+    if (activeModal !== 'operacao' || operationStageTab !== 'pre_prompt') return;
     const hasAny = Boolean(variantPrompts.V1 || variantPrompts.V2 || variantPrompts.V3);
     if (!hasAny) {
       refreshVariantPrompts(false);
     }
-  }, [tab, operationStageTab, templateForm.releaseVersion]);
+  }, [activeModal, operationStageTab, templateForm.releaseVersion]);
+
+  useEffect(() => {
+    const modalFromQuery = normalizeClientModal(searchParams?.get('modal'));
+    if (!modalFromQuery) {
+      if (activeModal !== null) {
+        setActiveModal(null);
+      }
+      return;
+    }
+
+    if ((modalFromQuery === 'operacao' || modalFromQuery === 'pagamentos') && !canShowClientTabs) {
+      if (activeModal !== null) {
+        setActiveModal(null);
+      }
+      return;
+    }
+
+    if (activeModal !== modalFromQuery) {
+      setActiveModal(modalFromQuery);
+    }
+
+    if (modalFromQuery === 'operacao') {
+      const stageFromQuery = normalizeOperationStageByQueryStep(searchParams?.get('step'));
+      if (stageFromQuery && stageFromQuery !== operationStageTab) {
+        setOperationStageTab(stageFromQuery);
+      }
+    }
+  }, [searchParams, canShowClientTabs]);
+
+  useEffect(() => {
+    if (!activeModal) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (closeTopMostNestedOverlay()) {
+          return;
+        }
+        closeClientModal();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    document.body.classList.add('modal-open');
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      document.body.classList.remove('modal-open');
+    };
+  }, [
+    activeModal,
+    publicationNoteModal,
+    publicationRequestModalOpen,
+    deletingProposalId,
+    previewModal,
+    showEmailPreview,
+    showSeoModal,
+    showSectionsModal,
+    showBrandModal,
+  ]);
 
   async function changeDealStage(stageId: string) {
     const res = await fetch(`/api/deals/${dealId}/stage`, {
@@ -703,6 +954,9 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     setNotice('Etapa operacional atualizada.');
     setOperationStageTab(operationStageCode);
+    if (activeModal === 'operacao') {
+      replaceModalQuery('operacao', OPERATION_STAGE_QUERY_MAP[operationStageCode] || null);
+    }
     await loadDeal();
   }
 
@@ -743,10 +997,6 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function approvePrePrompt() {
-    if (hasBlockingAssets) {
-      setNotice(`Aprovação bloqueada. Pendências: ${missingAssets.join(', ')}.`);
-      return;
-    }
     const resolvedVariants = {
       ...variantPrompts,
       [promptVariantTab]: prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || buildConditionalPromptForVariant(promptVariantTab),
@@ -765,13 +1015,31 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     });
     const body = await res.json();
     if (!res.ok) {
+      if (String(body?.error_code || '').toUpperCase() === 'PREPROMPT_REQUIRED_ASSETS_MISSING') {
+        const backendMissingAssets = Array.isArray(body?.missing_assets)
+          ? body.missing_assets.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+          : [];
+        const details = backendMissingAssets.length > 0
+          ? ` Pendências: ${backendMissingAssets.join(', ')}.`
+          : '';
+        setNotice(`${body.error || 'Aprovação bloqueada por assets obrigatórios.'}${details}`);
+        return;
+      }
       setNotice(body.error || 'Falha ao aprovar pré-prompt');
       return;
     }
-    setNotice('Pré-prompt aprovado e operação avançada para Template V1.');
+    if (body?.warnings?.warning_code === 'PREPROMPT_REQUIRED_ASSETS_MISSING') {
+      const warnItems = Array.isArray(body?.warnings?.missing_assets) ? body.warnings.missing_assets.join(', ') : '';
+      setNotice(`Pré-prompt aprovado. Pendências de assets: ${warnItems || 'logo/manual'}.`);
+    } else {
+      setNotice('Pré-prompt aprovado e operação avançada para Template V1.');
+    }
     await loadOperationFlow();
     await loadDeal();
     setOperationStageTab('template_v1');
+    if (activeModal === 'operacao') {
+      replaceModalQuery('operacao', OPERATION_STAGE_QUERY_MAP.template_v1);
+    }
   }
 
   async function requestPrePromptInfo() {
@@ -829,13 +1097,112 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     await loadDeal();
   }
 
+  function openPublicationSubstepNotes(substep: OperationFlowData['publication']['substeps'][number]) {
+    setPublicationNoteModal({
+      substepId: substep.id,
+      substepName: substep.substepName,
+      notes: substep.notes || '',
+    });
+  }
+
+  async function savePublicationSubstepNotes() {
+    if (!publicationNoteModal) return;
+    await updatePublicationSubstep(publicationNoteModal.substepId, { notes: publicationNoteModal.notes });
+    setPublicationNoteModal(null);
+  }
+
+  async function sendPublicationRequest() {
+    const domain = publicationRequestForm.domain.trim();
+    const message = publicationRequestForm.message.trim();
+    if (!domain && !message) {
+      setNotice('Informe o domínio e/ou uma mensagem para solicitar validação da publicação.');
+      return;
+    }
+    setPublicationRequestFeedback(null);
+    setPublicationRequestSending(true);
+    const res = await fetch(`/api/deals/${dealId}/publication/request-info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        domain,
+        subject: '[KoddaHub] Aprovação de domínio/publicação',
+        message,
+        dueAt: publicationRequestForm.dueAt || null,
+        requestItems: domain ? [`Domínio para publicação: ${domain}`] : [],
+      }),
+    });
+    const body = await res.json();
+    setPublicationRequestSending(false);
+    if (!res.ok) {
+      const messageError = body.error || 'Falha ao enviar solicitação de publicação';
+      setPublicationRequestFeedback({ type: 'danger', message: messageError });
+      setNotice(messageError);
+      return;
+    }
+    setPublicationRequestFeedback({
+      type: 'success',
+      message: 'Solicitação enviada ao cliente com sucesso. Aguardando confirmação no portal.',
+    });
+    setPublicationRequestModalOpen(false);
+    setNotice('Solicitação de domínio/publicação enviada ao cliente.');
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
+  async function startPublicationMonitor() {
+    const domain = publicationRequestForm.domain.trim() || operationFlow?.publication?.domainApproval?.domain || '';
+    if (!domain) {
+      setNotice('Informe o domínio antes de iniciar o monitoramento.');
+      return;
+    }
+    setPublicationMonitorSending(true);
+    const res = await fetch(`/api/deals/${dealId}/publication/monitor/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+    });
+    const body = await res.json();
+    setPublicationMonitorSending(false);
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao iniciar monitoramento de domínio');
+      return;
+    }
+    setNotice(`Monitoramento iniciado para ${body.domain}.`);
+    await loadOperationFlow();
+    await loadDeal();
+  }
+
   async function sendTemplateForApproval(
     templateRevisionId?: string,
     releaseVersionOverride?: number | null,
     variantCodeOverride?: string | null,
   ) {
-    if (!templateRevisionId && !templateForm.releaseVersion) {
+    const selectedReleaseVersion = releaseVersionOverride ?? (templateForm.releaseVersion ? Number(templateForm.releaseVersion) : null);
+    const selectedVariantCode = String(variantCodeOverride || templateForm.variantCode || '').toUpperCase();
+    if (!templateRevisionId && (!selectedReleaseVersion || !selectedVariantCode)) {
       setNotice('Selecione uma release e variante antes de enviar aprovação.');
+      return;
+    }
+
+    if (!['V1', 'V2', 'V3'].includes(selectedVariantCode)) {
+      setNotice('Variante inválida. Selecione V1, V2 ou V3.');
+      return;
+    }
+
+    if (!templateRevisionId && selectedReleaseVersion) {
+      const selectedRelease = releaseOptions.find((item) => item.version === selectedReleaseVersion) || null;
+      if (!selectedRelease) {
+        setNotice('Release selecionada não está disponível no fluxo atual. Atualize os dados e tente novamente.');
+        return;
+      }
+      const hasVariant = (selectedRelease.variants || []).some((item) => item.variantCode === selectedVariantCode);
+      if (!hasVariant) {
+        setNotice(`A release v${selectedReleaseVersion} não possui variante ${selectedVariantCode} pronta para aprovação.`);
+        return;
+      }
+    }
+
+    if (approvalSending) {
       return;
     }
     setApprovalSending(true);
@@ -844,14 +1211,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         templateRevisionId: templateRevisionId || null,
-        releaseVersion: releaseVersionOverride ?? (templateForm.releaseVersion ? Number(templateForm.releaseVersion) : null),
-        variantCode: variantCodeOverride || templateForm.variantCode || 'V1',
+        releaseVersion: selectedReleaseVersion,
+        variantCode: selectedVariantCode || 'V1',
       }),
     });
     const body = await res.json();
     setApprovalSending(false);
     if (!res.ok) {
-      setNotice(body.error || 'Falha ao enviar link de aprovação');
+      setNotice(approvalSendErrorMessage(body || {}));
       return;
     }
     setNotice('Link de aprovação enviado para o cliente.');
@@ -972,7 +1339,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       features: features.join(', '),
       notes: String(snapshot.notes || ''),
     });
-    setTab('proposta');
+    openClientModal('proposta');
     setNotice('Modo edição de proposta habilitado.');
   }
 
@@ -991,6 +1358,31 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     setNotice('Proposta excluída com sucesso.');
     await loadDeal();
   }
+
+  const publicationDomainApprovalStatus = String(operationFlow?.publication?.domainApproval?.status || '').toUpperCase();
+  const publicationDomainConfirmed = publicationDomainApprovalStatus === 'RECEIVED';
+  const publicationDomainValue =
+    publicationRequestForm.domain
+    || operationFlow?.publication?.domainApproval?.domain
+    || data?.organization?.domain
+    || '';
+  const publicationHasCheckForDomain = Boolean(
+    publicationDomainValue
+    && (operationFlow?.publication?.checks || []).some((check) => String(check.targetDomain || '').toLowerCase() === publicationDomainValue.toLowerCase()),
+  );
+
+  useEffect(() => {
+    if (!canShowClientTabs) return;
+    if (!publicationDomainConfirmed || publicationHasCheckForDomain || publicationAutoMonitorTried) return;
+    setPublicationAutoMonitorTried(true);
+    startPublicationMonitor();
+  }, [canShowClientTabs, publicationDomainConfirmed, publicationHasCheckForDomain, publicationAutoMonitorTried]);
+
+  useEffect(() => {
+    if (!publicationDomainConfirmed) {
+      setPublicationAutoMonitorTried(false);
+    }
+  }, [publicationDomainConfirmed]);
 
   if (loading) {
     return <section className="crm-v2-panel"><p>Carregando área do cliente/lead...</p></section>;
@@ -1020,6 +1412,55 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     selectedTemplateCard && selectedRelease
       ? selectedRelease.variants.find((item) => item.variantCode === selectedTemplateCard) || null
       : null;
+  const promptRequests = operationFlow?.prompt?.requests || [];
+  const modalActions: Array<{ key: ClientModalKey; label: string; icon: string; hidden?: boolean }> = [
+    { key: 'proposta', label: 'Proposta', icon: 'bi-file-earmark-text' },
+    { key: 'operacao', label: 'Operação', icon: 'bi-gear-wide-connected', hidden: !canShowClientTabs },
+    { key: 'pagamentos', label: 'Pagamentos', icon: 'bi-cash-stack', hidden: !canShowClientTabs },
+    { key: 'documentos', label: 'Documentos', icon: 'bi-folder2-open' },
+    { key: 'agenda', label: 'Agenda', icon: 'bi-calendar3' },
+    { key: 'atividades', label: 'Atividades', icon: 'bi-journal-text' },
+    { key: 'tickets', label: 'Tickets', icon: 'bi-ticket-detailed' },
+  ];
+  const activeOperationStageCode = operationFlow?.operation?.activeStageCode || operationTabs[0]?.code || null;
+  const completedOperationStageCodes = new Set(
+    (operationFlow?.operation?.history || [])
+      .filter((item) => String(item.status || '').toUpperCase() === 'COMPLETED')
+      .map((item) => item.stageCode),
+  );
+  const approvalStatus = String(operationFlow?.approval?.latest?.status || '').toUpperCase();
+  const promptStatus = String(operationFlow?.prompt?.latest?.status || '').toUpperCase();
+  const hasPromptEvidence = Boolean(
+    operationFlow?.prompt?.latest?.id
+    || String(operationFlow?.prompt?.latest?.promptText || '').trim()
+    || String(operationFlow?.prompt?.promptSource || '').toLowerCase() === 'filesystem',
+  );
+  const inferredCompletedOperationStageCodes = new Set(completedOperationStageCodes);
+  if (hasPromptEvidence) inferredCompletedOperationStageCodes.add('briefing_pendente');
+  if (promptStatus === 'APPROVED') inferredCompletedOperationStageCodes.add('pre_prompt');
+  if (operationFlow?.template?.latest) inferredCompletedOperationStageCodes.add('template_v1');
+  if (approvalStatus === 'APPROVED') inferredCompletedOperationStageCodes.add('aprovacao_cliente');
+  if (publicationReady) inferredCompletedOperationStageCodes.add('publicacao');
+  const doneOperationCount = operationTabs.filter((item) => inferredCompletedOperationStageCodes.has(item.code)).length;
+  const operationProgressPercent = operationTabs.length > 0
+    ? Math.max(0, Math.min(100, Math.round((doneOperationCount / operationTabs.length) * 100)))
+    : 0;
+  const currentOperationStageIndex = operationTabs.findIndex((item) => item.code === operationStageTab);
+  const previousOperationStage = currentOperationStageIndex > 0 ? operationTabs[currentOperationStageIndex - 1] : null;
+  const nextOperationStage =
+    currentOperationStageIndex >= 0 && currentOperationStageIndex < (operationTabs.length - 1)
+      ? operationTabs[currentOperationStageIndex + 1]
+      : null;
+  const briefingCompleted = inferredCompletedOperationStageCodes.has('briefing_pendente')
+    || operationTabs.findIndex((item) => item.code === (activeOperationStageCode || '')) > 0;
+  const canSaveOperationStage = operationStageTab === 'pre_prompt';
+  const canAdvanceOperationStage = Boolean(nextOperationStage) && (() => {
+    if (operationStageTab === 'pre_prompt') return promptStatus === 'APPROVED';
+    if (operationStageTab === 'aprovacao_cliente') return approvalStatus === 'APPROVED';
+    if (operationStageTab === 'publicacao') return publicationReady;
+    return true;
+  })();
+  const canReturnOperationStage = Boolean(previousOperationStage);
 
   function queueAssetRequest(item: string) {
     setPrePromptForm((prev) => {
@@ -1057,6 +1498,42 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     if (!name) return;
     setSiteSections((prev) => [...prev, { id: `${name}-${Date.now()}`, name, active: true }]);
     setNewSectionName('');
+  }
+
+  async function saveCurrentOperationStep() {
+    if (operationStageTab === 'pre_prompt') {
+      await savePrePromptDraft();
+      return;
+    }
+    setNotice('Não há alterações pendentes para salvar nesta etapa.');
+  }
+
+  async function goToPreviousOperationStep() {
+    if (!previousOperationStage) return;
+    await moveOperationStage(previousOperationStage.code);
+    setOperationStageTab(previousOperationStage.code);
+  }
+
+  async function goToNextOperationStep() {
+    if (!nextOperationStage) return;
+    if (!canAdvanceOperationStage) {
+      if (operationStageTab === 'pre_prompt') {
+        setNotice('A etapa Pré-prompt só pode avançar após aprovação.');
+        return;
+      }
+      if (operationStageTab === 'aprovacao_cliente') {
+        setNotice('Aguarde o cliente aprovar para avançar para Publicação.');
+        return;
+      }
+      if (operationStageTab === 'publicacao') {
+        setNotice('Conclua o checklist obrigatório de publicação antes de avançar.');
+        return;
+      }
+      setNotice('Não é possível avançar esta etapa no estado atual.');
+      return;
+    }
+    await moveOperationStage(nextOperationStage.code);
+    setOperationStageTab(nextOperationStage.code);
   }
 
   function buildPromptJsonFromEditor(variantPromptsOverride?: Record<'V1' | 'V2' | 'V3', string>) {
@@ -1373,43 +1850,64 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         </div>
       </header>
 
-      <nav className="deal-tabs">
-        <button className={tab === 'resumo' ? 'active' : ''} onClick={() => setTab('resumo')}>Resumo</button>
-        <button className={tab === 'proposta' ? 'active' : ''} onClick={() => setTab('proposta')}>Proposta</button>
-        {canShowClientTabs ? <button className={tab === 'operacao' ? 'active' : ''} onClick={() => setTab('operacao')}>Operação</button> : null}
-        {canShowClientTabs ? <button className={tab === 'pagamentos' ? 'active' : ''} onClick={() => setTab('pagamentos')}>Pagamentos</button> : null}
-        <button className={tab === 'documentos' ? 'active' : ''} onClick={() => setTab('documentos')}>Documentos</button>
-        <button className={tab === 'agenda' ? 'active' : ''} onClick={() => setTab('agenda')}>Agenda</button>
-        <button className={tab === 'atividades' ? 'active' : ''} onClick={() => setTab('atividades')}>Atividades</button>
-        <button className={tab === 'tickets' ? 'active' : ''} onClick={() => setTab('tickets')}>Tickets</button>
-      </nav>
-
-      {tab === 'resumo' ? (
-        <div className="deal-tab-panel">
-          <div className="deal-summary-grid">
-            <div><label>Tipo</label><strong>{data.deal.dealType}</strong></div>
-            <div><label>Categoria</label><strong>{data.deal.category}</strong></div>
-            <div><label>Plano</label><strong>{data.deal.planCode || '-'}</strong></div>
-            <div><label>Produto</label><strong>{data.deal.productCode || data.deal.intent || '-'}</strong></div>
-            <div><label>Valor</label><strong>{currency(data.deal.valueCents)}</strong></div>
-            <div><label>Status ciclo</label><strong>{data.deal.lifecycleStatus}</strong></div>
-            <div><label>Criado em</label><strong>{dateTime(data.deal.createdAt)}</strong></div>
-            <div><label>Atualizado em</label><strong>{dateTime(data.deal.updatedAt)}</strong></div>
-          </div>
-          {data.organization ? (
+      <div className="crm-cliente-page">
+        <div className="card mb-3">
+          <div className="card-body">
+            <h4 className="h6 mb-3">Resumo</h4>
             <div className="deal-summary-grid">
-              <div><label>Empresa</label><strong>{data.organization.legalName}</strong></div>
-              <div><label>E-mail cobrança</label><strong>{data.organization.billingEmail}</strong></div>
-              <div><label>WhatsApp</label><strong>{data.organization.whatsapp || '-'}</strong></div>
-              <div><label>Domínio</label><strong>{data.organization.domain || '-'}</strong></div>
-              <div><label>CPF/CNPJ</label><strong>{data.organization.cpfCnpj}</strong></div>
+              <div><label>Tipo</label><strong>{data.deal.dealType}</strong></div>
+              <div><label>Categoria</label><strong>{data.deal.category}</strong></div>
+              <div><label>Plano</label><strong>{data.deal.planCode || '-'}</strong></div>
+              <div><label>Produto</label><strong>{data.deal.productCode || data.deal.intent || '-'}</strong></div>
+              <div><label>Valor</label><strong>{currency(data.deal.valueCents)}</strong></div>
+              <div><label>Status ciclo</label><strong>{data.deal.lifecycleStatus}</strong></div>
+              <div><label>Criado em</label><strong>{dateTime(data.deal.createdAt)}</strong></div>
+              <div><label>Atualizado em</label><strong>{dateTime(data.deal.updatedAt)}</strong></div>
             </div>
-          ) : null}
+            {data.organization ? (
+              <div className="deal-summary-grid mt-3">
+                <div><label>Empresa</label><strong>{data.organization.legalName}</strong></div>
+                <div><label>E-mail cobrança</label><strong>{data.organization.billingEmail}</strong></div>
+                <div><label>WhatsApp</label><strong>{data.organization.whatsapp || '-'}</strong></div>
+                <div><label>Domínio</label><strong>{data.organization.domain || '-'}</strong></div>
+                <div><label>CPF/CNPJ</label><strong>{data.organization.cpfCnpj}</strong></div>
+              </div>
+            ) : null}
+          </div>
         </div>
-      ) : null}
 
-      {tab === 'proposta' ? (
-        <div className="deal-tab-panel proposal-tab-panel">
+        <div className="card">
+          <div className="card-body">
+            <h4 className="h6 mb-3">Ações da área do cliente</h4>
+            <div className="d-flex flex-wrap gap-2">
+              {modalActions
+                .filter((action) => !action.hidden)
+                .map((action) => (
+                  <button
+                    key={action.key}
+                    type="button"
+                    className="btn btn-outline-primary btn-sm"
+                    aria-label={`Abrir ${action.label}`}
+                    onClick={() => openClientModal(action.key)}
+                  >
+                    <i className={`bi ${action.icon} me-2`} aria-hidden="true" />
+                    {action.label}
+                  </button>
+                ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {activeModal === 'proposta' ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="propostaModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="propostaModalTitle">{CLIENT_MODAL_LABEL.proposta}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Proposta" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel proposal-tab-panel">
           <form className="stack-form" onSubmit={generateProposal}>
             <label>Título</label>
             <input value={proposalForm.title} onChange={(e) => setProposalForm((p) => ({ ...p, title: e.target.value }))} required />
@@ -1518,25 +2016,77 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               </tbody>
             </table>
           </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 
-      {tab === 'operacao' && canShowClientTabs ? (
-        <div className="deal-tab-panel deal-operation-panel">
+      {activeModal === 'operacao' && canShowClientTabs ? (
+        <div className="modal fade show d-block crm-operacao-modal" role="dialog" aria-modal="true" aria-labelledby="operacaoModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header align-items-start">
+                <div>
+                  <h5 className="modal-title" id="operacaoModalTitle">Operação do Site</h5>
+                  <p className="small text-body-secondary mb-0">
+                    {data.organization?.legalName || data.deal.contactName || data.deal.title} • {data.deal.planCode || data.deal.productCode || '-'} • Etapa atual: {STAGE_LABEL[activeOperationStageCode || ''] || '-'}
+                  </p>
+                </div>
+                <div className="d-flex align-items-center gap-2">
+                  {data.organization?.domain ? (
+                    <a
+                      className="btn btn-outline-primary btn-sm"
+                      href={`https://${data.organization.domain}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Ver portal do cliente
+                    </a>
+                  ) : null}
+                  <button type="button" className="btn-close" aria-label="Fechar modal de Operação" autoFocus onClick={closeClientModal} />
+                </div>
+              </div>
+              <div className="modal-body deal-tab-panel deal-operation-panel">
+          <div className="operation-progress-block mb-3">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <small className="text-body-secondary">{doneOperationCount} de {operationTabs.length || 7} concluídas</small>
+              <small className="text-body-secondary">{operationProgressPercent}%</small>
+            </div>
+            <div className="progress" role="progressbar" aria-label="Progresso da operação do site" aria-valuemin={0} aria-valuemax={100} aria-valuenow={operationProgressPercent}>
+              <div className="progress-bar" style={{ width: `${operationProgressPercent}%` }} />
+            </div>
+          </div>
           {data.deal.dealType !== 'HOSPEDAGEM' ? (
             <p>Fluxo por sub-abas desta versão disponível somente para hospedagem.</p>
           ) : (
             <div className="operation-stage-layout">
-              <nav className="operation-stage-tabs">
+              <nav className="nav d-flex flex-nowrap flex-lg-wrap overflow-auto gap-2 mb-3 operation-stage-nav" aria-label="Etapas da operação">
                 {operationTabs.map((op) => (
                   <button
                     key={op.code}
                     type="button"
-                    className={operationStageTab === op.code ? 'active' : ''}
-                    onClick={() => setOperationStageTab(op.code)}
+                    className={`btn btn-sm operation-stage-btn ${
+                      operationStageTab === op.code
+                        ? ((op.code === 'briefing_pendente' || (op.code === 'aprovacao_cliente' && approvalStatus === 'PENDING'))
+                          ? 'btn-warning'
+                          : 'btn-primary')
+                        : (inferredCompletedOperationStageCodes.has(op.code) ? 'btn-success' : 'btn-outline-secondary')
+                    }`}
+                    onClick={() => {
+                      setOperationStageTab(op.code);
+                      replaceModalQuery('operacao', OPERATION_STAGE_QUERY_MAP[op.code] || null);
+                    }}
                     title={STAGE_LABEL[op.code] || op.name}
+                    aria-current={operationStageTab === op.code ? 'step' : undefined}
                   >
-                    {STAGE_LABEL[op.code] || op.name}
+                    <span className="me-1">{STAGE_LABEL[op.code] || op.name}</span>
+                    <span className={`badge ${inferredCompletedOperationStageCodes.has(op.code) ? 'text-bg-success' : (operationStageTab === op.code ? 'text-bg-primary' : 'text-bg-secondary')}`}>
+                      {inferredCompletedOperationStageCodes.has(op.code) ? 'done' : (operationStageTab === op.code ? 'active' : 'pending')}
+                    </span>
                   </button>
                 ))}
               </nav>
@@ -1545,10 +2095,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                 <div className="operation-card">
                   <div className="operation-card-head">
                     <h4>Briefing pendente</h4>
-                    <span className="status-chip atrasado">Aguardando cliente</span>
+                    <span className={`status-chip ${briefingCompleted ? 'ativo' : 'atrasado'}`}>
+                      {briefingCompleted ? 'Concluído' : 'Aguardando cliente'}
+                    </span>
                   </div>
                   <p className="muted">
-                    Nesta etapa o cliente precisa preencher o briefing no portal. O histórico completo desta operação fica na aba Atividades.
+                    {briefingCompleted
+                      ? 'Briefing identificado com dados persistidos (portal/prompt). Você pode avançar ou retornar a etapa quando necessário.'
+                      : 'Nesta etapa o cliente precisa preencher o briefing no portal. O histórico completo desta operação fica na aba Atividades.'}
                   </p>
                   <div className="operation-actions">
                     <button type="button" className="secondary-btn" onClick={() => moveOperationStage('pre_prompt')}>
@@ -1589,7 +2143,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       <button type="button" className="secondary-btn" onClick={copyActivePrompt}>
                         <i className="bi bi-clipboard" aria-hidden="true" /> Copiar prompt
                       </button>
-                      <button type="button" className="primary-btn" onClick={approvePrePrompt} disabled={hasBlockingAssets}>
+                      <button type="button" className="primary-btn" onClick={approvePrePrompt}>
                         <i className="bi bi-check2-circle" aria-hidden="true" /> Aprovar pré-prompt
                       </button>
                     </div>
@@ -1602,6 +2156,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     {missingAssets.length > 0 ? (
                       <small className="muted">
                         Pendências de assets: {missingAssets.join(', ')}.
+                      </small>
+                    ) : null}
+                    {operationStageTab === 'pre_prompt' && promptStatus !== 'APPROVED' ? (
+                      <small className="muted">
+                        O botão "Avançar etapa" será liberado após a aprovação do pré-prompt.
                       </small>
                     ) : null}
                   </div>
@@ -1723,6 +2282,28 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                             <i className="bi bi-send" aria-hidden="true" /> Enviar solicitação
                           </button>
                         </div>
+                        {promptRequests.length > 0 ? (
+                          <div className="mt-3">
+                            <h6 className="mb-2">Solicitações recentes</h6>
+                            <ul className="list-group list-group-flush">
+                              {promptRequests.slice(0, 5).map((request) => (
+                                <li key={request.id} className="list-group-item px-0">
+                                  <div className="d-flex justify-content-between align-items-start gap-2">
+                                    <div>
+                                      <strong>{request.subject}</strong>
+                                      <div className="small text-body-secondary">
+                                        {request.requestItems.length > 0 ? request.requestItems.join(', ') : request.message}
+                                      </div>
+                                    </div>
+                                    <span className={`badge ${String(request.status || '').toUpperCase() === 'RECEIVED' ? 'text-bg-success' : 'text-bg-secondary'}`}>
+                                      {String(request.status || '').toUpperCase() === 'RECEIVED' ? 'Recebido' : 'Enviado'}
+                                    </span>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                       </section>
 
                       <section className="preprompt-block">
@@ -1922,6 +2503,9 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       </select>
                     </div>
                   </div>
+                  {releaseOptions.length === 0 ? (
+                    <p className="muted">Nenhuma release ativa com variante disponível. Gere o template e selecione uma variante antes de enviar aprovação.</p>
+                  ) : null}
                   <div className="operation-meta-grid">
                     <div>
                       <label>Status aprovação</label>
@@ -1945,7 +2529,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                         templateForm.releaseVersion ? Number(templateForm.releaseVersion) : null,
                         templateForm.variantCode,
                       )}
-                      disabled={approvalSending}
+                      disabled={approvalSending || releaseOptions.length === 0}
                     >
                       {approvalSending ? 'Enviando...' : 'Enviar/Reenviar para aprovação'}
                     </button>
@@ -1959,6 +2543,76 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               {operationStageTab === 'publicacao' ? (
                 <div className="operation-card">
                   <p className="muted">Checklist de sub-etapas fixas para publicação. Após concluir obrigatórias, o monitor estrito valida e publica automaticamente.</p>
+                  {publicationRequestFeedback ? (
+                    <div className={`alert ${publicationRequestFeedback.type === 'success' ? 'alert-success' : 'alert-danger'} mb-2`} role="status">
+                      {publicationRequestFeedback.message}
+                    </div>
+                  ) : null}
+                  <div className="publication-request-grid">
+                    <div>
+                      <label>Domínio em aprovação</label>
+                      <strong>{publicationDomainValue || '-'}</strong>
+                    </div>
+                    <div>
+                      <label>Status cliente</label>
+                      <strong className={publicationDomainConfirmed ? 'text-success' : 'text-warning'}>
+                        {publicationDomainConfirmed ? 'Confirmado no portal' : 'Aguardando confirmação'}
+                      </strong>
+                    </div>
+                    <div>
+                      <label>Solicitado em</label>
+                      <strong>{dateTime(operationFlow?.publication?.domainApproval?.requestedAt || null)}</strong>
+                    </div>
+                    <div>
+                      <label>Confirmado em</label>
+                      <strong>{dateTime(operationFlow?.publication?.domainApproval?.receivedAt || null)}</strong>
+                    </div>
+                    <div className="publication-request-actions">
+                      <button
+                        type="button"
+                        className="btn btn-outline-primary btn-sm"
+                        onClick={() => setPublicationRequestModalOpen(true)}
+                      >
+                        Solicitar aprovação do domínio
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={startPublicationMonitor}
+                        disabled={publicationMonitorSending || !publicationDomainValue}
+                      >
+                        {publicationMonitorSending ? 'Iniciando monitor...' : 'Iniciar monitoramento do domínio'}
+                      </button>
+                    </div>
+                  </div>
+                  {(operationFlow?.publication?.requests || []).length > 0 ? (
+                    <div className="table-wrap publication-history-wrap" style={{ marginTop: 12 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Solicitação</th>
+                            <th>Status</th>
+                            <th>Criada em</th>
+                            <th>Atualizada em</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(operationFlow?.publication?.requests || []).slice(0, 5).map((request) => (
+                            <tr key={request.id}>
+                              <td>{request.subject}</td>
+                              <td>
+                                <span className={`badge ${String(request.status || '').toUpperCase() === 'RECEIVED' ? 'text-bg-success' : 'text-bg-secondary'}`}>
+                                  {String(request.status || '').toUpperCase() === 'RECEIVED' ? 'Recebido' : 'Enviado'}
+                                </span>
+                              </td>
+                              <td>{dateTime(request.createdAt)}</td>
+                              <td>{dateTime(request.updatedAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
                   <div className="operation-meta-grid">
                     <div>
                       <label>Obrigatórias concluídas</label>
@@ -1973,7 +2627,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       <strong>{publicationReady ? 'Publicando (monitor ativo)' : 'Checklist em andamento'}</strong>
                     </div>
                   </div>
-                  <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <div className="table-wrap publication-table" style={{ marginTop: 12 }}>
                     <table>
                       <thead>
                         <tr>
@@ -1995,7 +2649,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                               <div className="row-actions proposal-row-actions">
                                 <button
                                   type="button"
-                                  className="secondary-btn"
+                                  className="btn btn-outline-secondary btn-sm"
                                   onClick={() => updatePublicationSubstep(substep.id, { status: 'IN_PROGRESS' })}
                                   disabled={updatingSubstepId === substep.id}
                                 >
@@ -2003,11 +2657,27 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                                 </button>
                                 <button
                                   type="button"
-                                  className="primary-btn"
+                                  className="btn btn-success btn-sm"
                                   onClick={() => updatePublicationSubstep(substep.id, { status: 'COMPLETED' })}
                                   disabled={updatingSubstepId === substep.id}
                                 >
                                   Concluir
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-warning btn-sm"
+                                  onClick={() => updatePublicationSubstep(substep.id, { status: 'PENDING' })}
+                                  disabled={updatingSubstepId === substep.id}
+                                >
+                                  Desmarcar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-primary btn-sm"
+                                  onClick={() => openPublicationSubstepNotes(substep)}
+                                  disabled={updatingSubstepId === substep.id}
+                                >
+                                  Observação
                                 </button>
                               </div>
                             </td>
@@ -2062,11 +2732,49 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               ) : null}
             </div>
           )}
+              </div>
+              <div className="modal-footer justify-content-between">
+                <div className="d-flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary"
+                    onClick={goToPreviousOperationStep}
+                    disabled={!canReturnOperationStage}
+                  >
+                    Voltar etapa
+                  </button>
+                  {canSaveOperationStage ? (
+                    <button type="button" className="btn btn-outline-primary" onClick={saveCurrentOperationStep}>
+                      Salvar
+                    </button>
+                  ) : null}
+                </div>
+                <div className="d-flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={goToNextOperationStep}
+                    disabled={!canAdvanceOperationStage}
+                  >
+                    Avançar etapa
+                  </button>
+                  <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
 
-      {tab === 'pagamentos' && canShowClientTabs ? (
-        <div className="deal-tab-panel">
+      {activeModal === 'pagamentos' && canShowClientTabs ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="pagamentosModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="pagamentosModalTitle">{CLIENT_MODAL_LABEL.pagamentos}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Pagamentos" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel">
           <div className="table-wrap">
             <table>
               <thead>
@@ -2091,152 +2799,293 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               </tbody>
             </table>
           </div>
-        </div>
-      ) : null}
-
-      {tab === 'documentos' ? (
-        <div className="deal-tab-panel">
-          <form className="stack-form" onSubmit={uploadDocument}>
-            <label>Arquivo</label>
-            <input name="file" type="file" required />
-            <label>Tipo de documento</label>
-            <input name="docType" placeholder="Ex: Contrato, briefing, anexo técnico" />
-            <button type="submit" className="primary-btn">Anexar documento</button>
-          </form>
-
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Arquivo</th>
-                  <th>Tipo</th>
-                  <th>Tamanho</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.documents.map((doc) => (
-                  <tr key={doc.id}>
-                    <td>{doc.fileName}</td>
-                    <td>{doc.mimeType || '-'}</td>
-                    <td>{doc.sizeBytes || '-'}</td>
-                    <td>{dateTime(doc.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
 
-      {tab === 'agenda' ? (
-        <div className="deal-tab-panel">
-          <form className="stack-form" onSubmit={createAgenda}>
-            <label>Título</label>
-            <input required value={agendaForm.title} onChange={(e) => setAgendaForm((p) => ({ ...p, title: e.target.value }))} />
-            <label>Descrição</label>
-            <textarea value={agendaForm.description} onChange={(e) => setAgendaForm((p) => ({ ...p, description: e.target.value }))} />
-            <label>Data/Hora</label>
-            <input type="datetime-local" required value={agendaForm.dueAt} onChange={(e) => setAgendaForm((p) => ({ ...p, dueAt: e.target.value }))} />
-            <button type="submit" className="primary-btn">Salvar agenda</button>
-          </form>
+      {activeModal === 'documentos' ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="documentosModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="documentosModalTitle">{CLIENT_MODAL_LABEL.documentos}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Documentos" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel">
+                <form className="stack-form" onSubmit={uploadDocument}>
+                  <label>Arquivo</label>
+                  <input name="file" type="file" required />
+                  <label>Tipo de documento</label>
+                  <input name="docType" placeholder="Ex: Contrato, briefing, anexo técnico" />
+                  <button type="submit" className="primary-btn">Anexar documento</button>
+                </form>
 
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Título</th>
-                  <th>Status</th>
-                  <th>Vencimento</th>
-                  <th>Criado em</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.agenda.map((ag) => (
-                  <tr key={ag.id}>
-                    <td>{ag.title}</td>
-                    <td>{ag.status}</td>
-                    <td>{dateTime(ag.dueAt)}</td>
-                    <td>{dateTime(ag.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Arquivo</th>
+                        <th>Tipo</th>
+                        <th>Tamanho</th>
+                        <th>Data</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.documents.map((doc) => (
+                        <tr key={doc.id}>
+                          <td>{doc.fileName}</td>
+                          <td>{doc.mimeType || '-'}</td>
+                          <td>{doc.sizeBytes || '-'}</td>
+                          <td>{dateTime(doc.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
 
-      {tab === 'atividades' ? (
-        <div className="deal-tab-panel">
-          <form className="stack-form" onSubmit={createActivity}>
-            <label>Tipo de atividade</label>
-            <select value={activityForm.activityType} onChange={(e) => setActivityForm((p) => ({ ...p, activityType: e.target.value }))}>
-              <option value="NOTE">Nota</option>
-              <option value="CALL">Ligação</option>
-              <option value="EMAIL">E-mail</option>
-              <option value="WHATSAPP">WhatsApp</option>
-              <option value="MEETING">Reunião</option>
-            </select>
-            <label>Descrição</label>
-            <textarea required value={activityForm.content} onChange={(e) => setActivityForm((p) => ({ ...p, content: e.target.value }))} />
-            <button type="submit" className="primary-btn">Registrar atividade</button>
-          </form>
+      {activeModal === 'agenda' ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="agendaModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="agendaModalTitle">{CLIENT_MODAL_LABEL.agenda}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Agenda" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel">
+                <form className="stack-form" onSubmit={createAgenda}>
+                  <label>Título</label>
+                  <input required value={agendaForm.title} onChange={(e) => setAgendaForm((p) => ({ ...p, title: e.target.value }))} />
+                  <label>Descrição</label>
+                  <textarea value={agendaForm.description} onChange={(e) => setAgendaForm((p) => ({ ...p, description: e.target.value }))} />
+                  <label>Data/Hora</label>
+                  <input type="datetime-local" required value={agendaForm.dueAt} onChange={(e) => setAgendaForm((p) => ({ ...p, dueAt: e.target.value }))} />
+                  <button type="submit" className="primary-btn">Salvar agenda</button>
+                </form>
 
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Tipo</th>
-                  <th>Conteúdo</th>
-                  <th>Criado por</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.activities.map((activity) => (
-                  <tr key={activity.id}>
-                    <td>{activity.activityType}</td>
-                    <td>{activity.content}</td>
-                    <td>{activity.createdBy || 'ADMIN'}</td>
-                    <td>{dateTime(activity.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Título</th>
+                        <th>Status</th>
+                        <th>Vencimento</th>
+                        <th>Criado em</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.agenda.map((ag) => (
+                        <tr key={ag.id}>
+                          <td>{ag.title}</td>
+                          <td>{ag.status}</td>
+                          <td>{dateTime(ag.dueAt)}</td>
+                          <td>{dateTime(ag.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
 
-      {tab === 'tickets' ? (
-        <div className="deal-tab-panel">
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Tipo</th>
-                  <th>Assunto</th>
-                  <th>Status</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.tickets.map((ticket) => (
-                  <tr key={ticket.id}>
-                    <td>{ticket.ticketType}</td>
-                    <td>{ticket.subject}</td>
-                    <td>{ticket.status}</td>
-                    <td>{dateTime(ticket.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {activeModal === 'atividades' ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="atividadesModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="atividadesModalTitle">{CLIENT_MODAL_LABEL.atividades}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Atividades" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel">
+                <form className="stack-form" onSubmit={createActivity}>
+                  <label>Tipo de atividade</label>
+                  <select value={activityForm.activityType} onChange={(e) => setActivityForm((p) => ({ ...p, activityType: e.target.value }))}>
+                    <option value="NOTE">Nota</option>
+                    <option value="CALL">Ligação</option>
+                    <option value="EMAIL">E-mail</option>
+                    <option value="WHATSAPP">WhatsApp</option>
+                    <option value="MEETING">Reunião</option>
+                  </select>
+                  <label>Descrição</label>
+                  <textarea required value={activityForm.content} onChange={(e) => setActivityForm((p) => ({ ...p, content: e.target.value }))} />
+                  <button type="submit" className="primary-btn">Registrar atividade</button>
+                </form>
+
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Tipo</th>
+                        <th>Conteúdo</th>
+                        <th>Criado por</th>
+                        <th>Data</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.activities.map((activity) => (
+                        <tr key={activity.id}>
+                          <td>{activity.activityType}</td>
+                          <td>{activity.content}</td>
+                          <td>{activity.createdBy || 'ADMIN'}</td>
+                          <td>{dateTime(activity.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeModal === 'tickets' ? (
+        <div className="modal fade show d-block" role="dialog" aria-modal="true" aria-labelledby="ticketsModalTitle" tabIndex={-1}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title" id="ticketsModalTitle">{CLIENT_MODAL_LABEL.tickets}</h5>
+                <button type="button" className="btn-close" aria-label="Fechar modal de Tickets" autoFocus onClick={closeClientModal} />
+              </div>
+              <div className="modal-body deal-tab-panel">
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Tipo</th>
+                        <th>Assunto</th>
+                        <th>Status</th>
+                        <th>Data</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.tickets.map((ticket) => (
+                        <tr key={ticket.id}>
+                          <td>{ticket.ticketType}</td>
+                          <td>{ticket.subject}</td>
+                          <td>{ticket.status}</td>
+                          <td>{dateTime(ticket.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {publicationRequestModalOpen ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Solicitar aprovação de domínio">
+          <div className="crm-v2-modal-backdrop" />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Solicitar aprovação do domínio</h3>
+              <button type="button" onClick={() => setPublicationRequestModalOpen(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <div className="publication-request-grid">
+              <div>
+                <label>Domínio para publicação</label>
+                <input
+                  value={publicationRequestForm.domain}
+                  onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, domain: e.target.value }))}
+                  placeholder="exemplo.com.br"
+                />
+              </div>
+              <div>
+                <label>Prazo para resposta</label>
+                <input
+                  type="datetime-local"
+                  value={publicationRequestForm.dueAt}
+                  onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, dueAt: e.target.value }))}
+                />
+              </div>
+              <div className="publication-request-message">
+                <label>Mensagem para o cliente</label>
+                <textarea
+                  rows={4}
+                  value={publicationRequestForm.message}
+                  onChange={(e) => setPublicationRequestForm((prev) => ({ ...prev, message: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setPublicationRequestModalOpen(false)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={sendPublicationRequest}
+                disabled={publicationRequestSending}
+              >
+                {publicationRequestSending ? 'Enviando...' : 'Confirmar envio'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {publicationNoteModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Observação da sub-etapa de publicação">
+          <div className="crm-v2-modal-backdrop" />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Observação: {publicationNoteModal.substepName}</h3>
+              <button type="button" onClick={() => setPublicationNoteModal(null)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <label className="w-100">
+              <span className="d-block mb-2">Notas da sub-etapa</span>
+              <textarea
+                rows={5}
+                value={publicationNoteModal.notes}
+                onChange={(e) => setPublicationNoteModal((prev) => (prev ? { ...prev, notes: e.target.value } : prev))}
+              />
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setPublicationNoteModal(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="btn btn-primary btn-sm" onClick={savePublicationSubstepNotes}>
+                Salvar observação
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
 
       {showBrandModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Editar identidade visual">
-          <div className="crm-v2-modal-backdrop" onClick={() => setShowBrandModal(false)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content">
             <header>
               <h3>Identidade visual e paleta</h3>
@@ -2346,7 +3195,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {showSectionsModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Editar seções do site">
-          <div className="crm-v2-modal-backdrop" onClick={() => setShowSectionsModal(false)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content">
             <header>
               <h3>Seções do site</h3>
@@ -2414,7 +3263,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {showSeoModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Editar SEO local">
-          <div className="crm-v2-modal-backdrop" onClick={() => setShowSeoModal(false)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content">
             <header>
               <h3>SEO Local</h3>
@@ -2478,7 +3327,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {showEmailPreview ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Pré-visualização do e-mail">
-          <div className="crm-v2-modal-backdrop" onClick={() => setShowEmailPreview(false)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content">
             <header>
               <h3>Pré-visualização do e-mail</h3>
@@ -2520,7 +3369,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {previewModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Preview da versão do template">
-          <div className="crm-v2-modal-backdrop" onClick={() => setPreviewModal(null)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content template-preview-modal">
             <header>
               <h3>{previewModal.title}</h3>
@@ -2552,7 +3401,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
       {deletingProposalId ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar exclusão da proposta">
-          <div className="crm-v2-modal-backdrop" onClick={() => setDeletingProposalId(null)} />
+          <div className="crm-v2-modal-backdrop" />
           <div className="crm-v2-modal-content">
             <header>
               <h3>Excluir proposta</h3>

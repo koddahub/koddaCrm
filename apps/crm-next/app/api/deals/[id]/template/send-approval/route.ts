@@ -15,6 +15,17 @@ import {
   updateVariantStatus,
 } from '@/lib/site24h-release';
 
+class ApprovalSendError extends Error {
+  code: string;
+  status: number;
+
+  constructor(code: string, message: string, status = 422) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
 function matchesReleaseVariant(projectPath: string, releaseVersion: number | null, variantCode: string) {
   const parsed = parseReleaseVariantFromPath(projectPath);
   const sameVariant = (parsed.variantCode || 'V1') === variantCode;
@@ -32,7 +43,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const expiresHours = Math.max(1, Number(body.expiresHours || 72));
   const variantInput = String(body.variantCode || '').trim();
   if (!variantInput) {
-    return NextResponse.json({ error: 'variantCode é obrigatório (V1|V2|V3).' }, { status: 422 });
+    return NextResponse.json({
+      error: 'variantCode é obrigatório (V1|V2|V3).',
+      error_code: 'VARIANT_REQUIRED',
+    }, { status: 422 });
   }
   const variantCode = normalizeVariantCode(variantInput);
   const releaseVersion = normalizeReleaseVersion(body.releaseVersion);
@@ -56,9 +70,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         },
       });
 
-      if (!deal) throw new Error('Deal não encontrado');
-      if (deal.dealType !== 'HOSPEDAGEM') throw new Error('Envio de aprovação disponível somente para hospedagem');
-      if (deal.lifecycleStatus !== 'CLIENT') throw new Error('Deal precisa estar fechado para aprovação do cliente');
+      if (!deal) throw new ApprovalSendError('DEAL_NOT_FOUND', 'Deal não encontrado', 404);
+      if (deal.dealType !== 'HOSPEDAGEM') {
+        throw new ApprovalSendError('DEAL_NOT_HOSPEDAGEM', 'Envio de aprovação disponível somente para hospedagem');
+      }
+      if (deal.lifecycleStatus !== 'CLIENT') {
+        throw new ApprovalSendError('DEAL_NOT_CLIENT', 'Deal precisa estar fechado para aprovação do cliente', 409);
+      }
 
       const releaseVariant = await resolveDealReleaseVariant({
         dealId: deal.id,
@@ -66,7 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         variantCode,
       });
       if (!releaseVariant) {
-        throw new Error('Release/variante não encontrada para envio de aprovação.');
+        throw new ApprovalSendError('RELEASE_VARIANT_NOT_FOUND', 'Release/variante não encontrada para envio de aprovação.');
       }
 
       const revision = templateRevisionId
@@ -75,10 +93,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           })
         : deal.templateRevisions.find((item) => matchesReleaseVariant(item.projectPath, releaseVariant.release.version, variantCode));
 
-      if (!revision) throw new Error('Nenhuma revisão de template disponível para a variante selecionada.');
+      if (!revision) {
+        throw new ApprovalSendError('REVISION_NOT_FOUND', 'Nenhuma revisão de template disponível para a variante selecionada.');
+      }
 
       if (!matchesReleaseVariant(revision.projectPath, releaseVariant.release.version, variantCode)) {
-        throw new Error('A revisão selecionada não pertence à release/variante informada.');
+        throw new ApprovalSendError('REVISION_VARIANT_MISMATCH', 'A revisão selecionada não pertence à release/variante informada.');
       }
 
       await tx.dealClientApproval.updateMany({
@@ -175,6 +195,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       variantCode: result.variantCode,
     });
   } catch (error) {
-    return NextResponse.json({ error: 'Falha ao enviar aprovação ao cliente', details: String(error) }, { status: 500 });
+    if (error instanceof ApprovalSendError) {
+      return NextResponse.json({
+        error: error.message,
+        error_code: error.code,
+      }, { status: error.status });
+    }
+    return NextResponse.json({
+      error: 'Falha ao enviar aprovação ao cliente',
+      error_code: 'SEND_APPROVAL_FAILED',
+      details: String(error),
+    }, { status: 500 });
   }
 }

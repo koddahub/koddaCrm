@@ -53,7 +53,7 @@
   position: absolute;
   bottom: 110%;
   right: 0;
-  background: linear-gradient(135deg, #ea580c, #f97316);
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
   color: #fff;
   padding: 12px 20px;
   border-radius: 18px;
@@ -108,14 +108,14 @@
 
 :root {
   /* Cores Primárias */
-  --primary-50: #fff7ed;
-  --primary-100: #ffedd5;
-  --primary-200: #fed7aa;
-  --primary-300: #fdba74;
-  --primary-400: #fb923c;
-  --primary-500: #f97316;
-  --primary-600: #ea580c;
-  --primary-700: #c2410c;
+  --primary-50: #eff6ff;
+  --primary-100: #dbeafe;
+  --primary-200: #bfdbfe;
+  --primary-300: #93c5fd;
+  --primary-400: #60a5fa;
+  --primary-500: #3b82f6;
+  --primary-600: #2563eb;
+  --primary-700: #1d4ed8;
 
   /* Cores Neutras */
   --neutral-50: #f9fafb;

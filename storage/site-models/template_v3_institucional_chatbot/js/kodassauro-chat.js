@@ -1,6 +1,6 @@
 /*
  * KODASSAURO-CHAT.JS
- * Chatbot local (sem IA) para KoddaHub.
+ * Chatbot local (sem IA) para templates institucionais.
  * Versão: 6.0.0 - Filtro de palavras impróprias
  * 
  * Funcionalidades:
@@ -23,31 +23,31 @@
 
   const KODASSAURO_CONFIG = {
     copy: {
-      brandName: "KoddaHub",
-      assistantName: "Kodassauro",
-      whatsappMessage: "Olá! Vim pelo site da KoddaHub e gostaria de falar com um especialista.",
+      brandName: "Sua Empresa",
+      assistantName: "Assistente",
+      whatsappMessage: "Olá! Vim pelo site e gostaria de falar com um especialista.",
     },
     channels: {
       whatsapp: {
-        url: "https://wa.me/554192272854?text=",
+        url: "https://wa.me/5511999999999?text=",
         label: "WhatsApp",
         icon: "fab fa-whatsapp",
         color: "#25D366",
       },
       telegram: {
-        url: "https://t.me/koddahub",
+        url: "https://t.me/",
         label: "Telegram",
         icon: "fab fa-telegram-plane",
         color: "#0088cc",
       },
       instagram: {
-        url: "https://instagram.com/koddahub",
+        url: "https://instagram.com/",
         label: "Instagram",
         icon: "fab fa-instagram",
         color: "#E4405F",
       },
       email: {
-        url: "mailto:contato@koddahub.com?subject=Contato%20KoddaHub&body=",
+        url: "mailto:contato@suaempresa.com.br?subject=Contato%20comercial&body=",
         label: "E-mail",
         icon: "fas fa-envelope",
         color: "#EA4335",
@@ -63,7 +63,7 @@
       maxTime: 2000,
     },
     api: {
-      scriptURL: "https://script.google.com/macros/s/AKfycbzL1cRLo7qBMGfwSaF6UF_nuv6qiPF0TdF36UD11A0RHpVohCeB7VW0y2I0F-ny0GkL/exec",
+      scriptURL: "",
     },
     products: {
       institucional: {
@@ -140,6 +140,13 @@
     pendingSync: "kodassauro.chat.pending.v1",
     profanityLog: "kodassauro.chat.profanity.v1", // Log de tentativas
   };
+
+  const TEMPLATE_CFG = window.TemplateConfig || {};
+  const WHATSAPP_DIGITS = String(TEMPLATE_CFG.whatsappNumber || "5511999999999").replace(/\D/g, "");
+  const CONTACT_EMAIL = String(TEMPLATE_CFG.contactEmail || "contato@suaempresa.com.br");
+  KODASSAURO_CONFIG.copy.brandName = String(TEMPLATE_CFG.brandName || KODASSAURO_CONFIG.copy.brandName || "Sua Empresa");
+  KODASSAURO_CONFIG.channels.whatsapp.url = `https://wa.me/${WHATSAPP_DIGITS}?text=`;
+  KODASSAURO_CONFIG.channels.email.url = `mailto:${CONTACT_EMAIL}?subject=Contato%20comercial&body=`;
 
   // ============================================================================
   // UTILITÁRIOS
@@ -451,7 +458,7 @@
 
       addMessage(
         "bot",
-        `🦕 Oi! Sou o <strong>Kodassauro</strong>, seu amiguinho virtual da KoddaHub! ${state.leadDraft.product.icon}<br><br>` +
+        `🦕 Oi! Sou o <strong>${KODASSAURO_CONFIG.copy.assistantName}</strong>, assistente virtual da ${KODASSAURO_CONFIG.copy.brandName}! ${state.leadDraft.product.icon}<br><br>` +
         `Que legal que você se interessou por <strong>${state.leadDraft.product.name}</strong>! Vou te ajudar com isso.`
       );
 
@@ -655,12 +662,15 @@
       formData.append('fonte_lead', 'chat_kodassauro');
       formData.append('forneceu_telefone', lead.phone ? 'sim' : 'não');
       
-      fetch(KODASSAURO_CONFIG.api.scriptURL, {
-        method: 'POST',
-        body: formData,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        mode: 'no-cors'
-      }).catch(() => {});
+      const targetUrl = String(KODASSAURO_CONFIG.api.scriptURL || '').trim();
+      if (/^https?:\/\//i.test(targetUrl)) {
+        fetch(targetUrl, {
+          method: 'POST',
+          body: formData,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          mode: 'no-cors'
+        }).catch(() => {});
+      }
     } catch {}
 
     return enrichedLead;

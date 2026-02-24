@@ -1,0 +1,30 @@
+@media (min-width: 992px) {
+  .crm-operacao-modal .operation-card {
+    padding: 1.2rem;
+  }
+
+  .crm-operacao-modal .template-showcase-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .crm-operacao-modal .publication-request-grid {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .crm-operacao-modal .publication-request-grid .publication-request-message {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1200px) {
+  .crm-operacao-modal .preprompt-content-grid {
+    grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1400px) {
+  .crm-operacao-modal .operation-stage-nav {
+    gap: 0.65rem;
+  }
+}

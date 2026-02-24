@@ -1,0 +1,26 @@
+@media (min-width: 992px) {
+  .op-operacao .op-stepper {
+    position: sticky;
+    top: 1rem;
+  }
+
+  .op-operacao .op-step {
+    min-height: 6.4rem;
+  }
+
+  .op-operacao .op-active-panel {
+    border-width: 1px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .op-operacao .op-step {
+    min-height: 6.9rem;
+  }
+}
+
+@media (min-width: 1400px) {
+  .op-operacao .op-step {
+    min-height: 7.1rem;
+  }
+}
