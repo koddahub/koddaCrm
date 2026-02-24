@@ -47,7 +47,7 @@ final class AsaasClient {
         if ($status >= 200 && $status < 300) {
             return $putResponse;
         }
-        if (in_array($status, [400, 404, 405], true)) {
+        if (in_array($status, [400, 404, 405], true) || $this->isMethodNotSupportedResponse($putResponse)) {
             return $this->request('POST', $path, $payload);
         }
         return $putResponse;
@@ -458,6 +458,40 @@ final class AsaasClient {
         ];
         foreach ($needles as $needle) {
             if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function isMethodNotSupportedResponse(array $raw): bool {
+        $errorFragments = [];
+        $message = $raw['message'] ?? null;
+        if (is_string($message) && trim($message) !== '') {
+            $errorFragments[] = strtolower($message);
+        }
+        $errorCode = $raw['code'] ?? null;
+        if (is_string($errorCode) && trim($errorCode) !== '') {
+            $errorFragments[] = strtolower($errorCode);
+        }
+        $firstError = $raw['errors'][0] ?? null;
+        if (is_array($firstError)) {
+            foreach (['code', 'description'] as $field) {
+                $value = $firstError[$field] ?? null;
+                if (is_string($value) && trim($value) !== '') {
+                    $errorFragments[] = strtolower($value);
+                }
+            }
+        }
+        if ($errorFragments === []) {
+            return false;
+        }
+        foreach ($errorFragments as $fragment) {
+            if (
+                str_contains($fragment, 'method not allowed')
+                || str_contains($fragment, 'method not supported')
+                || str_contains($fragment, 'unsupported method')
+            ) {
                 return true;
             }
         }
