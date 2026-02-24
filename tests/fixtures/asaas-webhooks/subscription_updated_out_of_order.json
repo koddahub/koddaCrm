@@ -1,0 +1,8 @@
+{
+  "id": "evt_subscription_updated_001",
+  "event": "SUBSCRIPTION_UPDATED",
+  "subscription": {
+    "id": "sub_001",
+    "status": "ACTIVE"
+  }
+}

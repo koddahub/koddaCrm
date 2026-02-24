@@ -1,0 +1,10 @@
+{
+  "id": "evt_payment_received_001",
+  "event": "PAYMENT_RECEIVED",
+  "payment": {
+    "id": "pay_001",
+    "subscription": "sub_001",
+    "billingType": "PIX",
+    "status": "RECEIVED"
+  }
+}

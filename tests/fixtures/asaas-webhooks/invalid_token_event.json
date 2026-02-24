@@ -1,0 +1,10 @@
+{
+  "id": "evt_invalid_token_001",
+  "event": "PAYMENT_OVERDUE",
+  "payment": {
+    "id": "pay_999",
+    "subscription": "sub_999",
+    "billingType": "BOLETO",
+    "status": "OVERDUE"
+  }
+}
