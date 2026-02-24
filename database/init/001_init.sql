@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS client.billing_profiles (
   card_brand VARCHAR(40),
   exp_month SMALLINT,
   exp_year SMALLINT,
+  card_token VARCHAR(120),
+  card_token_updated_at TIMESTAMPTZ,
   is_validated BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   UNIQUE(subscription_id)

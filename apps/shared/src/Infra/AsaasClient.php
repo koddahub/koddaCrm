@@ -41,7 +41,16 @@ final class AsaasClient {
     }
 
     public function updateSubscription(string $id, array $payload): array {
-        return $this->request('POST', '/subscriptions/' . $id, $payload);
+        $path = '/subscriptions/' . rawurlencode($id);
+        $putResponse = $this->request('PUT', $path, $payload);
+        $status = (int)($putResponse['http_status'] ?? 0);
+        if ($status >= 200 && $status < 300) {
+            return $putResponse;
+        }
+        if (in_array($status, [400, 404, 405], true)) {
+            return $this->request('POST', $path, $payload);
+        }
+        return $putResponse;
     }
 
     public function updateSubscriptionPlan(string $id, string $planIdOrCode, array $opts = []): array {
@@ -52,14 +61,55 @@ final class AsaasClient {
         if (isset($payload['value'])) {
             $payload['value'] = (float)$payload['value'];
         }
-        $raw = $this->request('POST', '/subscriptions/' . rawurlencode($id), $payload);
+        $raw = $this->updateSubscription($id, $payload);
         return $this->toProviderResult($raw);
     }
 
     public function updateSubscriptionValue(string $id, float $newValue, array $opts = []): array {
         $payload = array_merge($opts, ['value' => (float)$newValue]);
-        $raw = $this->request('POST', '/subscriptions/' . rawurlencode($id), $payload);
+        $raw = $this->updateSubscription($id, $payload);
         return $this->toProviderResult($raw);
+    }
+    public function listSubscriptions(array $filters = []): array {
+        $query = http_build_query($filters);
+        $path = '/subscriptions' . ($query !== '' ? '?' . $query : '');
+        return $this->request('GET', $path);
+    }
+
+    public function listSubscriptionsByCustomer(string $customerId, int $limit = 10, int $offset = 0): array {
+        $safeLimit = max(1, min(100, $limit));
+        $safeOffset = max(0, $offset);
+        return $this->listSubscriptions([
+            'customer' => $customerId,
+            'limit' => $safeLimit,
+            'offset' => $safeOffset,
+        ]);
+    }
+
+    public function listPaymentsOfSubscription(string $subscriptionId, int $limit = 10, int $offset = 0): array {
+        $safeLimit = max(1, min(100, $limit));
+        $safeOffset = max(0, $offset);
+        $subscriptionPath = '/subscriptions/' . rawurlencode($subscriptionId) . '/payments?'
+            . http_build_query(['limit' => $safeLimit, 'offset' => $safeOffset]);
+        $subscriptionPayments = $this->request('GET', $subscriptionPath);
+        if ($this->isSuccess($subscriptionPayments)) {
+            return $subscriptionPayments;
+        }
+        $fallbackPath = '/payments?' . http_build_query([
+            'subscription' => $subscriptionId,
+            'limit' => $safeLimit,
+            'offset' => $safeOffset,
+        ]);
+        return $this->request('GET', $fallbackPath);
+    }
+
+    public function getPaymentBillingInfo(string $paymentId): array {
+        $raw = $this->request('GET', '/payments/' . rawurlencode($paymentId) . '/billingInfo');
+        return $this->toProviderResult($raw);
+    }
+
+    public function updateSubscriptionCreditCardWithoutCharge(string $subscriptionId, array $payload): array {
+        return $this->request('PUT', '/subscriptions/' . rawurlencode($subscriptionId) . '/creditCard', $payload);
     }
 
     public function cancelSubscription(string $id, string $mode = 'END_OF_CYCLE'): array {
