@@ -1,0 +1,10 @@
+{
+  "id": "evt_subscription_updated_upgrade_001",
+  "event": "SUBSCRIPTION_UPDATED",
+  "dateCreated": "2026-02-24T14:00:00Z",
+  "subscription": {
+    "id": "sub_001",
+    "status": "ACTIVE",
+    "customer": "cus_001"
+  }
+}

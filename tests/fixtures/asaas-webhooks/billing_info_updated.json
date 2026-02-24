@@ -1,0 +1,8 @@
+{
+  "id": "evt_billing_info_updated_001",
+  "event": "CUSTOMER_BILLING_INFO_UPDATED",
+  "dateCreated": "2026-02-24T16:00:00Z",
+  "customer": {
+    "id": "cus_001"
+  }
+}

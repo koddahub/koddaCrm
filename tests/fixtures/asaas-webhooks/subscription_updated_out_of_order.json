@@ -1,6 +1,7 @@
 {
   "id": "evt_subscription_updated_001",
   "event": "SUBSCRIPTION_UPDATED",
+  "dateCreated": "2026-02-20T10:00:00Z",
   "subscription": {
     "id": "sub_001",
     "status": "ACTIVE"
