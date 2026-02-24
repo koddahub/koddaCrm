@@ -96,6 +96,17 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       `
     : [];
 
+  const ticketMessages = process.env.FEATURE_TICKET_THREAD_SYNC === '1' && deal.organizationId
+    ? await prisma.$queryRaw<Array<{ id: string; ticket_id: string; source: string; author_name: string | null; message: string; visibility: string; created_at: Date }>>`
+        SELECT tm.id::text, tm.ticket_id::text, tm.source, tm.author_name, tm.message, tm.visibility, tm.created_at
+        FROM client.ticket_messages tm
+        JOIN client.tickets t ON t.id = tm.ticket_id
+        WHERE t.organization_id = ${deal.organizationId}::uuid
+        ORDER BY tm.created_at DESC
+        LIMIT 300
+      `
+    : [];
+
   return NextResponse.json({
     deal: {
       id: deal.id,
@@ -147,6 +158,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       subject: ticket.subject,
       status: ticket.status,
       createdAt: ticket.created_at,
+    })),
+    ticketMessages: ticketMessages.map((item) => ({
+      id: item.id,
+      ticketId: item.ticket_id,
+      source: item.source,
+      authorName: item.author_name,
+      message: item.message,
+      visibility: item.visibility,
+      createdAt: item.created_at,
     })),
     payments: payments.map((payment) => ({
       id: payment.id,
