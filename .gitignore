@@ -1,5 +1,20 @@
-.env
-storage/postgres/
-storage/logs/*.log
+# Dependências
 node_modules/
-apps/crm-next/node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Arquivos grandes e temporários
+*.log
+*.tmp
+*.cache
+.DS_Store
+
+# Arquivos locais
+.env
+storage/postgres/g
