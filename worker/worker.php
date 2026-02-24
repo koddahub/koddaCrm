@@ -1886,7 +1886,10 @@ function processScheduledSubscriptionChanges(string $logFile): void
         $provider = $asaas->updateSubscriptionValue(
             $asaasSubscriptionId,
             $targetValue,
-            ['description' => 'Aplicação automática de mudança agendada no próximo ciclo']
+            [
+                'updatePendingPayments' => true,
+                'description' => 'Aplicação automática de mudança agendada no próximo ciclo',
+            ]
         );
         if (!(bool)($provider['ok'] ?? false)) {
             db()->exec("

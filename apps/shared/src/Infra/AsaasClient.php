@@ -109,7 +109,8 @@ final class AsaasClient {
     }
 
     public function updateSubscriptionCreditCardWithoutCharge(string $subscriptionId, array $payload): array {
-        return $this->request('PUT', '/subscriptions/' . rawurlencode($subscriptionId) . '/creditCard', $payload);
+        $raw = $this->request('PUT', '/subscriptions/' . rawurlencode($subscriptionId) . '/creditCard', $payload);
+        return $this->toProviderResult($raw);
     }
 
     public function cancelSubscription(string $id, string $mode = 'END_OF_CYCLE'): array {
@@ -178,6 +179,21 @@ final class AsaasClient {
     }
 
     public function createCardUpdateLinkForSubscription(string $subscriptionId): array {
+        if ($this->apiKey === '') {
+            return [
+                'ok' => true,
+                'status_code' => 200,
+                'data' => [
+                    'card_update_url' => '/portal/dashboard?mock_card_update=1&subscription=' . rawurlencode($subscriptionId),
+                    'provider_flow' => 'MOCK_CARD_UPDATE',
+                    'customer_id' => null,
+                ],
+                'error_code' => null,
+                'error_message_safe' => null,
+                'provider_request_id' => null,
+            ];
+        }
+
         $subscription = $this->getSubscription($subscriptionId);
         if (!$subscription['ok']) {
             return $subscription;
@@ -193,6 +209,9 @@ final class AsaasClient {
             $subData['manageSubscriptionUrl'] ?? null,
             $subData['url'] ?? null,
         ]);
+        if ($subscriptionSelfServiceUrl === null) {
+            $subscriptionSelfServiceUrl = $this->extractNonChargeUrlFromResponse($subData);
+        }
         if ($subscriptionSelfServiceUrl !== null && !$this->isLikelyPaymentUrl($subscriptionSelfServiceUrl)) {
             return [
                 'ok' => true,
@@ -279,6 +298,21 @@ final class AsaasClient {
     }
 
     public function createBillingInfoUpdateLinkForCustomer(string $customerId): array {
+        if ($this->apiKey === '') {
+            return [
+                'ok' => true,
+                'status_code' => 200,
+                'data' => [
+                    'card_update_url' => '/portal/dashboard?mock_card_update=1&customer=' . rawurlencode($customerId),
+                    'provider_flow' => 'MOCK_CARD_UPDATE',
+                    'customer_id' => $customerId,
+                ],
+                'error_code' => null,
+                'error_message_safe' => null,
+                'provider_request_id' => null,
+            ];
+        }
+
         $configuredPath = trim((string)(getenv('ASAAS_CUSTOMER_BILLING_UPDATE_ENDPOINT') ?: ''));
         if ($configuredPath !== '') {
             $method = strtoupper(trim((string)(getenv('ASAAS_CUSTOMER_BILLING_UPDATE_METHOD') ?: 'POST')));
@@ -431,6 +465,9 @@ final class AsaasClient {
             (is_array($raw['data'] ?? null) ? ($raw['data']['billingInfoUpdateUrl'] ?? null) : null),
             (is_array($raw['data'] ?? null) ? ($raw['data']['url'] ?? null) : null),
         ];
+        foreach ($this->collectUrlsRecursively($raw) as $url) {
+            $candidates[] = $url;
+        }
         foreach ($candidates as $url) {
             if (!is_string($url) || trim($url) === '') {
                 continue;
@@ -444,17 +481,39 @@ final class AsaasClient {
         return null;
     }
 
+    private function collectUrlsRecursively(array $node): array {
+        $urls = [];
+        foreach ($node as $value) {
+            if (is_array($value)) {
+                foreach ($this->collectUrlsRecursively($value) as $nested) {
+                    $urls[] = $nested;
+                }
+                continue;
+            }
+            if (!is_string($value)) {
+                continue;
+            }
+            $candidate = trim($value);
+            if ($candidate === '') {
+                continue;
+            }
+            if (preg_match('#^https?://#i', $candidate) === 1 || str_starts_with($candidate, '/')) {
+                $urls[] = $candidate;
+            }
+        }
+        return array_values(array_unique($urls));
+    }
+
     private function isLikelyPaymentUrl(string $url): bool {
         $lower = strtolower($url);
         $needles = [
             'invoice',
             'boleto',
             'pix',
-            'payment',
-            'pay/',
             '/cobranca',
             '/cobrança',
             '/checkout',
+            '/v3/payments',
         ];
         foreach ($needles as $needle) {
             if (str_contains($lower, $needle)) {

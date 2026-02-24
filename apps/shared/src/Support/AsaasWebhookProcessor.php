@@ -130,6 +130,14 @@ final class AsaasWebhookProcessor
             ];
         }
 
+        if ($eventTime !== null && !empty($subscription['last_asaas_event_at'])) {
+            $last = strtotime((string)$subscription['last_asaas_event_at']);
+            $current = strtotime($eventTime->format(DATE_ATOM));
+            if ($last !== false && $current !== false && $current < $last) {
+                return ['out_of_order' => true];
+            }
+        }
+
         $status = strtoupper(trim((string)($payment['status'] ?? ($eventType === 'PAYMENT_RECEIVED' ? 'RECEIVED' : 'PENDING'))));
         $billingType = strtoupper(trim((string)($payment['billingType'] ?? '')));
         $amount = isset($payment['value']) && is_numeric($payment['value']) ? (float)$payment['value'] : 0.0;
@@ -275,6 +283,7 @@ final class AsaasWebhookProcessor
         $subscription = is_array($event['subscription'] ?? null) ? $event['subscription'] : [];
         $subscriptionCode = trim((string)($subscription['id'] ?? ''));
         $customerCode = trim((string)($subscription['customer'] ?? ''));
+        $effectiveEventTime = $eventTime ?? new DateTimeImmutable('now');
 
         $localSubscription = $this->resolveSubscription($subscriptionCode, $customerCode);
         if (!$localSubscription) {
@@ -285,9 +294,9 @@ final class AsaasWebhookProcessor
             ];
         }
 
-        if ($eventTime !== null && !empty($localSubscription['last_asaas_event_at'])) {
+        if (!empty($localSubscription['last_asaas_event_at'])) {
             $last = strtotime((string)$localSubscription['last_asaas_event_at']);
-            $current = strtotime($eventTime->format(DATE_ATOM));
+            $current = strtotime($effectiveEventTime->format(DATE_ATOM));
             if ($last !== false && $current !== false && $current < $last) {
                 return ['out_of_order' => true];
             }
@@ -314,7 +323,7 @@ final class AsaasWebhookProcessor
                 ':next_due_date' => $nextDueDate,
                 ':customer_id' => $customerCode,
                 ':subscription_id' => $subscriptionCode,
-                ':event_time' => $eventTime ? $eventTime->format(DATE_ATOM) : null,
+                ':event_time' => $effectiveEventTime->format(DATE_ATOM),
                 ':id' => (string)$localSubscription['id'],
             ]
         );

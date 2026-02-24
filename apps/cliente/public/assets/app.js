@@ -1075,10 +1075,24 @@
     const planChangeConfirmCloseBtn = $('#planChangeConfirmCloseBtn');
     let planSubmitInFlight = false;
 
-    const retryPaymentBtn = $('#retryPaymentBtn');
+    const payNowBtn = $('#payNowBtn');
     const updateCardBtn = $('#updateCardBtn');
     const paymentInlineNotice = $('#paymentInlineNotice');
     const paymentProtocolCard = $('#paymentProtocolCard');
+    const billingStatusBadge = $('#billingStatusBadge');
+    const billingNextDueDate = $('#billingNextDueDate');
+    const billingOverdueText = $('#billingOverdueText');
+    const billingCardSummary = $('#billingCardSummary');
+    const billingCardExpiry = $('#billingCardExpiry');
+    const paymentOverdueAlert = $('#paymentOverdueAlert');
+    const paymentOverdueAlertText = $('#paymentOverdueAlertText');
+    const paymentsTableBody = $('#paymentsTableBody');
+    const paymentsCountBadge = $('#paymentsCountBadge');
+    const updateCardModal = $('#updateCardModal');
+    const updateCardNotice = $('#updateCardNotice');
+    const updateCardConfirmBtn = $('#updateCardConfirmBtn');
+    const updateCardCancelBtn = $('#updateCardCancelBtn');
+    const updateCardCloseBtn = $('#updateCardCloseBtn');
 
     const cancelSubscriptionBtn = $('#cancelSubscriptionBtn');
     const cancelSubscriptionModal = $('#cancelSubscriptionModal');
@@ -1087,6 +1101,8 @@
     const cancelSubscriptionSubmitBtn = $('#cancelSubscriptionSubmitBtn');
     const cancelSubscriptionCancelBtn = $('#cancelSubscriptionCancelBtn');
     const cancelSubscriptionCloseBtn = $('#cancelSubscriptionCloseBtn');
+    const cancelConfirmText = $('#cancelConfirmText');
+    let billingSnapshot = null;
 
     const portalApprovalNotice = $('#portalApprovalNotice');
     const setPortalApprovalNotice = (msg, ok = false) => {
@@ -1273,6 +1289,145 @@
       setInlineAlert(planInlineNotice, 'warning', `Solicitação de troca para ${planNameMap[requested] || requested.toUpperCase()} já enviada e aguardando confirmação do ASAAS.`);
       renderProtocol(planProtocolCard, normalizeProtocol(pending), 'Protocolo pendente');
     };
+    const formatDate = (value, withTime = false) => {
+      const raw = String(value || '').trim();
+      if (!raw) return 'N/D';
+      const dt = new Date(raw);
+      if (Number.isNaN(dt.getTime())) return raw;
+      return dt.toLocaleString('pt-BR', withTime
+        ? { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+        : { day: '2-digit', month: '2-digit', year: 'numeric' });
+    };
+    const formatMoney = (value) => {
+      const num = Number(value || 0);
+      return Number.isFinite(num)
+        ? num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        : 'R$ 0,00';
+    };
+    const paymentStatusMeta = (status) => {
+      const normalized = String(status || 'PENDING').trim().toUpperCase();
+      if (['RECEIVED', 'PAID', 'CONFIRMED'].includes(normalized)) return { text: normalized, cls: 'text-bg-success' };
+      if (normalized === 'PENDING') return { text: normalized, cls: 'text-bg-warning' };
+      if (normalized === 'OVERDUE') return { text: normalized, cls: 'text-bg-danger' };
+      if (['CANCELED', 'CANCELLED'].includes(normalized)) return { text: normalized, cls: 'text-bg-secondary' };
+      return { text: normalized || 'N/D', cls: 'text-bg-secondary' };
+    };
+    const extractPaymentActionUrl = (payment = {}) => {
+      const keys = ['invoice_url', 'invoiceUrl', 'bank_slip_url', 'bankSlipUrl', 'payment_link', 'paymentLink', 'checkout_url', 'checkoutUrl'];
+      for (const key of keys) {
+        const value = String(payment?.[key] || '').trim();
+        if (value) return value;
+      }
+      return '';
+    };
+    const paymentMethodLabel = (method) => {
+      const normalized = String(method || '').trim().toUpperCase();
+      if (!normalized) return 'N/D';
+      return normalized.replaceAll('_', ' ');
+    };
+    const renderBillingPayments = (payments) => {
+      if (!paymentsTableBody) return;
+      const list = Array.isArray(payments) ? payments : [];
+      if (paymentsCountBadge) {
+        paymentsCountBadge.textContent = `${list.length} registro(s)`;
+      }
+      if (!list.length) {
+        paymentsTableBody.innerHTML = '<tr><td colspan="5" class="text-center text-body-secondary py-4">Nenhum pagamento recente.</td></tr>';
+        return;
+      }
+      paymentsTableBody.innerHTML = list.map((payment) => {
+        const dueDate = formatDate(payment?.due_date || payment?.created_at || '');
+        const status = paymentStatusMeta(payment?.status);
+        const actionUrl = extractPaymentActionUrl(payment);
+        const actionHtml = actionUrl
+          ? `<a class="btn btn-sm btn-outline-secondary" href="${escapeHtml(actionUrl)}" target="_blank" rel="noopener noreferrer">Abrir</a>`
+          : '-';
+        return `<tr>
+          <td data-label="Data/Vencimento">${escapeHtml(dueDate)}</td>
+          <td data-label="Valor" class="text-end">${escapeHtml(formatMoney(payment?.amount))}</td>
+          <td data-label="Método">${escapeHtml(paymentMethodLabel(payment?.billing_type))}</td>
+          <td data-label="Status"><span class="badge ${escapeHtml(status.cls)}">${escapeHtml(status.text)}</span></td>
+          <td data-label="Ação">${actionHtml}</td>
+        </tr>`;
+      }).join('');
+    };
+    const applyBillingSnapshot = (snapshot) => {
+      if (!snapshot || typeof snapshot !== 'object') return;
+      billingSnapshot = snapshot;
+      const subscription = snapshot?.subscription && typeof snapshot.subscription === 'object' ? snapshot.subscription : null;
+      const profile = snapshot?.billing_profile && typeof snapshot.billing_profile === 'object' ? snapshot.billing_profile : null;
+      renderBillingPayments(snapshot?.payments || []);
+
+      const statusText = String(subscription?.status || 'N/D').trim().toUpperCase() || 'N/D';
+      if (billingStatusBadge) {
+        billingStatusBadge.textContent = statusText;
+        billingStatusBadge.classList.remove('text-bg-success', 'text-bg-warning', 'text-bg-danger', 'text-bg-secondary', 'text-bg-info');
+        if (statusText === 'ACTIVE') {
+          billingStatusBadge.classList.add('text-bg-success');
+        } else if (statusText === 'OVERDUE') {
+          billingStatusBadge.classList.add('text-bg-danger');
+        } else if (statusText === 'PENDING') {
+          billingStatusBadge.classList.add('text-bg-warning');
+        } else {
+          billingStatusBadge.classList.add('text-bg-secondary');
+        }
+      }
+
+      if (billingNextDueDate) billingNextDueDate.textContent = formatDate(subscription?.next_due_date || '');
+      const overdueDays = Number(subscription?.overdue_days || 0);
+      const isOverdue = Boolean(subscription?.is_overdue);
+      if (billingOverdueText) {
+        billingOverdueText.textContent = isOverdue && overdueDays > 0
+          ? `Atraso de ${overdueDays} dia(s).`
+          : 'Sem atrasos relevantes.';
+      }
+      if (paymentOverdueAlert) {
+        const showPayNow = isOverdue && overdueDays >= 2;
+        paymentOverdueAlert.classList.toggle('d-none', !showPayNow);
+        if (paymentOverdueAlertText) {
+          paymentOverdueAlertText.textContent = showPayNow ? ` Atraso atual: ${overdueDays} dia(s).` : '';
+        }
+      }
+
+      const brand = String(profile?.card_brand || '').trim();
+      const last4 = String(profile?.card_last4 || '').trim();
+      const expMonth = String(profile?.exp_month || '').trim();
+      const expYear = String(profile?.exp_year || '').trim();
+      if (billingCardSummary) billingCardSummary.textContent = `${brand || 'N/D'} •••• ${last4 || '----'}`;
+      if (billingCardExpiry) billingCardExpiry.textContent = expMonth && expYear ? `${expMonth.padStart(2, '0')}/${expYear}` : 'N/D';
+
+      const asaasSid = String(subscription?.asaas_subscription_id || '').trim();
+      const localSid = String(subscription?.id || '').trim();
+      if (updateCardBtn) {
+        updateCardBtn.dataset.subscriptionId = asaasSid;
+        updateCardBtn.disabled = !asaasSid;
+      }
+      if (payNowBtn) {
+        payNowBtn.dataset.subscriptionId = asaasSid || localSid;
+      }
+      if (cancelSubscriptionBtn) {
+        cancelSubscriptionBtn.dataset.subscriptionId = asaasSid || localSid;
+      }
+      const formSid = planForm?.querySelector('[name="asaas_subscription_id"]');
+      if (formSid && asaasSid) formSid.value = asaasSid;
+      const formDueDate = planForm?.querySelector('[name="next_due_date"]');
+      if (formDueDate) formDueDate.value = String(subscription?.next_due_date || '');
+    };
+    const loadBillingSnapshot = async (reconcile = false) => {
+      setInlineAlert(paymentInlineNotice, 'info', 'Carregando dados financeiros...');
+      try {
+        const endpoint = reconcile ? '/api/billing/me?reconcile=1' : '/api/billing/me';
+        const response = await apiFetch(endpoint, { method: 'GET' });
+        const data = await parseApiJson(response);
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || 'Não foi possível carregar os dados financeiros.');
+        }
+        applyBillingSnapshot(data);
+        setInlineAlert(paymentInlineNotice, '', '');
+      } catch (err) {
+        setInlineAlert(paymentInlineNotice, 'danger', err?.message || 'Falha ao carregar dados financeiros.');
+      }
+    };
 
     if (!document.body.dataset.portalCopyBound) {
       document.body.dataset.portalCopyBound = '1';
@@ -1310,6 +1465,7 @@
     syncPlanTiles();
     syncPlanCounter();
     applyPendingPlanUi();
+    loadBillingSnapshot(false);
 
     ticketForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1360,7 +1516,6 @@
       const body = Object.fromEntries(new FormData(planForm).entries());
       const sid = String(body.asaas_subscription_id || '').trim();
       const nextPlanCode = String(body.plan_code || '').trim().toLowerCase();
-      const customValueRaw = String(body.custom_value || '').trim();
       if (!sid) {
         setInlineAlert(planInlineNotice, 'danger', 'Assinatura não encontrada para troca de plano.');
         return;
@@ -1369,7 +1524,7 @@
         setInlineAlert(planInlineNotice, 'danger', 'Selecione o plano desejado.');
         return;
       }
-      if (nextPlanCode === planCurrentCode && !customValueRaw) {
+      if (nextPlanCode === planCurrentCode) {
         setInlineAlert(planInlineNotice, 'warning', 'O plano selecionado já é o plano atual.');
         return;
       }
@@ -1396,16 +1551,34 @@
         }
 
         const direction = String(data.direction || '').toUpperCase();
-        if (data.scheduled) {
+        if (direction === 'UPGRADE') {
+          const prorataAmount = Number(data.prorata_amount || 0);
+          const prorataUrl = String(data.prorata_payment_url || '').trim();
+          const upgradeMsg = prorataAmount > 0
+            ? `Upgrade solicitado. Diferença pró-rata: ${formatMoney(prorataAmount)}.`
+            : 'Upgrade solicitado com sucesso.';
+          setInlineAlert(planInlineNotice, 'success', upgradeMsg);
+          setInlineAlert(planChangeConfirmNotice, 'success', upgradeMsg);
+          if (prorataUrl) {
+            const linkMsg = `${upgradeMsg} O link para pagamento da diferença foi gerado.`;
+            setInlineAlert(planInlineNotice, 'success', linkMsg);
+            window.open(prorataUrl, '_blank', 'noopener,noreferrer');
+          }
+          showToast('success', 'Upgrade solicitado', upgradeMsg);
+          setPortalNotice(upgradeMsg, 'ok');
+          clearPendingPlanChange();
+          await loadBillingSnapshot(false);
+        } else if (direction === 'DOWNGRADE' || data.scheduled) {
           clearPendingPlanChange();
           const effectiveAt = String(data.effective_at || '').trim();
           const scheduledMsg = effectiveAt
-            ? `Mudança agendada para ${new Date(effectiveAt).toLocaleString('pt-BR')}.`
-            : 'Mudança agendada para o próximo vencimento.';
+            ? `Downgrade agendado para ${formatDate(effectiveAt, true)}. A mudança entra em vigor no próximo vencimento.`
+            : 'Downgrade agendado. A mudança entra em vigor no próximo vencimento.';
           setInlineAlert(planInlineNotice, 'warning', scheduledMsg);
+          setInlineAlert(planChangeConfirmNotice, 'warning', scheduledMsg);
           showToast('info', 'Mudança agendada', scheduledMsg);
           setPortalNotice(scheduledMsg, 'ok');
-        } else if (featurePlanChangeWebhookConfirmed && direction === 'UPGRADE') {
+        } else if (featurePlanChangeWebhookConfirmed) {
           const payload = {
             requested_plan_code: nextPlanCode,
             action_id: protocol?.actionId || null,
@@ -1420,10 +1593,14 @@
           setPortalNotice(pendingMsg, 'ok');
         } else {
           clearPendingPlanChange();
-          const successMsg = 'Troca de plano solicitada com sucesso.';
+          const successMsg = direction === 'NOOP'
+            ? 'Plano já está no valor atual (sem alterações).'
+            : 'Troca de plano solicitada com sucesso.';
           setInlineAlert(planInlineNotice, 'success', successMsg);
+          setInlineAlert(planChangeConfirmNotice, 'success', successMsg);
           showToast('success', 'Troca de plano', successMsg);
           setPortalNotice(successMsg, 'ok');
+          await loadBillingSnapshot(false);
         }
         closePortalModal(planChangeConfirmModal);
       } finally {
@@ -1441,7 +1618,7 @@
       if (featurePlanChangeWebhookConfirmed) {
         const existingPending = readPendingPlanChange();
         const pendingRequested = String(existingPending?.requested_plan_code || '').toLowerCase();
-        if (existingPending && pendingRequested && pendingRequested !== planCurrentCode && !String(planForm?.querySelector('#planCustomValue')?.value || '').trim()) {
+        if (existingPending && pendingRequested && pendingRequested !== planCurrentCode) {
           setInlineAlert(planInlineNotice, 'warning', 'Já existe uma solicitação de troca pendente de confirmação.');
           return;
         }
@@ -1449,8 +1626,7 @@
       const selectedCode = String(planCodeSelect?.value || '').toLowerCase();
       const selectedName = planNameMap[selectedCode] || selectedCode.toUpperCase();
       const currentName = planNameMap[planCurrentCode] || planCurrentCode.toUpperCase();
-      const customValue = String(planForm?.querySelector('#planCustomValue')?.value || '').trim();
-      if (!selectedCode || (selectedCode === planCurrentCode && !customValue)) {
+      if (!selectedCode || selectedCode === planCurrentCode) {
         setInlineAlert(planInlineNotice, 'warning', 'Selecione um plano diferente do atual para continuar.');
         return;
       }
@@ -1459,11 +1635,7 @@
         return;
       }
       if (planChangeConfirmText) {
-        if (customValue && selectedCode === planCurrentCode) {
-          planChangeConfirmText.textContent = `Você está solicitando ajuste de mensalidade para R$ ${customValue}. Deseja confirmar?`;
-        } else {
-          planChangeConfirmText.textContent = `Você está solicitando troca de ${currentName} para ${selectedName}${customValue ? ` (R$ ${customValue})` : ''}. Deseja confirmar?`;
-        }
+        planChangeConfirmText.textContent = `Você está solicitando troca de ${currentName} para ${selectedName}. Deseja confirmar?`;
       }
       openPortalModal(planChangeConfirmModal);
       planChangeConfirmSubmitBtn?.focus();
@@ -1473,11 +1645,11 @@
     planChangeConfirmCloseBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
     planChangeConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
 
-    retryPaymentBtn?.addEventListener('click', async () => {
-      const sid = String(retryPaymentBtn?.dataset?.subscriptionId || '').trim();
+    payNowBtn?.addEventListener('click', async () => {
+      const sid = String(payNowBtn?.dataset?.subscriptionId || '').trim();
       if (!sid) return;
       setInlineAlert(paymentInlineNotice, '', '');
-      setButtonLoading(retryPaymentBtn, true);
+      setButtonLoading(payNowBtn, true);
       try {
         const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/retry`, {
           method: 'POST',
@@ -1488,18 +1660,18 @@
         const protocol = normalizeProtocol(data);
         renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
         if (!response.ok) {
-          const msg = `${data.error || 'Não foi possível abrir a cobrança.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          const msg = `${data.error || 'Não foi possível processar o pagamento agora.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
           setInlineAlert(paymentInlineNotice, 'danger', msg);
           setPortalNotice(msg, 'err');
-          showToast('danger', 'Falha ao gerar cobrança', msg);
+          showToast('danger', 'Falha ao pagar agora', msg);
           return;
         }
         if (data.payment_redirect_url) {
           window.open(data.payment_redirect_url, '_blank', 'noopener,noreferrer');
-          const okMsg = 'Link de cobrança gerado e aberto em nova aba.';
+          const okMsg = 'Pagamento aberto em nova aba.';
           setInlineAlert(paymentInlineNotice, 'success', okMsg);
           setPortalNotice(okMsg, 'ok');
-          showToast('success', 'Cobrança segura', okMsg);
+          showToast('success', 'Pagar agora', okMsg);
           return;
         }
         const emptyMsg = 'Nenhuma cobrança pendente encontrada no momento.';
@@ -1507,14 +1679,27 @@
         setPortalNotice(emptyMsg, 'err');
         showToast('warning', 'Sem cobrança pendente', emptyMsg);
       } finally {
-        setButtonLoading(retryPaymentBtn, false);
+        setButtonLoading(payNowBtn, false);
       }
     });
 
-    updateCardBtn?.addEventListener('click', async () => {
+    updateCardBtn?.addEventListener('click', () => {
+      setInlineAlert(updateCardNotice, '', '');
+      openPortalModal(updateCardModal);
+      updateCardConfirmBtn?.focus();
+    });
+    updateCardCancelBtn?.addEventListener('click', () => closePortalModal(updateCardModal));
+    updateCardCloseBtn?.addEventListener('click', () => closePortalModal(updateCardModal));
+    updateCardModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(updateCardModal));
+    updateCardConfirmBtn?.addEventListener('click', async () => {
       const sid = String(updateCardBtn?.dataset?.subscriptionId || '').trim();
+      if (!sid) {
+        setInlineAlert(updateCardNotice, 'danger', 'Assinatura sem vínculo no provedor de cobrança.');
+        return;
+      }
+      setInlineAlert(updateCardNotice, '', '');
       setInlineAlert(paymentInlineNotice, '', '');
-      setButtonLoading(updateCardBtn, true);
+      setButtonLoading(updateCardConfirmBtn, true);
       try {
         const response = await apiFetch('/api/billing/card/update', {
           method: 'POST',
@@ -1526,6 +1711,7 @@
         renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
         if (!response.ok) {
           const msg = `${data.error || 'Atualização de cartão indisponível no momento.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          setInlineAlert(updateCardNotice, 'danger', msg);
           setInlineAlert(paymentInlineNotice, 'danger', msg);
           showToast('danger', 'Atualização de cartão', msg);
           setPortalNotice(msg, 'err');
@@ -1537,27 +1723,43 @@
           window.open(cardUpdateUrl, '_blank', 'noopener,noreferrer');
         }
         const okMsg = cardUpdateUrl
-          ? `Fluxo de atualização de cartão aberto no ASAAS (${providerFlow || 'CARD_UPDATE'}). Nenhuma cobrança foi gerada.`
-          : 'Solicitação registrada. Siga o fluxo de atualização informado pelo suporte.';
+          ? `Página segura aberta (${providerFlow || 'CARD_UPDATE'}).`
+          : 'Solicitação registrada. Siga as instruções do suporte.';
         setInlineAlert(paymentInlineNotice, 'success', okMsg);
         showToast('success', 'Atualização de cartão', okMsg);
         setPortalNotice(okMsg, 'ok');
+        closePortalModal(updateCardModal);
       } finally {
-        setButtonLoading(updateCardBtn, false);
+        setButtonLoading(updateCardConfirmBtn, false);
       }
     });
 
     if (featureCancelSubscription && cancelSubscriptionBtn && cancelSubscriptionModal) {
+      const syncCancelSubmitState = () => {
+        const canConfirm = String(cancelConfirmText?.value || '').trim().toUpperCase() === 'CANCELAR';
+        if (cancelSubscriptionSubmitBtn) {
+          cancelSubscriptionSubmitBtn.disabled = !canConfirm;
+        }
+      };
       cancelSubscriptionBtn.addEventListener('click', () => {
         setInlineAlert(cancelSubscriptionNotice, '', '');
+        if (cancelConfirmText) cancelConfirmText.value = '';
+        syncCancelSubmitState();
         openPortalModal(cancelSubscriptionModal);
-        $('#cancelMode')?.focus();
+        cancelConfirmText?.focus();
       });
       cancelSubscriptionCancelBtn?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
       cancelSubscriptionCloseBtn?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
       cancelSubscriptionModal.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(cancelSubscriptionModal));
+      cancelConfirmText?.addEventListener('input', syncCancelSubmitState);
+      syncCancelSubmitState();
       cancelSubscriptionForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (String(cancelConfirmText?.value || '').trim().toUpperCase() !== 'CANCELAR') {
+          setInlineAlert(cancelSubscriptionNotice, 'danger', 'Digite CANCELAR para confirmar.');
+          cancelConfirmText?.focus();
+          return;
+        }
         const sid = String(cancelSubscriptionBtn.dataset.subscriptionId || '').trim();
         if (!sid) {
           setInlineAlert(cancelSubscriptionNotice, 'danger', 'Assinatura inválida para cancelamento.');
@@ -1586,8 +1788,10 @@
           setInlineAlert(paymentInlineNotice, 'warning', `${okMsg} Aguarde a confirmação final pelo webhook.`);
           showToast('success', 'Cancelamento solicitado', okMsg);
           closePortalModal(cancelSubscriptionModal);
+          await loadBillingSnapshot(false);
         } finally {
           setButtonLoading(cancelSubscriptionSubmitBtn, false);
+          syncCancelSubmitState();
         }
       });
     }
