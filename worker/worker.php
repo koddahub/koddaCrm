@@ -1959,12 +1959,122 @@ function processScheduledSubscriptionChanges(string $logFile): void
     }
 }
 
+function cancelExpiredUnpaidPayments(string $logFile, int $limit = 60): void
+{
+    $apiKey = trim((string)(getenv('ASAAS_API_KEY') ?: ''));
+    if ($apiKey === '') {
+        return;
+    }
+
+    $pixGraceHours = max(1, (int)(getenv('BILLING_PIX_CANCEL_GRACE_HOURS') ?: 48));
+    $boletoGraceHours = max(1, (int)(getenv('BILLING_BOLETO_CANCEL_GRACE_HOURS') ?: 72));
+
+    $rows = db()->all("
+        SELECT
+            p.subscription_id::text AS subscription_id,
+            p.asaas_payment_id,
+            upper(coalesce(p.billing_type,'')) AS billing_type,
+            p.status,
+            p.due_date::text AS due_date,
+            p.created_at::text AS created_at
+        FROM client.payments p
+        WHERE upper(coalesce(p.billing_type,'')) IN ('PIX','BOLETO')
+          AND upper(coalesce(p.status,'')) IN ('PENDING','OVERDUE')
+        ORDER BY p.created_at ASC
+        LIMIT " . (int)$limit
+    );
+    if (!$rows) {
+        return;
+    }
+
+    $asaas = new \Shared\Infra\AsaasClient();
+    $cancelled = 0;
+    $skipped = 0;
+    $failed = 0;
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+    foreach ($rows as $row) {
+        $paymentId = trim((string)($row['asaas_payment_id'] ?? ''));
+        $billingType = strtoupper(trim((string)($row['billing_type'] ?? '')));
+        if ($paymentId === '' || !in_array($billingType, ['PIX', 'BOLETO'], true)) {
+            $skipped++;
+            continue;
+        }
+
+        $referenceRaw = trim((string)($row['due_date'] ?? ''));
+        if ($referenceRaw === '') {
+            $referenceRaw = trim((string)($row['created_at'] ?? ''));
+        }
+        if ($referenceRaw === '') {
+            $skipped++;
+            continue;
+        }
+
+        try {
+            $referenceAt = new DateTimeImmutable($referenceRaw, new DateTimeZone('UTC'));
+        } catch (Throwable) {
+            $skipped++;
+            continue;
+        }
+
+        $graceHours = $billingType === 'PIX' ? $pixGraceHours : $boletoGraceHours;
+        $deadlineAt = $referenceAt->modify('+' . $graceHours . ' hours');
+        if ($now < $deadlineAt) {
+            $skipped++;
+            continue;
+        }
+
+        $provider = $asaas->cancelPayment($paymentId);
+        if (!(bool)($provider['ok'] ?? false)) {
+            $statusCode = (int)($provider['status_code'] ?? 0);
+            if (!in_array($statusCode, [404, 422], true)) {
+                $failed++;
+                continue;
+            }
+        }
+
+        db()->exec("
+            UPDATE client.payments
+            SET
+              status = 'CANCELED',
+              raw_payload = coalesce(raw_payload, '{}'::jsonb) || :meta::jsonb
+            WHERE asaas_payment_id = :payment_id
+        ", [
+            ':payment_id' => $paymentId,
+            ':meta' => json_encode([
+                'auto_cancelled' => true,
+                'auto_cancelled_reason' => 'UNPAID_TIMEOUT',
+                'auto_cancelled_at' => date(DATE_ATOM),
+                'grace_hours' => $graceHours,
+                'billing_type' => $billingType,
+            ], JSON_UNESCAPED_UNICODE),
+        ]);
+
+        $cancelled++;
+    }
+
+    if ($cancelled > 0 || $failed > 0) {
+        file_put_contents(
+            $logFile,
+            '[' . date('c') . '] cancel_expired_unpaid -> scanned=' . count($rows)
+              . ' cancelled=' . $cancelled
+              . ' skipped=' . $skipped
+              . ' failed=' . $failed
+              . ' pix_grace_h=' . $pixGraceHours
+              . ' boleto_grace_h=' . $boletoGraceHours
+              . PHP_EOL,
+            FILE_APPEND
+        );
+    }
+}
+
 while (true) {
     try {
         static $lastBackfillRun = 0;
         static $lastReconcileRun = 0;
         static $lastBillingClassRun = 0;
         static $lastSubscriptionScheduleRun = 0;
+        static $lastUnpaidCancelRun = 0;
         static $lastPasswordResetCleanupRun = 0;
         static $lastSiteReleaseCheckRun = 0;
         $nowTs = time();
@@ -1972,6 +2082,7 @@ while (true) {
         $reconcileInterval = (int)(envString('CRM_RECONCILE_INTERVAL_SECONDS', '300'));
         $billingClassInterval = (int)(envString('CRM_BILLING_CLASS_INTERVAL_SECONDS', '600'));
         $subscriptionScheduleInterval = (int)(envString('CRM_SUBSCRIPTION_SCHEDULE_INTERVAL_SECONDS', '90'));
+        $unpaidCancelInterval = (int)(envString('CRM_UNPAID_CANCEL_INTERVAL_SECONDS', '180'));
         $passwordResetCleanupInterval = 86400;
         $siteReleaseCheckInterval = (int)(envString('CRM_SITE_RELEASE_CHECK_INTERVAL_SECONDS', '600'));
 
@@ -1993,6 +2104,11 @@ while (true) {
         if ($lastSubscriptionScheduleRun === 0 || ($nowTs - $lastSubscriptionScheduleRun) >= max(30, $subscriptionScheduleInterval)) {
             processScheduledSubscriptionChanges($logFile);
             $lastSubscriptionScheduleRun = $nowTs;
+        }
+
+        if ($lastUnpaidCancelRun === 0 || ($nowTs - $lastUnpaidCancelRun) >= max(60, $unpaidCancelInterval)) {
+            cancelExpiredUnpaidPayments($logFile);
+            $lastUnpaidCancelRun = $nowTs;
         }
 
         if ($lastPasswordResetCleanupRun === 0 || ($nowTs - $lastPasswordResetCleanupRun) >= $passwordResetCleanupInterval) {

@@ -68,16 +68,72 @@
     return sum % 10 === 0;
   };
   const parsePossiblyNoisyJson = (raw) => {
-    const text = String(raw || '').trim();
+    const text = String(raw || '')
+      .replace(/^\uFEFF/, '')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+      .trim();
     if (!text) return null;
     try {
       return JSON.parse(text);
     } catch (_) {}
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) {
+
+    const tryBalanced = (openChar, closeChar) => {
+      const start = text.indexOf(openChar);
+      if (start < 0) return null;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === '\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch === '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === openChar) {
+          depth += 1;
+          continue;
+        }
+        if (ch === closeChar) {
+          depth -= 1;
+          if (depth === 0) {
+            const candidate = text.slice(start, i + 1);
+            try {
+              return JSON.parse(candidate);
+            } catch (_) {
+              return null;
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    const balanced = tryBalanced('{', '}') || tryBalanced('[', ']');
+    if (balanced) return balanced;
+
+    const starts = [];
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === '{' || text[i] === '[') starts.push(i);
+    }
+    for (const start of starts) {
+      const candidate = text.slice(start).trim();
+      if (!candidate) continue;
       try {
-        return JSON.parse(text.slice(start, end + 1));
+        return JSON.parse(candidate);
       } catch (_) {}
     }
     return null;
@@ -1153,13 +1209,18 @@
     initDashboardTheme();
     initNavigation();
 
-    const featurePlanChangeWebhookConfirmed = document.body?.dataset?.featurePlanChangeWebhookConfirmed === '1';
     const featureCancelSubscription = document.body?.dataset?.featureCancelSubscription === '1';
+    const featureBillingPixSessionFlow = document.body?.dataset?.featureBillingPixSessionFlow === '1';
     const parseApiJson = async (response) => {
       try {
-        return await response.json();
+        const text = await response.text();
+        const parsed = parsePossiblyNoisyJson(text);
+        if (parsed && typeof parsed === 'object') {
+          return parsed;
+        }
+        return { __raw_text: text || '', __parse_error: true };
       } catch (_) {
-        return {};
+        return { __raw_text: '', __parse_error: true };
       }
     };
 
@@ -1173,16 +1234,30 @@
     const planReason = $('#planReason');
     const planInlineNotice = $('#planInlineNotice');
     const planJustificationCounter = $('#planJustificationCounter');
-    const planCurrentCode = (planForm?.dataset?.currentPlan || '').trim().toLowerCase();
+    let planCurrentCode = (planForm?.dataset?.currentPlan || '').trim().toLowerCase();
     const planPickButtons = $$('.plan-pick-btn');
     const planTiles = $$('.plan-tile[data-plan-code]');
     const planChangeConfirmModal = $('#planChangeConfirmModal');
     const planChangeConfirmText = $('#planChangeConfirmText');
     const planChangeConfirmNotice = $('#planChangeConfirmNotice');
+    const planUpgradeAmountInfo = $('#planUpgradeAmountInfo');
     const planUpgradePaymentWrap = $('#planUpgradePaymentWrap');
     const planUpgradePaymentMethod = $('#planUpgradePaymentMethod');
+    const planUpgradeTabPix = $('#planUpgradeTabPix');
+    const planUpgradeTabCard = $('#planUpgradeTabCard');
+    const planUpgradeCardModeWrap = $('#planUpgradeCardModeWrap');
+    const planUpgradeCardModeSavedBtn = $('#planUpgradeCardModeSavedBtn');
+    const planUpgradeCardModeNewBtn = $('#planUpgradeCardModeNewBtn');
+    const planUpgradeCardForm = $('#planUpgradeCardForm');
+    const planUpgradeCardHolderName = $('#planUpgradeCardHolderName');
+    const planUpgradeCardNumber = $('#planUpgradeCardNumber');
+    const planUpgradeCardExpMonth = $('#planUpgradeCardExpMonth');
+    const planUpgradeCardExpYear = $('#planUpgradeCardExpYear');
+    const planUpgradeCardCcv = $('#planUpgradeCardCcv');
     const planUpgradePixWrap = $('#planUpgradePixWrap');
+    const planUpgradePixQr = $('#planUpgradePixQr');
     const planUpgradePixPayload = $('#planUpgradePixPayload');
+    const planUpgradePixCountdown = $('#planUpgradePixCountdown');
     const planChangeConfirmSubmitBtn = $('#planChangeConfirmSubmitBtn');
     const planChangeConfirmCancelBtn = $('#planChangeConfirmCancelBtn');
     const planChangeConfirmCloseBtn = $('#planChangeConfirmCloseBtn');
@@ -1211,15 +1286,41 @@
     const paymentAlternativeModal = $('#paymentAlternativeModal');
     const paymentAlternativeTitle = $('#paymentAlternativeTitle');
     const paymentAlternativeMethod = $('#paymentAlternativeMethod');
+    const paymentAlternativeTabPix = $('#paymentAlternativeTabPix');
+    const paymentAlternativeTabCard = $('#paymentAlternativeTabCard');
+    const paymentAlternativeCardModeWrap = $('#paymentAlternativeCardModeWrap');
+    const paymentAlternativeCardModeSavedBtn = $('#paymentAlternativeCardModeSavedBtn');
+    const paymentAlternativeCardModeNewBtn = $('#paymentAlternativeCardModeNewBtn');
     const paymentAlternativeNotice = $('#paymentAlternativeNotice');
     const paymentAlternativeConfirmBtn = $('#paymentAlternativeConfirmBtn');
     const paymentAlternativeCancelBtn = $('#paymentAlternativeCancelBtn');
     const paymentAlternativeCloseBtn = $('#paymentAlternativeCloseBtn');
+    const paymentAlternativeCardForm = $('#paymentAlternativeCardForm');
+    const paymentAlternativeCardHolderName = $('#paymentAlternativeCardHolderName');
+    const paymentAlternativeCardNumber = $('#paymentAlternativeCardNumber');
+    const paymentAlternativeCardExpMonth = $('#paymentAlternativeCardExpMonth');
+    const paymentAlternativeCardExpYear = $('#paymentAlternativeCardExpYear');
+    const paymentAlternativeCardCcv = $('#paymentAlternativeCardCcv');
     const paymentAlternativePixBox = $('#paymentAlternativePixBox');
+    const paymentAlternativePixQr = $('#paymentAlternativePixQr');
     const paymentAlternativePixPayload = $('#paymentAlternativePixPayload');
-    const paymentAlternativeBoletoBox = $('#paymentAlternativeBoletoBox');
-    const paymentAlternativeDigitableLine = $('#paymentAlternativeDigitableLine');
+    const paymentAlternativePixCountdown = $('#paymentAlternativePixCountdown');
     let paymentAlternativeMode = 'OVERDUE';
+    let paymentAlternativeLocked = false;
+    let paymentAlternativePollingTimer = null;
+    let planChangeLocked = false;
+    let planChangePollingTimer = null;
+    let planPixCountdownTimer = null;
+    let paymentPixCountdownTimer = null;
+    let planPendingPaymentId = '';
+    let planPendingPaymentMethod = '';
+    let planPixSessionId = '';
+    let planPixFlowState = 'IDLE';
+    let retryPendingPaymentId = '';
+    let retryPendingPaymentMethod = '';
+    let planChangeRequiresPayment = false;
+    let autoPlanPixTriggered = false;
+    let autoRetryPixTriggered = false;
 
     const cancelSubscriptionBtn = $('#cancelSubscriptionBtn');
     const cancelSubscriptionModal = $('#cancelSubscriptionModal');
@@ -1277,8 +1378,12 @@
       el.classList.remove('hidden');
       el.setAttribute('aria-hidden', 'false');
     };
-    const closePortalModal = (el) => {
+    const closePortalModal = (el, force = false) => {
       if (!el) return;
+      if (!force) {
+        if (el === planChangeConfirmModal && planChangeLocked) return;
+        if (el === paymentAlternativeModal && paymentAlternativeLocked) return;
+      }
       el.classList.add('hidden');
       el.setAttribute('aria-hidden', 'true');
     };
@@ -1362,7 +1467,8 @@
 
     const pendingPlanStorageKey = (() => {
       const sid = String(planForm?.querySelector('[name="asaas_subscription_id"]')?.value || '').trim();
-      return sid ? `portal_plan_change_pending_${sid}` : '';
+      const pendingVersion = 'v3';
+      return sid ? `portal_plan_change_pending_${pendingVersion}_${sid}` : '';
     })();
     const planNameMap = {
       basic: 'Básico',
@@ -1404,16 +1510,12 @@
       } catch (_) {}
     };
     const applyPendingPlanUi = () => {
-      if (!planSubmitBtn || !featurePlanChangeWebhookConfirmed) return;
-      const pending = readPendingPlanChange();
-      if (!pending) return;
-      const requested = String(pending?.requested_plan_code || '').toLowerCase();
-      if (requested && requested === planCurrentCode) {
-        clearPendingPlanChange();
-        return;
+      if (!planSubmitBtn) return;
+      clearPendingPlanChange();
+      planSubmitBtn.removeAttribute('disabled');
+      if (String(planInlineNotice?.textContent || '').includes('aguardando confirmação do ASAAS')) {
+        setInlineAlert(planInlineNotice, '', '');
       }
-      planSubmitBtn.setAttribute('disabled', 'disabled');
-      setInlineAlert(planInlineNotice, 'warning', `Solicitação de troca para ${planNameMap[requested] || requested.toUpperCase()} já enviada e aguardando confirmação do ASAAS.`);
     };
     const formatDate = (value, withTime = false) => {
       const raw = String(value || '').trim();
@@ -1429,6 +1531,305 @@
       return Number.isFinite(num)
         ? num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
         : 'R$ 0,00';
+    };
+    const normalizePaymentMethod = (value) => {
+      const raw = String(value || '').trim().toUpperCase();
+      if (raw === 'CREDIT_CARD_NEW' || raw === 'CREDIT_CARD_SAVED' || raw === 'PIX') return raw;
+      if (raw === 'CREDIT_CARD') return 'CREDIT_CARD_SAVED';
+      return 'PIX';
+    };
+    const collectCardPayload = ({ holderEl, numberEl, monthEl, yearEl, ccvEl }) => {
+      const holderName = String(holderEl?.value || '').trim();
+      const number = onlyDigits(numberEl?.value || '');
+      const expiryMonth = onlyDigits(monthEl?.value || '');
+      const expiryYear = onlyDigits(yearEl?.value || '');
+      const ccv = onlyDigits(ccvEl?.value || '');
+      const expiryMonthNum = Number(expiryMonth || '0');
+      const expiryYearNum = Number(expiryYear || '0');
+      const now = new Date();
+      const nowYear = now.getFullYear();
+      const nowMonth = now.getMonth() + 1;
+      if (!holderName || number.length < 13 || number.length > 19 || !expiryMonth || !expiryYear || ccv.length < 3 || ccv.length > 4) {
+        return { ok: false, error: 'Preencha os dados do cartão corretamente.' };
+      }
+      if (!isLuhnValid(number)) {
+        return { ok: false, error: 'Número do cartão inválido.' };
+      }
+      if (expiryMonthNum < 1 || expiryMonthNum > 12 || expiryYearNum < nowYear || expiryYearNum > nowYear + 20 || (expiryYearNum === nowYear && expiryMonthNum < nowMonth)) {
+        return { ok: false, error: 'Validade do cartão inválida.' };
+      }
+      return {
+        ok: true,
+        card: {
+          holder_name: holderName,
+          number,
+          expiry_month: expiryMonth,
+          expiry_year: expiryYear,
+          ccv,
+        },
+      };
+    };
+    const clearPaymentPolling = () => {
+      if (paymentAlternativePollingTimer) {
+        clearInterval(paymentAlternativePollingTimer);
+        paymentAlternativePollingTimer = null;
+      }
+      if (planChangePollingTimer) {
+        clearInterval(planChangePollingTimer);
+        planChangePollingTimer = null;
+      }
+      if (planPixCountdownTimer) {
+        clearInterval(planPixCountdownTimer);
+        planPixCountdownTimer = null;
+      }
+      if (paymentPixCountdownTimer) {
+        clearInterval(paymentPixCountdownTimer);
+        paymentPixCountdownTimer = null;
+      }
+    };
+    const parseDateSafe = (value) => {
+      const raw = String(value || '').trim();
+      if (!raw) return null;
+      const dt = new Date(raw);
+      return Number.isNaN(dt.getTime()) ? null : dt;
+    };
+    const formatRemaining = (seconds) => {
+      const total = Math.max(0, Number(seconds || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+    const startPixCountdown = ({ expiresAt, targetEl, setTimer, onExpire }) => {
+      if (!targetEl) return;
+      const expiration = parseDateSafe(expiresAt);
+      if (!expiration) {
+        targetEl.textContent = 'Aguardando confirmação do PIX...';
+        setTimer(null);
+        return;
+      }
+      const tick = () => {
+        const now = Date.now();
+        const diffSec = Math.floor((expiration.getTime() - now) / 1000);
+        if (diffSec <= 0) {
+          targetEl.textContent = 'PIX expirado. Gere uma nova cobrança para continuar.';
+          const timerRef = setTimer(null);
+          if (timerRef) {
+            clearInterval(timerRef);
+          }
+          onExpire?.();
+          return;
+        }
+        targetEl.textContent = `Tempo restante para pagamento PIX: ${formatRemaining(diffSec)}`;
+      };
+      tick();
+      const timer = setInterval(tick, 1000);
+      setTimer(timer);
+    };
+    const hasSavedCardToken = () => {
+      const profile = billingSnapshot && typeof billingSnapshot === 'object' ? (billingSnapshot.billing_profile || null) : null;
+      const tokenPresent = profile && Object.prototype.hasOwnProperty.call(profile, 'card_token_present')
+        ? !!profile.card_token_present
+        : !!String(profile?.card_token || '').trim();
+      return tokenPresent;
+    };
+    const setPlanUpgradeTab = (tab) => {
+      const selected = String(tab || 'PIX').toUpperCase() === 'CARD' ? 'CARD' : 'PIX';
+      planUpgradeTabPix?.classList.toggle('is-active', selected === 'PIX');
+      planUpgradeTabPix?.classList.toggle('active', selected === 'PIX');
+      planUpgradeTabPix?.setAttribute('aria-selected', selected === 'PIX' ? 'true' : 'false');
+      planUpgradeTabCard?.classList.toggle('is-active', selected === 'CARD');
+      planUpgradeTabCard?.classList.toggle('active', selected === 'CARD');
+      planUpgradeTabCard?.setAttribute('aria-selected', selected === 'CARD' ? 'true' : 'false');
+      if (selected === 'PIX') {
+        if (planUpgradePaymentMethod) planUpgradePaymentMethod.value = 'PIX';
+      } else {
+        const preferSaved = hasSavedCardToken();
+        if (planUpgradePaymentMethod) {
+          planUpgradePaymentMethod.value = preferSaved ? 'CREDIT_CARD_SAVED' : 'CREDIT_CARD_NEW';
+        }
+      }
+      syncPlanUpgradePaymentUi();
+    };
+    const setPlanUpgradeCardMode = (mode) => {
+      const normalized = String(mode || '').toUpperCase() === 'CREDIT_CARD_NEW' ? 'CREDIT_CARD_NEW' : 'CREDIT_CARD_SAVED';
+      if (normalized === 'CREDIT_CARD_SAVED' && !hasSavedCardToken()) {
+        if (planUpgradePaymentMethod) planUpgradePaymentMethod.value = 'CREDIT_CARD_NEW';
+      } else if (planUpgradePaymentMethod) {
+        planUpgradePaymentMethod.value = normalized;
+      }
+      syncPlanUpgradePaymentUi();
+    };
+    const setPaymentAlternativeTab = (tab) => {
+      const selected = String(tab || 'PIX').toUpperCase() === 'CARD' ? 'CARD' : 'PIX';
+      paymentAlternativeTabPix?.classList.toggle('is-active', selected === 'PIX');
+      paymentAlternativeTabPix?.classList.toggle('active', selected === 'PIX');
+      paymentAlternativeTabPix?.setAttribute('aria-selected', selected === 'PIX' ? 'true' : 'false');
+      paymentAlternativeTabCard?.classList.toggle('is-active', selected === 'CARD');
+      paymentAlternativeTabCard?.classList.toggle('active', selected === 'CARD');
+      paymentAlternativeTabCard?.setAttribute('aria-selected', selected === 'CARD' ? 'true' : 'false');
+      if (selected === 'PIX') {
+        if (paymentAlternativeMethod) paymentAlternativeMethod.value = 'PIX';
+      } else {
+        const preferSaved = hasSavedCardToken();
+        if (paymentAlternativeMethod) {
+          paymentAlternativeMethod.value = preferSaved ? 'CREDIT_CARD_SAVED' : 'CREDIT_CARD_NEW';
+        }
+      }
+      syncRetryPaymentUi();
+    };
+    const setPaymentAlternativeCardMode = (mode) => {
+      const normalized = String(mode || '').toUpperCase() === 'CREDIT_CARD_NEW' ? 'CREDIT_CARD_NEW' : 'CREDIT_CARD_SAVED';
+      if (normalized === 'CREDIT_CARD_SAVED' && !hasSavedCardToken()) {
+        if (paymentAlternativeMethod) paymentAlternativeMethod.value = 'CREDIT_CARD_NEW';
+      } else if (paymentAlternativeMethod) {
+        paymentAlternativeMethod.value = normalized;
+      }
+      syncRetryPaymentUi();
+    };
+    const resetPlanUpgradeModalState = () => {
+      if (planUpgradePaymentMethod) {
+        planUpgradePaymentMethod.value = 'PIX';
+      }
+      if (planUpgradePixWrap) {
+        planUpgradePixWrap.classList.add('d-none');
+      }
+      if (planUpgradePixQr) {
+        planUpgradePixQr.removeAttribute('src');
+        planUpgradePixQr.classList.add('d-none');
+      }
+      if (planUpgradePixPayload) {
+        planUpgradePixPayload.value = '';
+      }
+      if (planUpgradePixCountdown) {
+        planUpgradePixCountdown.textContent = 'Aguardando geração do PIX...';
+      }
+      [planUpgradeCardHolderName, planUpgradeCardNumber, planUpgradeCardExpMonth, planUpgradeCardExpYear, planUpgradeCardCcv].forEach((input) => {
+        if (input) input.value = '';
+      });
+      planPendingPaymentId = '';
+      planPendingPaymentMethod = '';
+      planPixSessionId = '';
+      setPlanUpgradeTab('PIX');
+    };
+    const resetPaymentAlternativeModalState = () => {
+      if (paymentAlternativeMethod) {
+        paymentAlternativeMethod.value = 'PIX';
+      }
+      if (paymentAlternativePixBox) {
+        paymentAlternativePixBox.hidden = true;
+      }
+      if (paymentAlternativePixQr) {
+        paymentAlternativePixQr.removeAttribute('src');
+        paymentAlternativePixQr.classList.add('d-none');
+      }
+      if (paymentAlternativePixPayload) {
+        paymentAlternativePixPayload.value = '';
+      }
+      if (paymentAlternativePixCountdown) {
+        paymentAlternativePixCountdown.textContent = 'Aguardando geração do PIX...';
+      }
+      [paymentAlternativeCardHolderName, paymentAlternativeCardNumber, paymentAlternativeCardExpMonth, paymentAlternativeCardExpYear, paymentAlternativeCardCcv].forEach((input) => {
+        if (input) input.value = '';
+      });
+      retryPendingPaymentId = '';
+      retryPendingPaymentMethod = '';
+      setPaymentAlternativeTab('PIX');
+    };
+    const cancelPendingPixPayment = async (paymentId) => {
+      const pid = String(paymentId || '').trim();
+      if (!pid) return { ok: true, skipped: true };
+      try {
+        const response = await apiFetch(`/api/billing/payments/${encodeURIComponent(pid)}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok) {
+          return { ok: false, message: data?.error || 'Falha ao cancelar cobrança PIX.' };
+        }
+        return { ok: true };
+      } catch (_) {
+        return { ok: false, message: 'Falha de comunicação ao cancelar PIX.' };
+      }
+    };
+    const syncPlanConfirmButton = () => {
+      if (!planChangeConfirmSubmitBtn) return;
+      const method = normalizePaymentMethod(planUpgradePaymentMethod?.value || 'PIX');
+      if (!planChangeRequiresPayment) {
+        planChangeConfirmSubmitBtn.classList.remove('d-none');
+        const label = planChangeConfirmSubmitBtn.querySelector('.btn-label');
+        if (label) label.textContent = 'Confirmar solicitação';
+        return;
+      }
+      if (method === 'PIX') {
+        planChangeConfirmSubmitBtn.classList.add('d-none');
+      } else {
+        planChangeConfirmSubmitBtn.classList.remove('d-none');
+        const label = planChangeConfirmSubmitBtn.querySelector('.btn-label');
+        if (label) label.textContent = 'Pagar com cartão';
+      }
+    };
+    const syncRetryConfirmButton = () => {
+      if (!paymentAlternativeConfirmBtn) return;
+      const method = normalizePaymentMethod(paymentAlternativeMethod?.value || 'PIX');
+      if (method === 'PIX') {
+        paymentAlternativeConfirmBtn.classList.add('d-none');
+      } else {
+        paymentAlternativeConfirmBtn.classList.remove('d-none');
+        const label = paymentAlternativeConfirmBtn.querySelector('.btn-label');
+        if (label) label.textContent = 'Pagar com cartão';
+      }
+    };
+    const setPlanModalLockedState = (locked) => {
+      planChangeLocked = !!locked;
+      if (locked) {
+        planChangeConfirmCloseBtn?.setAttribute('disabled', 'disabled');
+      } else {
+        planChangeConfirmCloseBtn?.removeAttribute('disabled');
+      }
+    };
+    const setRetryModalLockedState = (locked) => {
+      paymentAlternativeLocked = !!locked;
+      if (locked) {
+        paymentAlternativeCloseBtn?.setAttribute('disabled', 'disabled');
+      } else {
+        paymentAlternativeCloseBtn?.removeAttribute('disabled');
+      }
+    };
+    const pollPaymentStatus = ({ paymentId, onProgress, onConfirmed, onError }) => {
+      if (!paymentId) return;
+      let attempts = 0;
+      const maxAttempts = 120;
+      const run = async () => {
+        attempts += 1;
+        try {
+          const response = await apiFetch(`/api/billing/payments/${encodeURIComponent(paymentId)}/status`, { method: 'GET' });
+          const data = await parseApiJson(response);
+          if (!response.ok) {
+            if (attempts >= maxAttempts) {
+              onError?.('Tempo excedido aguardando confirmação de pagamento.');
+            }
+            return;
+          }
+          onProgress?.(data);
+          if (data?.confirmed) {
+            onConfirmed?.(data);
+          } else if (data?.cancelled) {
+            onError?.('Pagamento cancelado antes da confirmação.');
+          } else if (attempts >= maxAttempts) {
+            onError?.('Tempo excedido aguardando confirmação de pagamento.');
+          }
+        } catch (_) {
+          if (attempts >= maxAttempts) {
+            onError?.('Falha ao acompanhar confirmação do pagamento.');
+          }
+        }
+      };
+      run();
+      return setInterval(run, 5000);
     };
     const paymentStatusMeta = (status) => {
       const normalized = String(status || 'PENDING').trim().toUpperCase();
@@ -1482,6 +1883,13 @@
       billingSnapshot = snapshot;
       const subscription = snapshot?.subscription && typeof snapshot.subscription === 'object' ? snapshot.subscription : null;
       const profile = snapshot?.billing_profile && typeof snapshot.billing_profile === 'object' ? snapshot.billing_profile : null;
+      const livePlanCode = String(subscription?.plan_code || '').trim().toLowerCase();
+      if (livePlanCode) {
+        planCurrentCode = livePlanCode;
+        if (planForm) {
+          planForm.dataset.currentPlan = livePlanCode;
+        }
+      }
       renderBillingPayments(snapshot?.payments || []);
 
       const statusText = String(subscription?.status || 'N/D').trim().toUpperCase() || 'N/D';
@@ -1551,6 +1959,7 @@
       if (formSid && asaasSid) formSid.value = asaasSid;
       const formDueDate = planForm?.querySelector('[name="next_due_date"]');
       if (formDueDate) formDueDate.value = String(subscription?.next_due_date || '');
+      applyPendingPlanUi();
     };
     const loadBillingSnapshot = async (reconcile = false) => {
       setInlineAlert(paymentInlineNotice, 'info', 'Carregando dados financeiros...');
@@ -1580,7 +1989,11 @@
         let value = copyValue;
         if (!value && copyTargetId) {
           const copySource = document.getElementById(copyTargetId);
-          value = String(copySource?.textContent || '').trim();
+          if (copySource instanceof HTMLInputElement || copySource instanceof HTMLTextAreaElement) {
+            value = String(copySource.value || '').trim();
+          } else {
+            value = String(copySource?.textContent || '').trim();
+          }
         }
         if (!value || value === 'N/D' || value === '-') return;
         const copied = await copyText(value);
@@ -1601,8 +2014,120 @@
 
     planCodeSelect?.addEventListener('change', syncPlanTiles);
     planReason?.addEventListener('input', syncPlanCounter);
+    const syncPlanUpgradePaymentUi = () => {
+      const method = normalizePaymentMethod(planUpgradePaymentMethod?.value || 'PIX');
+      if (planUpgradePaymentMethod) {
+        planUpgradePaymentMethod.value = method;
+      }
+      const cardTab = method !== 'PIX';
+      const savedEnabled = hasSavedCardToken();
+      planUpgradeTabPix?.classList.toggle('is-active', !cardTab);
+      planUpgradeTabPix?.classList.toggle('active', !cardTab);
+      planUpgradeTabPix?.setAttribute('aria-selected', !cardTab ? 'true' : 'false');
+      planUpgradeTabCard?.classList.toggle('is-active', cardTab);
+      planUpgradeTabCard?.classList.toggle('active', cardTab);
+      planUpgradeTabCard?.setAttribute('aria-selected', cardTab ? 'true' : 'false');
+      planUpgradeCardModeWrap?.classList.toggle('d-none', !cardTab);
+      planUpgradeCardModeSavedBtn?.classList.toggle('is-active', method === 'CREDIT_CARD_SAVED');
+      planUpgradeCardModeSavedBtn?.classList.toggle('active', method === 'CREDIT_CARD_SAVED');
+      planUpgradeCardModeNewBtn?.classList.toggle('is-active', method === 'CREDIT_CARD_NEW');
+      planUpgradeCardModeNewBtn?.classList.toggle('active', method === 'CREDIT_CARD_NEW');
+      if (planUpgradeCardModeSavedBtn) {
+        planUpgradeCardModeSavedBtn.disabled = !savedEnabled;
+      }
+      planUpgradeCardForm?.classList.toggle('d-none', method !== 'CREDIT_CARD_NEW');
+      if (!cardTab) {
+        if (planUpgradePixCountdown) {
+          planUpgradePixCountdown.textContent = 'Aguardando geração do PIX...';
+        }
+      } else {
+        planUpgradePixWrap?.classList.add('d-none');
+      }
+      syncPlanConfirmButton();
+    };
+    const syncRetryPaymentUi = () => {
+      const method = normalizePaymentMethod(paymentAlternativeMethod?.value || 'PIX');
+      if (paymentAlternativeMethod) {
+        paymentAlternativeMethod.value = method;
+      }
+      const cardTab = method !== 'PIX';
+      const savedEnabled = hasSavedCardToken();
+      paymentAlternativeTabPix?.classList.toggle('is-active', !cardTab);
+      paymentAlternativeTabCard?.classList.toggle('is-active', cardTab);
+      paymentAlternativeCardModeWrap?.classList.toggle('d-none', !cardTab);
+      paymentAlternativeCardModeSavedBtn?.classList.toggle('is-active', method === 'CREDIT_CARD_SAVED');
+      paymentAlternativeCardModeSavedBtn?.classList.toggle('active', method === 'CREDIT_CARD_SAVED');
+      paymentAlternativeCardModeNewBtn?.classList.toggle('is-active', method === 'CREDIT_CARD_NEW');
+      paymentAlternativeCardModeNewBtn?.classList.toggle('active', method === 'CREDIT_CARD_NEW');
+      if (paymentAlternativeCardModeSavedBtn) {
+        paymentAlternativeCardModeSavedBtn.disabled = !savedEnabled;
+      }
+      paymentAlternativeCardForm?.classList.toggle('d-none', method !== 'CREDIT_CARD_NEW');
+      if (!cardTab) {
+        if (paymentAlternativePixCountdown) {
+          paymentAlternativePixCountdown.textContent = 'Aguardando geração do PIX...';
+        }
+      } else if (paymentAlternativePixBox) {
+        paymentAlternativePixBox.hidden = true;
+      }
+      syncRetryConfirmButton();
+    };
+    planUpgradePaymentMethod?.addEventListener('change', syncPlanUpgradePaymentUi);
+    paymentAlternativeMethod?.addEventListener('change', syncRetryPaymentUi);
+    planUpgradeTabPix?.addEventListener('click', () => {
+      setPlanUpgradeTab('PIX');
+      if (!planChangeConfirmModal?.classList.contains('hidden') && planChangeRequiresPayment && !autoPlanPixTriggered && !planSubmitInFlight && !planPixSessionId) {
+        autoPlanPixTriggered = true;
+        executePlanChange();
+      }
+    });
+    planUpgradeTabCard?.addEventListener('click', async () => {
+      if (featureBillingPixSessionFlow && planPixSessionId) {
+        setInlineAlert(planChangeConfirmNotice, 'info', 'Cancelando PIX para seguir com pagamento em cartão...');
+        const cancelSession = await cancelPlanPixSession();
+        if (!cancelSession.ok) {
+          setInlineAlert(planChangeConfirmNotice, 'warning', cancelSession.message || 'Não foi possível cancelar o PIX anterior.');
+          return;
+        }
+        planPendingPaymentId = '';
+        planPendingPaymentMethod = '';
+        planUpgradePixWrap?.classList.add('d-none');
+      }
+      setPlanUpgradeTab('CARD');
+    });
+    planUpgradeCardModeSavedBtn?.addEventListener('click', () => setPlanUpgradeCardMode('CREDIT_CARD_SAVED'));
+    planUpgradeCardModeNewBtn?.addEventListener('click', () => setPlanUpgradeCardMode('CREDIT_CARD_NEW'));
+    paymentAlternativeTabPix?.addEventListener('click', () => {
+      setPaymentAlternativeTab('PIX');
+      if (!paymentAlternativeModal?.classList.contains('hidden') && !autoRetryPixTriggered) {
+        autoRetryPixTriggered = true;
+        paymentAlternativeConfirmBtn?.click();
+      }
+    });
+    paymentAlternativeTabCard?.addEventListener('click', () => setPaymentAlternativeTab('CARD'));
+    paymentAlternativeCardModeSavedBtn?.addEventListener('click', () => setPaymentAlternativeCardMode('CREDIT_CARD_SAVED'));
+    paymentAlternativeCardModeNewBtn?.addEventListener('click', () => setPaymentAlternativeCardMode('CREDIT_CARD_NEW'));
+    [
+      ['#planUpgradeCardNumber', formatCardNumber],
+      ['#paymentAlternativeCardNumber', formatCardNumber],
+      ['#planUpgradeCardExpMonth', (v) => onlyDigits(v).slice(0, 2)],
+      ['#paymentAlternativeCardExpMonth', (v) => onlyDigits(v).slice(0, 2)],
+      ['#planUpgradeCardExpYear', (v) => onlyDigits(v).slice(0, 4)],
+      ['#paymentAlternativeCardExpYear', (v) => onlyDigits(v).slice(0, 4)],
+      ['#planUpgradeCardCcv', (v) => onlyDigits(v).slice(0, 4)],
+      ['#paymentAlternativeCardCcv', (v) => onlyDigits(v).slice(0, 4)],
+    ].forEach(([selector, formatter]) => {
+      const input = $(selector);
+      input?.addEventListener('input', (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        target.value = formatter(target.value);
+      });
+    });
     syncPlanTiles();
     syncPlanCounter();
+    syncPlanUpgradePaymentUi();
+    syncRetryPaymentUi();
     applyPendingPlanUi();
     loadBillingSnapshot(false);
 
@@ -1648,6 +2173,155 @@
       }
     });
 
+    const cancelPlanPixSession = async () => {
+      const sid = String(planForm?.querySelector('[name="asaas_subscription_id"]')?.value || '').trim();
+      if (!featureBillingPixSessionFlow || !planPixSessionId || !sid) return { ok: true, skipped: true };
+      try {
+        const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ modal_session_id: planPixSessionId }),
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok) {
+          return { ok: false, message: data?.error || 'Não foi possível cancelar a sessão PIX.' };
+        }
+        return { ok: true, data };
+      } catch (_) {
+        return { ok: false, message: 'Falha de comunicação ao cancelar sessão PIX.' };
+      } finally {
+        planPixSessionId = '';
+      }
+    };
+
+    const confirmPlanPixSession = async ({ sid, paymentId }) => {
+      const sessionId = String(planPixSessionId || '').trim();
+      if (!featureBillingPixSessionFlow || !sessionId) return { ok: false, message: 'Sessão PIX inválida.' };
+      const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modal_session_id: sessionId,
+          payment_id: paymentId,
+        }),
+      });
+      const data = await parseApiJson(response);
+      if (!response.ok || !data?.ok) {
+        return { ok: false, message: data?.error || 'Não foi possível confirmar o upgrade após pagamento.' };
+      }
+      return { ok: true, data };
+    };
+
+    const preparePlanUpgradePix = async ({ sid, planCode }) => {
+      if (!featureBillingPixSessionFlow) return { ok: false, message: 'Fluxo PIX por sessão desabilitado.' };
+      try {
+        const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan/prepare`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan_code: planCode }),
+        });
+        if (response.redirected || String(response.url || '').includes('/login')) {
+          return { ok: false, message: 'Sua sessão expirou. Faça login novamente para gerar o PIX do upgrade.' };
+        }
+        const data = await parseApiJson(response);
+        if (data?.__parse_error) {
+          return { ok: false, message: 'Resposta inválida do servidor para a troca de plano. Tente novamente.' };
+        }
+        if (!response.ok || !data?.ok) {
+          return { ok: false, message: data?.error || 'Não foi possível preparar o PIX do upgrade.' };
+        }
+        const paymentId = String(data?.payment_id || '').trim();
+        const sessionId = String(data?.modal_session_id || '').trim();
+        const pixPayload = String(data?.pix?.payload || '').trim();
+        const pixQr = String(data?.pix?.encodedImage || '').trim();
+        if (!paymentId || !sessionId || (!pixPayload && !pixQr)) {
+          return { ok: false, message: 'PIX retornado sem dados suficientes para pagamento.' };
+        }
+        planPixSessionId = sessionId;
+        planPendingPaymentId = paymentId;
+        planPendingPaymentMethod = 'PIX';
+        if (planUpgradeAmountInfo) {
+          const amount = Number(data?.amount || 0);
+          if (Number.isFinite(amount) && amount > 0) {
+            planUpgradeAmountInfo.textContent = `Diferença a pagar agora: ${formatMoney(amount)}.`;
+            planUpgradeAmountInfo.classList.remove('d-none');
+          }
+        }
+        planUpgradePixWrap?.classList.remove('d-none');
+        if (planUpgradePixPayload) {
+          planUpgradePixPayload.value = pixPayload || 'PIX indisponível no momento.';
+        }
+        if (planUpgradePixQr) {
+          if (pixQr) {
+            planUpgradePixQr.src = `data:image/png;base64,${pixQr}`;
+            planUpgradePixQr.classList.remove('d-none');
+          } else {
+            planUpgradePixQr.removeAttribute('src');
+            planUpgradePixQr.classList.add('d-none');
+          }
+        }
+        startPixCountdown({
+          expiresAt: String(data?.pix?.expirationDate || ''),
+          targetEl: planUpgradePixCountdown,
+          setTimer: (timer) => {
+            const prev = planPixCountdownTimer;
+            if (planPixCountdownTimer) clearInterval(planPixCountdownTimer);
+            planPixCountdownTimer = timer;
+            return prev;
+          },
+          onExpire: () => {
+            planPixFlowState = 'EXPIRED';
+            clearPaymentPolling();
+            setPlanModalLockedState(true);
+            planChangeConfirmCancelBtn?.removeAttribute('disabled');
+            setInlineAlert(planChangeConfirmNotice, 'warning', 'PIX expirado. Gere uma nova cobrança para continuar.');
+          },
+        });
+        setPlanModalLockedState(true);
+        planChangeConfirmCancelBtn?.removeAttribute('disabled');
+        setInlineAlert(planChangeConfirmNotice, 'info', 'PIX gerado. Aguardando confirmação de pagamento...');
+        planPixFlowState = 'PAYMENT_PENDING_CONFIRMATION';
+        clearPaymentPolling();
+        planChangePollingTimer = pollPaymentStatus({
+          paymentId,
+          onProgress: () => {
+            setInlineAlert(planChangeConfirmNotice, 'info', 'Processando pagamento... aguardando confirmação do Asaas.');
+          },
+          onConfirmed: async () => {
+            clearPaymentPolling();
+            const confirmResult = await confirmPlanPixSession({ sid, paymentId });
+            if (!confirmResult.ok) {
+              setInlineAlert(planChangeConfirmNotice, 'warning', confirmResult.message || 'Pagamento confirmado, mas sem aplicar upgrade.');
+              return;
+            }
+            planPixFlowState = 'CONFIRMED';
+            setPlanModalLockedState(false);
+            autoPlanPixTriggered = false;
+            planPendingPaymentId = '';
+            planPendingPaymentMethod = '';
+            planPixSessionId = '';
+            const okMsg = 'Pagamento confirmado e upgrade aplicado com sucesso.';
+            setInlineAlert(planInlineNotice, 'success', okMsg);
+            setInlineAlert(planChangeConfirmNotice, 'success', okMsg);
+            showToast('success', 'Upgrade confirmado', okMsg);
+            setPortalNotice(okMsg, 'ok');
+            await loadBillingSnapshot(true);
+            closePortalModal(planChangeConfirmModal);
+          },
+          onError: (message) => {
+            planPixFlowState = 'ERROR';
+            clearPaymentPolling();
+            setPlanModalLockedState(true);
+            planChangeConfirmCancelBtn?.removeAttribute('disabled');
+            setInlineAlert(planChangeConfirmNotice, 'warning', message || 'Não foi possível confirmar o pagamento do upgrade.');
+          },
+        });
+        return { ok: true };
+      } catch (_) {
+        return { ok: false, message: 'Falha de comunicação ao preparar cobrança PIX.' };
+      }
+    };
+
     const executePlanChange = async () => {
       if (!planForm || !planCodeSelect || planSubmitInFlight) return;
       setInlineAlert(planInlineNotice, '', '');
@@ -1655,7 +2329,7 @@
       const body = Object.fromEntries(new FormData(planForm).entries());
       const sid = String(body.asaas_subscription_id || '').trim();
       const nextPlanCode = String(body.plan_code || '').trim().toLowerCase();
-      const selectedUpgradePaymentMethod = String(planUpgradePaymentMethod?.value || 'CREDIT_CARD').toUpperCase();
+      const selectedUpgradePaymentMethod = normalizePaymentMethod(planUpgradePaymentMethod?.value || 'PIX');
       if (!sid) {
         setInlineAlert(planInlineNotice, 'danger', 'Assinatura não encontrada para troca de plano.');
         return;
@@ -1669,20 +2343,90 @@
         return;
       }
 
+      const isPixTabFlow = selectedUpgradePaymentMethod === 'PIX';
+      if (featureBillingPixSessionFlow && planChangeRequiresPayment && isPixTabFlow) {
+        const prepared = await preparePlanUpgradePix({ sid, planCode: nextPlanCode });
+        if (!prepared.ok) {
+          autoPlanPixTriggered = false;
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          setInlineAlert(planInlineNotice, 'danger', prepared.message || 'Não foi possível gerar o PIX do upgrade.');
+          setInlineAlert(planChangeConfirmNotice, 'danger', prepared.message || 'Não foi possível gerar o PIX do upgrade.');
+        }
+        return;
+      }
+
+      const payload = {
+        ...body,
+        upgrade_payment_method: selectedUpgradePaymentMethod,
+      };
+      const isPixFlow = planChangeRequiresPayment && selectedUpgradePaymentMethod === 'PIX';
+      if (selectedUpgradePaymentMethod !== 'PIX' && String(planPendingPaymentMethod || '').toUpperCase() === 'PIX' && String(planPendingPaymentId || '').trim() !== '') {
+        setInlineAlert(planChangeConfirmNotice, 'info', 'Cancelando PIX anterior para processar pagamento no cartão...');
+        const cancelPix = await cancelPendingPixPayment(planPendingPaymentId);
+        if (!cancelPix.ok) {
+          setInlineAlert(planChangeConfirmNotice, 'warning', cancelPix.message || 'Não foi possível cancelar o PIX anterior.');
+          return;
+        }
+        planPendingPaymentId = '';
+        planPendingPaymentMethod = '';
+      }
+      if (selectedUpgradePaymentMethod === 'CREDIT_CARD_NEW') {
+        const cardCheck = collectCardPayload({
+          holderEl: planUpgradeCardHolderName,
+          numberEl: planUpgradeCardNumber,
+          monthEl: planUpgradeCardExpMonth,
+          yearEl: planUpgradeCardExpYear,
+          ccvEl: planUpgradeCardCcv,
+        });
+        if (!cardCheck.ok) {
+          setInlineAlert(planChangeConfirmNotice, 'danger', cardCheck.error || 'Dados do cartão inválidos.');
+          return;
+        }
+        payload.card = cardCheck.card;
+      }
+
       planSubmitInFlight = true;
       setButtonLoading(planSubmitBtn, true);
       setButtonLoading(planChangeConfirmSubmitBtn, true);
+      if (isPixFlow) {
+        setPlanModalLockedState(true);
+        planChangeConfirmCancelBtn?.setAttribute('disabled', 'disabled');
+      }
       try {
         const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/change-plan`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...body,
-            upgrade_payment_method: selectedUpgradePaymentMethod,
-          }),
+          body: JSON.stringify(payload),
         });
+        if (response.redirected || String(response.url || '').includes('/login')) {
+          autoPlanPixTriggered = false;
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          const authMsg = 'Sua sessão expirou. Faça login novamente para continuar a troca de plano.';
+          setInlineAlert(planInlineNotice, 'danger', authMsg);
+          setInlineAlert(planChangeConfirmNotice, 'danger', authMsg);
+          return;
+        }
         const data = await parseApiJson(response);
+        if (data?.__parse_error) {
+          autoPlanPixTriggered = false;
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          const raw = String(data?.__raw_text || '').toLowerCase();
+          const msg = raw.includes('<html') || raw.includes('<!doctype')
+            ? 'Resposta inesperada do servidor (HTML). Recarregue a página e tente novamente.'
+            : 'Resposta inválida do servidor para a troca de plano. Tente novamente.';
+          setInlineAlert(planInlineNotice, 'danger', msg);
+          setInlineAlert(planChangeConfirmNotice, 'danger', msg);
+          return;
+        }
         if (!response.ok) {
+          autoPlanPixTriggered = false;
+          if (isPixFlow) {
+            setPlanModalLockedState(false);
+            planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          }
           const requestId = String(data?.request_id || '').trim();
           const errMsg = `${data.error || 'Não foi possível enviar a solicitação de troca.'}${requestId ? ` (request_id: ${requestId})` : ''}`;
           setInlineAlert(planInlineNotice, 'danger', errMsg);
@@ -1693,72 +2437,199 @@
         }
 
         const direction = String(data.direction || '').toUpperCase();
+        if (planChangeRequiresPayment && selectedUpgradePaymentMethod === 'PIX' && direction !== 'UPGRADE') {
+          autoPlanPixTriggered = false;
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          const errPix = 'Resposta inválida para upgrade via PIX. Gere uma nova cobrança e tente novamente.';
+          setInlineAlert(planInlineNotice, 'danger', errPix);
+          setInlineAlert(planChangeConfirmNotice, 'danger', errPix);
+          showToast('danger', 'Falha no PIX', errPix);
+          return;
+        }
         if (direction === 'UPGRADE') {
           const prorataAmount = Number(data.prorata_amount || 0);
           const charge = data && typeof data.upgrade_charge === 'object' ? data.upgrade_charge : null;
-          const chargeMethod = String(charge?.method || selectedUpgradePaymentMethod || '').toUpperCase();
+          const chargeMethod = String(charge?.method || '').toUpperCase();
+          const paymentId = String(charge?.payment_id || '').trim();
           const upgradeMsg = prorataAmount > 0
             ? `Upgrade solicitado. Diferença pró-rata: ${formatMoney(prorataAmount)}.`
             : 'Upgrade solicitado com sucesso.';
-          setInlineAlert(planInlineNotice, 'success', upgradeMsg);
-          setInlineAlert(planChangeConfirmNotice, 'success', upgradeMsg);
+          if (prorataAmount < 0.01 || !paymentId) {
+            if (selectedUpgradePaymentMethod === 'PIX') {
+              autoPlanPixTriggered = false;
+              setPlanModalLockedState(false);
+              planChangeConfirmCancelBtn?.removeAttribute('disabled');
+              const errPix = 'Não foi possível gerar o PIX da troca de plano. Tente novamente.';
+              setInlineAlert(planInlineNotice, 'danger', errPix);
+              setInlineAlert(planChangeConfirmNotice, 'danger', errPix);
+              showToast('danger', 'Falha no PIX', errPix);
+              return;
+            }
+            autoPlanPixTriggered = false;
+            if (isPixFlow) {
+              setPlanModalLockedState(false);
+              planChangeConfirmCancelBtn?.removeAttribute('disabled');
+            }
+            clearPendingPlanChange();
+            setInlineAlert(planInlineNotice, 'success', upgradeMsg);
+            setInlineAlert(planChangeConfirmNotice, 'success', upgradeMsg);
+            showToast('success', 'Upgrade solicitado', upgradeMsg);
+            setPortalNotice(upgradeMsg, 'ok');
+            await loadBillingSnapshot(true);
+            closePortalModal(planChangeConfirmModal);
+            return;
+          }
+          setInlineAlert(planInlineNotice, 'info', `${upgradeMsg} Aguardando confirmação de pagamento...`);
+          setInlineAlert(planChangeConfirmNotice, 'info', `${upgradeMsg} Aguardando confirmação de pagamento...`);
+
+          if (selectedUpgradePaymentMethod === 'PIX' && chargeMethod !== 'PIX') {
+            autoPlanPixTriggered = false;
+            setPlanModalLockedState(false);
+            planChangeConfirmCancelBtn?.removeAttribute('disabled');
+            const errPixMethod = 'O servidor não retornou cobrança PIX para este upgrade. Gere uma nova tentativa.';
+            setInlineAlert(planInlineNotice, 'danger', errPixMethod);
+            setInlineAlert(planChangeConfirmNotice, 'danger', errPixMethod);
+            showToast('danger', 'Falha no PIX', errPixMethod);
+            return;
+          }
+
           if (chargeMethod === 'PIX') {
             const pixPayload = String(charge?.pix?.payload || '').trim();
+            const pixQr = String(charge?.pix?.encodedImage || '').trim();
+            const pixExpiration = String(charge?.pix?.expirationDate || '').trim();
+            if (!pixPayload && !pixQr) {
+              autoPlanPixTriggered = false;
+              setPlanModalLockedState(false);
+              planChangeConfirmCancelBtn?.removeAttribute('disabled');
+              const errPix = 'PIX gerado sem QR Code/código copia e cola. Tente novamente.';
+              setInlineAlert(planInlineNotice, 'danger', errPix);
+              setInlineAlert(planChangeConfirmNotice, 'danger', errPix);
+              showToast('danger', 'Falha no PIX', errPix);
+              return;
+            }
+            planUpgradePixWrap?.classList.remove('d-none');
             if (planUpgradePixPayload) {
               planUpgradePixPayload.value = pixPayload || 'PIX indisponível no momento.';
             }
-            planUpgradePixWrap?.classList.remove('d-none');
-            const pixMsg = pixPayload
-              ? `${upgradeMsg} Copie o código PIX abaixo para concluir a diferença.`
-              : `${upgradeMsg} Não foi possível obter o código PIX agora.`;
-            setInlineAlert(planInlineNotice, pixPayload ? 'success' : 'warning', pixMsg);
-            setInlineAlert(planChangeConfirmNotice, pixPayload ? 'success' : 'warning', pixMsg);
+            if (planUpgradePixQr) {
+              if (pixQr) {
+                planUpgradePixQr.src = `data:image/png;base64,${pixQr}`;
+                planUpgradePixQr.classList.remove('d-none');
+              } else {
+                planUpgradePixQr.removeAttribute('src');
+                planUpgradePixQr.classList.add('d-none');
+              }
+            }
+            startPixCountdown({
+              expiresAt: pixExpiration,
+              targetEl: planUpgradePixCountdown,
+              setTimer: (timer) => {
+                const prev = planPixCountdownTimer;
+                if (planPixCountdownTimer) clearInterval(planPixCountdownTimer);
+                planPixCountdownTimer = timer;
+                return prev;
+              },
+              onExpire: () => {
+                clearPaymentPolling();
+                autoPlanPixTriggered = false;
+                setPlanModalLockedState(true);
+                planChangeConfirmCancelBtn?.removeAttribute('disabled');
+                planChangeConfirmSubmitBtn?.removeAttribute('disabled');
+                setInlineAlert(planChangeConfirmNotice, 'warning', 'PIX expirado. Gere uma nova cobrança para concluir o upgrade.');
+              },
+            });
           } else {
+            if (planPixCountdownTimer) {
+              clearInterval(planPixCountdownTimer);
+              planPixCountdownTimer = null;
+            }
+            if (planUpgradePixCountdown) {
+              planUpgradePixCountdown.textContent = 'Pagamento por cartão em processamento.';
+            }
             planUpgradePixWrap?.classList.add('d-none');
-            if (planUpgradePixPayload) planUpgradePixPayload.value = '';
           }
-          showToast('success', 'Upgrade solicitado', upgradeMsg);
-          setPortalNotice(upgradeMsg, 'ok');
-          clearPendingPlanChange();
-          await loadBillingSnapshot(false);
-        } else if (direction === 'DOWNGRADE' || data.scheduled) {
+          planPendingPaymentId = paymentId;
+          planPendingPaymentMethod = chargeMethod;
+
+          if (paymentId) {
+            setPlanModalLockedState(true);
+            planChangeConfirmCancelBtn?.removeAttribute('disabled');
+            clearPaymentPolling();
+            planChangePollingTimer = pollPaymentStatus({
+              paymentId,
+              onProgress: () => {
+                setInlineAlert(planChangeConfirmNotice, 'info', 'Processando pagamento... aguardando confirmação do Asaas.');
+              },
+              onConfirmed: async () => {
+                clearPaymentPolling();
+                setPlanModalLockedState(false);
+                autoPlanPixTriggered = false;
+                planPendingPaymentId = '';
+                planPendingPaymentMethod = '';
+                planChangeConfirmCancelBtn?.removeAttribute('disabled');
+                clearPendingPlanChange();
+                const okMsg = 'Pagamento confirmado e upgrade aplicado com sucesso.';
+                setInlineAlert(planInlineNotice, 'success', okMsg);
+                setInlineAlert(planChangeConfirmNotice, 'success', okMsg);
+                showToast('success', 'Upgrade confirmado', okMsg);
+                setPortalNotice(okMsg, 'ok');
+                await loadBillingSnapshot(true);
+                closePortalModal(planChangeConfirmModal);
+              },
+              onError: (message) => {
+                clearPaymentPolling();
+                autoPlanPixTriggered = false;
+                setPlanModalLockedState(true);
+                planChangeConfirmCancelBtn?.removeAttribute('disabled');
+                const msg = message || 'Não foi possível confirmar o pagamento do upgrade.';
+                setInlineAlert(planInlineNotice, 'warning', msg);
+                setInlineAlert(planChangeConfirmNotice, 'warning', msg);
+              },
+            });
+          }
+          return;
+        }
+
+        if (direction === 'DOWNGRADE' || data.scheduled) {
           clearPendingPlanChange();
           const effectiveAt = String(data.effective_at || '').trim();
           const scheduledMsg = effectiveAt
-            ? `Downgrade agendado para ${formatDate(effectiveAt, true)}. A mudança entra em vigor no próximo vencimento.`
-            : 'Downgrade agendado. A mudança entra em vigor no próximo vencimento.';
-          setInlineAlert(planInlineNotice, 'warning', scheduledMsg);
-          setInlineAlert(planChangeConfirmNotice, 'warning', scheduledMsg);
-          showToast('info', 'Mudança agendada', scheduledMsg);
+            ? `Valor do plano reduzido agora. Funcionalidades atuais mantidas até ${formatDate(effectiveAt, true)}.`
+            : 'Valor do plano reduzido agora. Funcionalidades atuais mantidas até o próximo vencimento.';
+          setInlineAlert(planInlineNotice, 'info', scheduledMsg);
+          setInlineAlert(planChangeConfirmNotice, 'info', scheduledMsg);
+          showToast('info', 'Downgrade solicitado', scheduledMsg);
           setPortalNotice(scheduledMsg, 'ok');
-        } else if (featurePlanChangeWebhookConfirmed) {
-          const payload = {
-            requested_plan_code: nextPlanCode,
-            action_id: data?.action_id || null,
-            request_id: data?.request_id || null,
-            created_at: new Date().toISOString(),
-          };
-          writePendingPlanChange(payload);
-          planSubmitBtn.setAttribute('disabled', 'disabled');
-          const pendingMsg = 'Solicitação enviada. Aguardando confirmação do ASAAS para aplicar a troca.';
-          setInlineAlert(planInlineNotice, 'warning', pendingMsg);
-          showToast('info', 'Troca solicitada', pendingMsg);
-          setPortalNotice(pendingMsg, 'ok');
-        } else {
-          clearPendingPlanChange();
-          const successMsg = direction === 'NOOP'
-            ? 'Plano já está no valor atual (sem alterações).'
-            : 'Troca de plano solicitada com sucesso.';
-          setInlineAlert(planInlineNotice, 'success', successMsg);
-          setInlineAlert(planChangeConfirmNotice, 'success', successMsg);
-          showToast('success', 'Troca de plano', successMsg);
-          setPortalNotice(successMsg, 'ok');
-          await loadBillingSnapshot(false);
-        }
-        if (direction !== 'UPGRADE' || String(data?.upgrade_charge?.method || '').toUpperCase() !== 'PIX') {
           closePortalModal(planChangeConfirmModal);
+          return;
         }
+
+        clearPendingPlanChange();
+        if (planChangeRequiresPayment && selectedUpgradePaymentMethod === 'PIX') {
+          autoPlanPixTriggered = false;
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+          const errPix = 'Upgrade PIX sem cobrança válida. O plano não foi alterado.';
+          setInlineAlert(planInlineNotice, 'danger', errPix);
+          setInlineAlert(planChangeConfirmNotice, 'danger', errPix);
+          showToast('danger', 'Falha no PIX', errPix);
+          return;
+        }
+        const successMsg = direction === 'NOOP'
+          ? 'Plano já está no valor atual (sem alterações).'
+          : 'Troca de plano solicitada com sucesso.';
+        setInlineAlert(planInlineNotice, 'success', successMsg);
+        setInlineAlert(planChangeConfirmNotice, 'success', successMsg);
+        showToast('success', 'Troca de plano', successMsg);
+        setPortalNotice(successMsg, 'ok');
+        await loadBillingSnapshot(true);
+        closePortalModal(planChangeConfirmModal);
       } finally {
+        if (!isPixFlow) {
+          setPlanModalLockedState(false);
+          planChangeConfirmCancelBtn?.removeAttribute('disabled');
+        }
         planSubmitInFlight = false;
         setButtonLoading(planSubmitBtn, false);
         setButtonLoading(planChangeConfirmSubmitBtn, false);
@@ -1770,14 +2641,6 @@
       e.preventDefault();
       setInlineAlert(planInlineNotice, '', '');
       setInlineAlert(planChangeConfirmNotice, '', '');
-      if (featurePlanChangeWebhookConfirmed) {
-        const existingPending = readPendingPlanChange();
-        const pendingRequested = String(existingPending?.requested_plan_code || '').toLowerCase();
-        if (existingPending && pendingRequested && pendingRequested !== planCurrentCode) {
-          setInlineAlert(planInlineNotice, 'warning', 'Já existe uma solicitação de troca pendente de confirmação.');
-          return;
-        }
-      }
       const selectedCode = String(planCodeSelect?.value || '').toLowerCase();
       const selectedName = planNameMap[selectedCode] || selectedCode.toUpperCase();
       const currentName = planNameMap[planCurrentCode] || planCurrentCode.toUpperCase();
@@ -1785,6 +2648,8 @@
       const selectedValue = Number(planPriceMap[selectedCode] || 0);
       const currentValue = Number(planPriceMap[planCurrentCode] || 0);
       const isUpgrade = selectedValue > currentValue;
+      const expectedDiff = Math.max(0, selectedValue - currentValue);
+      planChangeRequiresPayment = isUpgrade;
       if (!selectedCode || selectedCode === planCurrentCode) {
         setInlineAlert(planInlineNotice, 'warning', 'Selecione um plano diferente do atual para continuar.');
         return;
@@ -1799,87 +2664,300 @@
       if (planUpgradePaymentWrap) {
         planUpgradePaymentWrap.classList.toggle('d-none', !isUpgrade);
       }
-      if (planUpgradePixWrap) {
-        planUpgradePixWrap.classList.add('d-none');
+      if (planUpgradeAmountInfo) {
+        if (isUpgrade) {
+          planUpgradeAmountInfo.textContent = `Valor estimado da diferença: ${formatMoney(expectedDiff)} (pró-rata calculada no envio).`;
+          planUpgradeAmountInfo.classList.remove('d-none');
+        } else {
+          planUpgradeAmountInfo.textContent = '';
+          planUpgradeAmountInfo.classList.add('d-none');
+        }
       }
-      if (planUpgradePixPayload) {
-        planUpgradePixPayload.value = '';
+      if (planUpgradeCardForm) {
+        planUpgradeCardForm.classList.add('d-none');
       }
       if (planUpgradePaymentMethod) {
-        planUpgradePaymentMethod.value = 'CREDIT_CARD';
+        planUpgradePaymentMethod.value = 'PIX';
       }
+      planChangeLocked = false;
+      clearPaymentPolling();
+      autoPlanPixTriggered = false;
+      planPixFlowState = 'IDLE';
+      planPixSessionId = '';
+      planChangeConfirmCancelBtn?.removeAttribute('disabled');
+      planChangeConfirmCloseBtn?.removeAttribute('disabled');
+      resetPlanUpgradeModalState();
+      if (isUpgrade) {
+        setPlanModalLockedState(true);
+      }
+      syncPlanConfirmButton();
       openPortalModal(planChangeConfirmModal);
       planChangeConfirmSubmitBtn?.focus();
+      if (isUpgrade) {
+        autoPlanPixTriggered = true;
+        executePlanChange();
+      }
     });
     planChangeConfirmSubmitBtn?.addEventListener('click', executePlanChange);
-    planChangeConfirmCancelBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
-    planChangeConfirmCloseBtn?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
-    planChangeConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(planChangeConfirmModal));
+    planChangeConfirmCancelBtn?.addEventListener('click', async () => {
+      const wasLocked = planChangeLocked;
+      const pendingMethod = String(planPendingPaymentMethod || '').toUpperCase();
+      const pendingPaymentId = String(planPendingPaymentId || '').trim();
+      setPlanModalLockedState(false);
+      clearPaymentPolling();
+      if (featureBillingPixSessionFlow && planPixSessionId) {
+        setInlineAlert(planChangeConfirmNotice, 'info', 'Cancelando sessão PIX em aberto...');
+        const cancelSession = await cancelPlanPixSession();
+        if (!cancelSession.ok) {
+          setInlineAlert(planChangeConfirmNotice, 'warning', cancelSession.message || 'Não foi possível cancelar a sessão PIX agora.');
+          return;
+        }
+      } else if (wasLocked && pendingMethod === 'PIX' && pendingPaymentId !== '') {
+        setInlineAlert(planChangeConfirmNotice, 'info', 'Cancelando cobrança PIX em aberto...');
+        const cancelResult = await cancelPendingPixPayment(pendingPaymentId);
+        if (!cancelResult.ok) {
+          setInlineAlert(planChangeConfirmNotice, 'warning', cancelResult.message || 'Não foi possível cancelar o PIX agora.');
+          return;
+        }
+      }
+      resetPlanUpgradeModalState();
+      autoPlanPixTriggered = false;
+      planPixFlowState = 'CANCELED';
+      setInlineAlert(planChangeConfirmNotice, '', '');
+      setInlineAlert(planInlineNotice, '', '');
+      closePortalModal(planChangeConfirmModal);
+      await loadBillingSnapshot(true);
+    });
+    planChangeConfirmCloseBtn?.addEventListener('click', async () => {
+      if (planChangeLocked) return;
+      if (featureBillingPixSessionFlow && planPixSessionId) {
+        await cancelPlanPixSession();
+      }
+      closePortalModal(planChangeConfirmModal);
+    });
+    planChangeConfirmModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', async () => {
+      if (planChangeLocked) return;
+      if (featureBillingPixSessionFlow && planPixSessionId) {
+        await cancelPlanPixSession();
+      }
+      closePortalModal(planChangeConfirmModal);
+    });
 
     const openPaymentAlternativeModal = (mode) => {
       paymentAlternativeMode = mode;
       if (paymentAlternativeTitle) {
-        paymentAlternativeTitle.textContent = mode === 'ANTICIPATE' ? 'Antecipar cobrança via PIX/BOLETO' : 'Pagar cobrança em atraso';
+        paymentAlternativeTitle.textContent = mode === 'ANTICIPATE' ? 'Antecipar cobrança' : 'Pagar cobrança em atraso';
       }
       if (paymentAlternativeMethod) {
-        paymentAlternativeMethod.value = mode === 'ANTICIPATE' ? 'PIX' : 'PIX';
+        paymentAlternativeMethod.value = 'PIX';
       }
-      if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = true;
-      if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = true;
-      if (paymentAlternativePixPayload) paymentAlternativePixPayload.value = '';
-      if (paymentAlternativeDigitableLine) paymentAlternativeDigitableLine.value = '';
+      autoRetryPixTriggered = false;
+      setRetryModalLockedState(false);
+      clearPaymentPolling();
+      paymentAlternativeCancelBtn?.removeAttribute('disabled');
+      paymentAlternativeCloseBtn?.removeAttribute('disabled');
+      paymentAlternativeConfirmBtn?.removeAttribute('disabled');
       setInlineAlert(paymentAlternativeNotice, '', '');
+      resetPaymentAlternativeModalState();
+      setRetryModalLockedState(true);
+      syncRetryConfirmButton();
       openPortalModal(paymentAlternativeModal);
-      paymentAlternativeMethod?.focus();
+      paymentAlternativeConfirmBtn?.focus();
+      autoRetryPixTriggered = true;
+      paymentAlternativeConfirmBtn?.click();
     };
     payNowBtn?.addEventListener('click', () => openPaymentAlternativeModal('OVERDUE'));
     anticipatePixBtn?.addEventListener('click', () => openPaymentAlternativeModal('ANTICIPATE'));
-    paymentAlternativeCancelBtn?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
-    paymentAlternativeCloseBtn?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
-    paymentAlternativeModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => closePortalModal(paymentAlternativeModal));
+    paymentAlternativeCancelBtn?.addEventListener('click', async () => {
+      const wasLocked = paymentAlternativeLocked;
+      const pendingMethod = String(retryPendingPaymentMethod || '').toUpperCase();
+      const pendingPaymentId = String(retryPendingPaymentId || '').trim();
+      setRetryModalLockedState(false);
+      clearPaymentPolling();
+      if (wasLocked && pendingMethod === 'PIX' && pendingPaymentId !== '') {
+        setInlineAlert(paymentAlternativeNotice, 'info', 'Cancelando cobrança PIX em aberto...');
+        const cancelResult = await cancelPendingPixPayment(pendingPaymentId);
+        if (!cancelResult.ok) {
+          setInlineAlert(paymentAlternativeNotice, 'warning', cancelResult.message || 'Não foi possível cancelar o PIX agora.');
+          return;
+        }
+      }
+      resetPaymentAlternativeModalState();
+      setInlineAlert(paymentAlternativeNotice, '', '');
+      closePortalModal(paymentAlternativeModal);
+      await loadBillingSnapshot(true);
+    });
+    paymentAlternativeCloseBtn?.addEventListener('click', () => {
+      if (paymentAlternativeLocked) return;
+      closePortalModal(paymentAlternativeModal);
+    });
+    paymentAlternativeModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', () => {
+      if (paymentAlternativeLocked) return;
+      closePortalModal(paymentAlternativeModal);
+    });
     paymentAlternativeConfirmBtn?.addEventListener('click', async () => {
       const sid = String(payNowBtn?.dataset?.subscriptionId || '').trim();
       if (!sid) {
         setInlineAlert(paymentAlternativeNotice, 'danger', 'Assinatura inválida para cobrança.');
         return;
       }
-      const billingType = String(paymentAlternativeMethod?.value || 'PIX').toUpperCase();
+      const method = normalizePaymentMethod(paymentAlternativeMethod?.value || 'PIX');
+      const isPixFlow = method === 'PIX';
+      const payload = { billing_type: method, mode: paymentAlternativeMode };
+      if (method !== 'PIX' && String(retryPendingPaymentMethod || '').toUpperCase() === 'PIX' && String(retryPendingPaymentId || '').trim() !== '') {
+        setInlineAlert(paymentAlternativeNotice, 'info', 'Cancelando PIX anterior para processar pagamento no cartão...');
+        const cancelPix = await cancelPendingPixPayment(retryPendingPaymentId);
+        if (!cancelPix.ok) {
+          setInlineAlert(paymentAlternativeNotice, 'warning', cancelPix.message || 'Não foi possível cancelar o PIX anterior.');
+          return;
+        }
+        retryPendingPaymentId = '';
+        retryPendingPaymentMethod = '';
+      }
+      if (method === 'CREDIT_CARD_NEW') {
+        const cardCheck = collectCardPayload({
+          holderEl: paymentAlternativeCardHolderName,
+          numberEl: paymentAlternativeCardNumber,
+          monthEl: paymentAlternativeCardExpMonth,
+          yearEl: paymentAlternativeCardExpYear,
+          ccvEl: paymentAlternativeCardCcv,
+        });
+        if (!cardCheck.ok) {
+          setInlineAlert(paymentAlternativeNotice, 'danger', cardCheck.error || 'Dados do cartão inválidos.');
+          return;
+        }
+        payload.card = cardCheck.card;
+      }
       setInlineAlert(paymentAlternativeNotice, '', '');
       setButtonLoading(paymentAlternativeConfirmBtn, true);
+      if (isPixFlow) {
+        setRetryModalLockedState(true);
+        paymentAlternativeCancelBtn?.setAttribute('disabled', 'disabled');
+      }
       try {
         const response = await apiFetch(`/api/billing/subscriptions/${encodeURIComponent(sid)}/retry`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ billing_type: billingType, mode: paymentAlternativeMode }),
+          body: JSON.stringify(payload),
         });
         const data = await parseApiJson(response);
-        const protocol = normalizeProtocol(data);
-        renderProtocol(paymentProtocolCard, protocol, 'Protocolo financeiro');
+        renderProtocol(paymentProtocolCard, null);
         if (!response.ok) {
-          const msg = `${data.error || 'Não foi possível gerar cobrança alternativa.'}${protocol?.requestId ? ` (request_id: ${protocol.requestId})` : ''}`;
+          autoRetryPixTriggered = false;
+          if (isPixFlow) {
+            setRetryModalLockedState(false);
+            paymentAlternativeCancelBtn?.removeAttribute('disabled');
+          }
+          const msg = `${data.error || 'Não foi possível gerar cobrança alternativa.'}`;
           setInlineAlert(paymentAlternativeNotice, 'danger', msg);
           setInlineAlert(paymentInlineNotice, 'danger', msg);
           return;
         }
-        if (data.billing_type === 'PIX') {
-          const payload = String(data?.pix?.payload || '').trim();
+        const paymentId = String(data?.payment_id || '').trim();
+        if (String(data?.billing_type || '').toUpperCase() === 'PIX') {
+          const pixPayload = String(data?.pix?.payload || '').trim();
+          const pixQr = String(data?.pix?.encodedImage || '').trim();
+          const pixExpiration = String(data?.pix?.expirationDate || '').trim();
           if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = false;
-          if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = true;
-          if (paymentAlternativePixPayload) paymentAlternativePixPayload.value = payload || 'Payload PIX indisponível no momento.';
-        } else {
-          const line = String(data.digitable_line || '').trim();
-          if (paymentAlternativeBoletoBox) paymentAlternativeBoletoBox.hidden = false;
-          if (paymentAlternativePixBox) paymentAlternativePixBox.hidden = true;
-          if (paymentAlternativeDigitableLine) {
-            paymentAlternativeDigitableLine.value = line || String(data.bank_slip_url || '').trim() || 'Linha digitável indisponível.';
+          if (paymentAlternativePixPayload) paymentAlternativePixPayload.value = pixPayload || 'Payload PIX indisponível no momento.';
+          if (paymentAlternativePixQr) {
+            if (pixQr) {
+              paymentAlternativePixQr.src = `data:image/png;base64,${pixQr}`;
+              paymentAlternativePixQr.classList.remove('d-none');
+            } else {
+              paymentAlternativePixQr.removeAttribute('src');
+              paymentAlternativePixQr.classList.add('d-none');
+            }
           }
+          startPixCountdown({
+            expiresAt: pixExpiration,
+            targetEl: paymentAlternativePixCountdown,
+            setTimer: (timer) => {
+              const prev = paymentPixCountdownTimer;
+              if (paymentPixCountdownTimer) clearInterval(paymentPixCountdownTimer);
+              paymentPixCountdownTimer = timer;
+              return prev;
+            },
+            onExpire: () => {
+              clearPaymentPolling();
+              setRetryModalLockedState(true);
+              autoRetryPixTriggered = false;
+              paymentAlternativeCancelBtn?.removeAttribute('disabled');
+              paymentAlternativeConfirmBtn?.removeAttribute('disabled');
+              setInlineAlert(paymentAlternativeNotice, 'warning', 'PIX expirado. Gere uma nova cobrança para continuar.');
+            },
+          });
         }
-        setInlineAlert(paymentAlternativeNotice, 'success', 'Cobrança alternativa gerada com sucesso.');
-        setInlineAlert(paymentInlineNotice, 'success', 'Cobrança alternativa pronta no modal.');
-        await loadBillingSnapshot(false);
+        retryPendingPaymentId = paymentId;
+        retryPendingPaymentMethod = String(data?.billing_type || '').toUpperCase();
+        setRetryModalLockedState(true);
+        paymentAlternativeCancelBtn?.removeAttribute('disabled');
+        paymentAlternativeConfirmBtn?.setAttribute('disabled', 'disabled');
+        setInlineAlert(paymentAlternativeNotice, 'info', 'Pagamento gerado. Aguardando confirmação do Asaas...');
+        if (paymentId) {
+          clearPaymentPolling();
+          paymentAlternativePollingTimer = pollPaymentStatus({
+            paymentId,
+            onProgress: () => {
+              setInlineAlert(paymentAlternativeNotice, 'info', 'Processando pagamento... aguardando confirmação do Asaas.');
+            },
+            onConfirmed: async () => {
+              clearPaymentPolling();
+              setRetryModalLockedState(false);
+              autoRetryPixTriggered = false;
+              retryPendingPaymentId = '';
+              retryPendingPaymentMethod = '';
+              paymentAlternativeConfirmBtn?.removeAttribute('disabled');
+              const okMsg = 'Pagamento confirmado com sucesso.';
+              setInlineAlert(paymentAlternativeNotice, 'success', okMsg);
+              setInlineAlert(paymentInlineNotice, 'success', okMsg);
+              await loadBillingSnapshot(true);
+              closePortalModal(paymentAlternativeModal);
+            },
+            onError: (message) => {
+              clearPaymentPolling();
+              setRetryModalLockedState(true);
+              autoRetryPixTriggered = false;
+              paymentAlternativeCancelBtn?.removeAttribute('disabled');
+              paymentAlternativeConfirmBtn?.removeAttribute('disabled');
+              setInlineAlert(paymentAlternativeNotice, 'warning', message || 'Não foi possível confirmar pagamento agora.');
+            },
+          });
+        } else {
+          setRetryModalLockedState(false);
+          autoRetryPixTriggered = false;
+          paymentAlternativeCancelBtn?.removeAttribute('disabled');
+          paymentAlternativeConfirmBtn?.removeAttribute('disabled');
+          setInlineAlert(paymentAlternativeNotice, 'warning', 'Pagamento gerado, mas sem identificador para acompanhar confirmação.');
+        }
       } finally {
+        if (!isPixFlow) {
+          setRetryModalLockedState(false);
+          paymentAlternativeCancelBtn?.removeAttribute('disabled');
+        }
         setButtonLoading(paymentAlternativeConfirmBtn, false);
       }
+    });
+
+    $('#updateCardNumber')?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      target.value = formatCardNumber(target.value);
+    });
+    $('#updateCardExpMonth')?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      target.value = onlyDigits(target.value).slice(0, 2);
+    });
+    $('#updateCardExpYear')?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      target.value = onlyDigits(target.value).slice(0, 4);
+    });
+    $('#updateCardCcv')?.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      target.value = onlyDigits(target.value).slice(0, 4);
     });
 
     updateCardBtn?.addEventListener('click', () => {
@@ -1902,8 +2980,21 @@
       const expiryMonth = onlyDigits(updateCardForm?.querySelector('[name="expiry_month"]')?.value || '');
       const expiryYear = onlyDigits(updateCardForm?.querySelector('[name="expiry_year"]')?.value || '');
       const ccv = onlyDigits(updateCardForm?.querySelector('[name="ccv"]')?.value || '');
+      const expiryMonthNum = Number(expiryMonth || '0');
+      const expiryYearNum = Number(expiryYear || '0');
+      const now = new Date();
+      const nowYear = now.getFullYear();
+      const nowMonth = now.getMonth() + 1;
       if (!holderName || number.length < 13 || number.length > 19 || !expiryMonth || !expiryYear || ccv.length < 3 || ccv.length > 4) {
         setInlineAlert(updateCardNotice, 'danger', 'Preencha os dados do cartão corretamente.');
+        return;
+      }
+      if (!isLuhnValid(number)) {
+        setInlineAlert(updateCardNotice, 'danger', 'Número do cartão inválido.');
+        return;
+      }
+      if (expiryMonthNum < 1 || expiryMonthNum > 12 || expiryYearNum < nowYear || expiryYearNum > nowYear + 20 || (expiryYearNum === nowYear && expiryMonthNum < nowMonth)) {
+        setInlineAlert(updateCardNotice, 'danger', 'Validade do cartão inválida.');
         return;
       }
       setInlineAlert(updateCardNotice, '', '');
@@ -1939,6 +3030,7 @@
         setInlineAlert(paymentInlineNotice, 'success', okMsg);
         showToast('success', 'Atualização de cartão', okMsg);
         setPortalNotice(okMsg, 'ok');
+        await loadBillingSnapshot(true);
         closePortalModal(updateCardModal);
       } finally {
         setButtonLoading(updateCardConfirmBtn, false);
@@ -2248,11 +3340,13 @@
     const openModal = () => {
       modal?.classList.remove('hidden');
       if (modal) modal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('briefing-open');
       clearBriefNotice();
     };
     const closeModal = () => {
       modal?.classList.add('hidden');
       if (modal) modal.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('briefing-open');
       clearBriefNotice();
     };
     $$('[data-modal-close]').forEach((el) => el.addEventListener('click', closeModal));
@@ -2418,9 +3512,14 @@
     };
 
     const toggleConditionalFields = () => {
+      const handledNames = new Set();
       $$('[data-brief-toggle]').forEach((control) => {
         const name = control.getAttribute('name');
-        const value = control.value;
+        if (!name || handledNames.has(name)) return;
+        handledNames.add(name);
+        const checkedRadio = $(`input[name="${name}"]:checked[data-brief-toggle]`);
+        const controlByName = $(`[data-brief-toggle][name="${name}"]`);
+        const value = checkedRadio?.value || controlByName?.value || '';
         $$(`.conditional-field[data-show-if^='${name}:']`).forEach((el) => {
           const expected = (el.getAttribute('data-show-if') || '').split(':')[1];
           const allowed = expected.split('|').map((v) => v.trim());

@@ -199,6 +199,31 @@ final class AsaasWebhookProcessor
                 [':id' => (string)$subscription['id']]
             );
 
+            try {
+                $this->db->exec(
+                    "UPDATE client.plan_change_payment_sessions
+                     SET
+                       status = CASE WHEN status = 'PENDING' THEN 'CONFIRMED' ELSE status END,
+                       confirmed_at = CASE WHEN status = 'PENDING' THEN now() ELSE confirmed_at END,
+                       updated_at = now(),
+                       metadata = CASE
+                         WHEN metadata IS NULL THEN CAST(:meta AS jsonb)
+                         ELSE metadata || CAST(:meta AS jsonb)
+                       END
+                     WHERE payment_id = :payment_id",
+                    [
+                        ':payment_id' => $paymentIdSafe,
+                        ':meta' => json_encode([
+                            'confirmed_by' => 'ASAAS_WEBHOOK',
+                            'event_type' => $eventType,
+                            'event_id' => $eventId,
+                        ], JSON_UNESCAPED_UNICODE),
+                    ]
+                );
+            } catch (Throwable) {
+                // tabela opcional em rollout incremental
+            }
+
             $pendingRetry = $this->db->one(
                 "SELECT action_id::text AS action_id
                  FROM audit.financial_actions

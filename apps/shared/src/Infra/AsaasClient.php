@@ -152,6 +152,16 @@ final class AsaasClient {
         return $this->toProviderResult($raw);
     }
 
+    public function getPayment(string $paymentId): array {
+        $raw = $this->request('GET', '/payments/' . rawurlencode($paymentId));
+        return $this->toProviderResult($raw);
+    }
+
+    public function cancelPayment(string $paymentId): array {
+        $raw = $this->request('DELETE', '/payments/' . rawurlencode($paymentId));
+        return $this->toProviderResult($raw);
+    }
+
     public function updateSubscriptionCreditCardWithoutCharge(string $subscriptionId, array $payload): array {
         $raw = $this->request('PUT', '/subscriptions/' . rawurlencode($subscriptionId) . '/creditCard', $payload);
         return $this->toProviderResult($raw);
