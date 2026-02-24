@@ -1801,17 +1801,174 @@ function runPublicationStrictCheck(string $logFile, int $publishConsecutiveCheck
     }
 }
 
+function processScheduledSubscriptionChanges(string $logFile): void
+{
+    db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS price_override NUMERIC(10,2)");
+    db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS billing_profile_updated_at TIMESTAMPTZ");
+    db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS last_asaas_event_at TIMESTAMPTZ");
+    db()->exec("
+        CREATE TABLE IF NOT EXISTS client.subscription_change_schedule (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          action_id UUID UNIQUE NOT NULL,
+          subscription_id UUID NOT NULL REFERENCES client.subscriptions(id) ON DELETE CASCADE,
+          organization_id UUID NOT NULL REFERENCES client.organizations(id) ON DELETE CASCADE,
+          asaas_subscription_id VARCHAR(80) NOT NULL,
+          change_type VARCHAR(40) NOT NULL,
+          current_plan_id UUID REFERENCES client.plans(id),
+          target_plan_id UUID REFERENCES client.plans(id),
+          current_value NUMERIC(10,2),
+          target_value NUMERIC(10,2) NOT NULL,
+          effective_at TIMESTAMPTZ NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'SCHEDULED',
+          metadata JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          applied_at TIMESTAMPTZ,
+          failed_at TIMESTAMPTZ,
+          failure_reason TEXT
+        )
+    ");
+
+    $rows = db()->all("
+        SELECT
+          sc.id::text AS id,
+          sc.action_id::text AS action_id,
+          sc.subscription_id::text AS subscription_id,
+          sc.asaas_subscription_id,
+          sc.target_plan_id::text AS target_plan_id,
+          sc.target_value,
+          p.monthly_price AS target_plan_monthly_price
+        FROM client.subscription_change_schedule sc
+        LEFT JOIN client.plans p ON p.id = sc.target_plan_id
+        WHERE sc.status = 'SCHEDULED'
+          AND sc.effective_at <= now()
+        ORDER BY sc.effective_at ASC
+        LIMIT 30
+    ");
+    if (count($rows) === 0) {
+        return;
+    }
+
+    $asaas = new \Shared\Infra\AsaasClient();
+    $auditNotifier = new \Shared\Support\FinancialAuditNotifier(
+        db(),
+        in_array(strtolower(envString('FEATURE_FINANCIAL_AUDIT_NOTIFICATIONS', '1')), ['1', 'true', 'yes', 'on'], true)
+    );
+
+    foreach ($rows as $row) {
+        $scheduleId = (string)($row['id'] ?? '');
+        $actionId = (string)($row['action_id'] ?? '');
+        $subscriptionId = (string)($row['subscription_id'] ?? '');
+        $asaasSubscriptionId = (string)($row['asaas_subscription_id'] ?? '');
+        $targetPlanId = (string)($row['target_plan_id'] ?? '');
+        $targetValue = round((float)($row['target_value'] ?? 0), 2);
+        $targetPlanMonthlyPrice = isset($row['target_plan_monthly_price']) ? round((float)$row['target_plan_monthly_price'], 2) : null;
+
+        if ($asaasSubscriptionId === '' || $subscriptionId === '' || $targetValue <= 0) {
+            db()->exec("
+                UPDATE client.subscription_change_schedule
+                SET status='FAILED', failure_reason=:reason, failed_at=now(), updated_at=now()
+                WHERE id=CAST(:id AS uuid)
+            ", [
+                ':reason' => 'Dados inválidos para aplicar mudança agendada',
+                ':id' => $scheduleId,
+            ]);
+            if ($actionId !== '') {
+                $auditNotifier->recordActionFailed([
+                    'action_id' => $actionId,
+                    'error_reason' => 'Mudança agendada inválida',
+                    'payload' => ['schedule_id' => $scheduleId],
+                ]);
+            }
+            continue;
+        }
+
+        $provider = $asaas->updateSubscriptionValue(
+            $asaasSubscriptionId,
+            $targetValue,
+            ['description' => 'Aplicação automática de mudança agendada no próximo ciclo']
+        );
+        if (!(bool)($provider['ok'] ?? false)) {
+            db()->exec("
+                UPDATE client.subscription_change_schedule
+                SET status='FAILED', failure_reason=:reason, failed_at=now(), updated_at=now()
+                WHERE id=CAST(:id AS uuid)
+            ", [
+                ':reason' => (string)($provider['error_message_safe'] ?? 'Falha ao atualizar no ASAAS'),
+                ':id' => $scheduleId,
+            ]);
+            if ($actionId !== '') {
+                $auditNotifier->recordActionFailed([
+                    'action_id' => $actionId,
+                    'error_reason' => 'Falha ao aplicar mudança agendada no ASAAS',
+                    'payload' => ['schedule_id' => $scheduleId, 'asaas_response' => \Shared\Support\FinancialAuditNotifier::sanitizePayload($provider)],
+                ]);
+            }
+            file_put_contents(
+                $logFile,
+                '[' . date('c') . '] scheduled_change_failed -> schedule_id=' . $scheduleId . ' sub=' . $asaasSubscriptionId . PHP_EOL,
+                FILE_APPEND
+            );
+            continue;
+        }
+
+        $priceOverride = $targetValue;
+        if ($targetPlanMonthlyPrice !== null && abs($targetValue - $targetPlanMonthlyPrice) < 0.01) {
+            $priceOverride = null;
+        }
+
+        db()->exec("
+            UPDATE client.subscriptions
+            SET
+              plan_id = CASE WHEN :target_plan_id <> '' THEN CAST(:target_plan_id AS uuid) ELSE plan_id END,
+              price_override = :price_override,
+              updated_at = now()
+            WHERE id = CAST(:subscription_id AS uuid)
+        ", [
+            ':target_plan_id' => $targetPlanId,
+            ':price_override' => $priceOverride,
+            ':subscription_id' => $subscriptionId,
+        ]);
+
+        db()->exec("
+            UPDATE client.subscription_change_schedule
+            SET status='APPLIED', applied_at=now(), updated_at=now()
+            WHERE id=CAST(:id AS uuid)
+        ", [':id' => $scheduleId]);
+
+        if ($actionId !== '') {
+            $auditNotifier->recordActionConfirmed([
+                'action_id' => $actionId,
+                'after_state' => [
+                    'subscription_id' => $asaasSubscriptionId,
+                    'effective_value' => $targetValue,
+                    'scheduled_change_applied' => true,
+                ],
+                'payload' => ['schedule_id' => $scheduleId],
+            ]);
+        }
+
+        file_put_contents(
+            $logFile,
+            '[' . date('c') . '] scheduled_change_applied -> schedule_id=' . $scheduleId . ' sub=' . $asaasSubscriptionId . ' value=' . $targetValue . PHP_EOL,
+            FILE_APPEND
+        );
+    }
+}
+
 while (true) {
     try {
         static $lastBackfillRun = 0;
         static $lastReconcileRun = 0;
         static $lastBillingClassRun = 0;
+        static $lastSubscriptionScheduleRun = 0;
         static $lastPasswordResetCleanupRun = 0;
         static $lastSiteReleaseCheckRun = 0;
         $nowTs = time();
         $backfillInterval = (int)(envString('CRM_BACKFILL_INTERVAL_SECONDS', '1800'));
         $reconcileInterval = (int)(envString('CRM_RECONCILE_INTERVAL_SECONDS', '300'));
         $billingClassInterval = (int)(envString('CRM_BILLING_CLASS_INTERVAL_SECONDS', '600'));
+        $subscriptionScheduleInterval = (int)(envString('CRM_SUBSCRIPTION_SCHEDULE_INTERVAL_SECONDS', '90'));
         $passwordResetCleanupInterval = 86400;
         $siteReleaseCheckInterval = (int)(envString('CRM_SITE_RELEASE_CHECK_INTERVAL_SECONDS', '600'));
 
@@ -1828,6 +1985,11 @@ while (true) {
         if ($lastBillingClassRun === 0 || ($nowTs - $lastBillingClassRun) >= max(60, $billingClassInterval)) {
             syncClientBillingClassification($logFile);
             $lastBillingClassRun = $nowTs;
+        }
+
+        if ($lastSubscriptionScheduleRun === 0 || ($nowTs - $lastSubscriptionScheduleRun) >= max(30, $subscriptionScheduleInterval)) {
+            processScheduledSubscriptionChanges($logFile);
+            $lastSubscriptionScheduleRun = $nowTs;
         }
 
         if ($lastPasswordResetCleanupRun === 0 || ($nowTs - $lastPasswordResetCleanupRun) >= $passwordResetCleanupInterval) {
