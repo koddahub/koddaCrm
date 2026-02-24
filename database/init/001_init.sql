@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS client.payments (
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_client_payments_asaas_payment_id
+  ON client.payments(asaas_payment_id)
+  WHERE asaas_payment_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS client.billing_profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   subscription_id UUID NOT NULL REFERENCES client.subscriptions(id) ON DELETE CASCADE,
@@ -145,6 +149,21 @@ CREATE TABLE IF NOT EXISTS client.tickets (
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS client.ticket_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES client.tickets(id) ON DELETE CASCADE,
+  source VARCHAR(20) NOT NULL,
+  author_name VARCHAR(190),
+  author_email VARCHAR(190),
+  message TEXT NOT NULL,
+  attachments JSONB,
+  visibility VARCHAR(20) NOT NULL DEFAULT 'CLIENT',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket_created ON client.ticket_messages(ticket_id, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS client.webhook_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -7,6 +7,7 @@ require_once __DIR__ . '/Core/Env.php';
 require_once __DIR__ . '/Support/Response.php';
 require_once __DIR__ . '/Support/Request.php';
 require_once __DIR__ . '/Support/Auth.php';
+require_once __DIR__ . '/Support/FinancialAuditNotifier.php';
 require_once __DIR__ . '/Support/Validator.php';
 require_once __DIR__ . '/Infra/Database.php';
 require_once __DIR__ . '/Infra/AsaasClient.php';

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_client_payments_asaas_payment_id;

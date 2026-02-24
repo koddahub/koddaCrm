@@ -1,0 +1,39 @@
+-- Financial audit trail + documental proof infra
+
+CREATE SCHEMA IF NOT EXISTS audit;
+
+CREATE TABLE IF NOT EXISTS audit.financial_actions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action_id UUID NOT NULL UNIQUE,
+  org_id UUID,
+  user_id UUID,
+  deal_id UUID,
+  action_type VARCHAR(80) NOT NULL,
+  entity_type VARCHAR(40) NOT NULL,
+  entity_id VARCHAR(120),
+  request_id VARCHAR(120) NOT NULL,
+  correlation_id VARCHAR(120),
+  before_state JSONB,
+  after_state JSONB,
+  payload JSONB,
+  status VARCHAR(20) NOT NULL DEFAULT 'REQUESTED',
+  notification_email_status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  notification_crm_status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  email_requested_sent_at TIMESTAMPTZ,
+  email_confirmed_sent_at TIMESTAMPTZ,
+  email_failed_sent_at TIMESTAMPTZ,
+  crm_requested_sent_at TIMESTAMPTZ,
+  crm_confirmed_sent_at TIMESTAMPTZ,
+  crm_failed_sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  confirmed_at TIMESTAMPTZ,
+  failed_at TIMESTAMPTZ,
+  error_reason TEXT,
+  source VARCHAR(40)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fin_actions_org_created ON audit.financial_actions(org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fin_actions_status_created ON audit.financial_actions(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fin_actions_type_created ON audit.financial_actions(action_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fin_actions_request_id ON audit.financial_actions(request_id);
