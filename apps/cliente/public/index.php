@@ -23,6 +23,7 @@ use Shared\Core\Router;
 use Shared\Infra\AsaasClient;
 use Shared\Infra\PromptBuilder;
 use Shared\Support\Auth;
+use Shared\Support\FinancialAuditNotifier;
 use Shared\Support\Request;
 use Shared\Support\Response;
 use Shared\Support\Validator;
@@ -87,6 +88,47 @@ function requestHeader(Request $request, string $name): ?string {
     }
   }
   return null;
+}
+
+function featureFlagEnabled(string $key, bool $default = false): bool {
+  $raw = getenv($key);
+  if ($raw === false) {
+    return $default;
+  }
+  return in_array(strtolower(trim((string)$raw)), ['1', 'true', 'yes', 'on'], true);
+}
+
+function requestCorrelationId(Request $request): string {
+  $raw = trim((string)(
+    requestHeader($request, 'X-Request-Id')
+    ?? requestHeader($request, 'X-Correlation-Id')
+    ?? ''
+  ));
+  if ($raw === '') {
+    $raw = 'req_' . bin2hex(random_bytes(12));
+  }
+  header('X-Request-Id: ' . $raw);
+  return $raw;
+}
+
+function toUuidFromScalar(string $seed): string {
+  return FinancialAuditNotifier::uuidFromString($seed);
+}
+
+function financialAuditNotifier(): FinancialAuditNotifier {
+  static $instance = null;
+  if ($instance instanceof FinancialAuditNotifier) {
+    return $instance;
+  }
+  $instance = new FinancialAuditNotifier(
+    db(),
+    featureFlagEnabled('FEATURE_FINANCIAL_AUDIT_NOTIFICATIONS', true)
+  );
+  return $instance;
+}
+
+function safeJson(mixed $value): string {
+  return json_encode($value, JSON_UNESCAPED_UNICODE) ?: '{}';
 }
 
 function requireCsrf(Request $request): void {
@@ -2633,6 +2675,9 @@ function onboardingPage(?string $output = null): string {
 }
 
 function ensureClientSession(array $userRow): void {
+  if (session_status() === PHP_SESSION_ACTIVE) {
+    session_regenerate_id(true);
+  }
   $_SESSION['client_user'] = [
     'id' => $userRow['id'],
     'organization_id' => $userRow['organization_id'] ?? null,
@@ -5648,6 +5693,7 @@ $router->post('/api/auth/register-contract', function(Request $request) {
 $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
+  $requestId = requestCorrelationId($request);
   $sid = (string)($request->query['id'] ?? '');
   $planCode = (string)$request->input('plan_code', '');
   if ($sid === '' || $planCode === '') {
@@ -5661,18 +5707,82 @@ $router->post('/api/billing/subscriptions/{id}/change-plan', function(Request $r
     return;
   }
 
-  $asaas = new AsaasClient();
-  $result = $asaas->updateSubscription($sid, ['value' => (float)$plan['monthly_price']]);
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $sub = db()->one("
+    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.plan_id::text AS plan_id, s.status, s.asaas_subscription_id,
+           p.code AS current_plan_code, p.monthly_price AS current_price,
+           d.id::text AS deal_id
+    FROM client.subscriptions s
+    JOIN client.plans p ON p.id = s.plan_id
+    LEFT JOIN LATERAL (
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id = s.organization_id
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) d ON true
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
+  if (!$sub || (string)($sub['organization_id'] ?? '') !== $orgId) {
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado'], 403);
+    return;
+  }
 
-  db()->exec("UPDATE client.subscriptions SET plan_id=:pid, updated_at=now() WHERE asaas_subscription_id=:sid", [
-    ':pid' => $plan['id'], ':sid' => $sid
+  $asaas = new AsaasClient();
+  $action = financialAuditNotifier()->recordActionRequested([
+    'action_type' => 'CHANGE_PLAN',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'deal_id' => (string)($sub['deal_id'] ?? ''),
+    'request_id' => $requestId,
+    'correlation_id' => $requestId,
+    'before_state' => [
+      'current_plan_code' => (string)($sub['current_plan_code'] ?? ''),
+      'current_price' => (float)($sub['current_price'] ?? 0),
+      'status' => (string)($sub['status'] ?? ''),
+    ],
+    'payload' => [
+      'asaas_subscription_id' => $sid,
+      'current_plan_code' => (string)($sub['current_plan_code'] ?? ''),
+      'requested_plan_code' => $planCode,
+      'requested_price' => (float)$plan['monthly_price'],
+      'mode' => featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true) ? 'AWAIT_WEBHOOK_CONFIRMATION' : 'IMMEDIATE_LOCAL_UPDATE',
+    ],
+    'source' => 'PORTAL_API',
   ]);
+  $actionId = (string)($action['action_id'] ?? '');
+
+  $result = $asaas->updateSubscription($sid, ['value' => (float)$plan['monthly_price']]);
+  if (!$asaas->isSuccess($result)) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao atualizar assinatura no ASAAS',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($result)],
+    ]);
+    Response::json(['error' => 'Falha ao solicitar troca no gateway de pagamento', 'action_id' => $actionId], 502);
+    return;
+  }
+
+  if (!featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true)) {
+    db()->exec("UPDATE client.subscriptions SET plan_id=:pid, updated_at=now() WHERE asaas_subscription_id=:sid", [
+      ':pid' => $plan['id'], ':sid' => $sid
+    ]);
+    financialAuditNotifier()->recordActionConfirmed([
+      'action_id' => $actionId,
+      'after_state' => ['plan_code' => $planCode, 'mode' => 'IMMEDIATE_LOCAL_UPDATE'],
+      'payload' => ['asaas_http_status' => (int)($result['http_status'] ?? 0)],
+    ]);
+  }
 
   db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('CHANGE_PLAN','Solicitação de troca de plano',:meta)", [
     ':meta' => json_encode(['asaas_subscription_id' => $sid, 'plan_code' => $planCode], JSON_UNESCAPED_UNICODE),
   ]);
 
-  Response::json(['ok' => true, 'asaas' => $result]);
+  Response::json(['ok' => true, 'asaas' => $result, 'action_id' => $actionId, 'request_id' => $requestId]);
 });
 
 $router->get('/api/billing/subscriptions/{id}/status', function(Request $request) {
@@ -5703,33 +5813,178 @@ $router->get('/api/billing/subscriptions/{id}/status', function(Request $request
 });
 
 $router->post('/api/billing/subscriptions/{id}/retry', function(Request $request) {
+  requireClientAuth();
   requireCsrf($request);
+  $requestId = requestCorrelationId($request);
   $sid = (string)($request->query['id'] ?? '');
   if ($sid === '') {
     Response::json(['error' => 'Assinatura inválida'], 422);
     return;
   }
-  $sub = db()->one("SELECT asaas_subscription_id FROM client.subscriptions WHERE asaas_subscription_id=:sid LIMIT 1", [':sid' => $sid]);
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $sub = db()->one("
+    SELECT s.asaas_subscription_id, s.organization_id::text AS organization_id, d.id::text AS deal_id
+    FROM client.subscriptions s
+    LEFT JOIN LATERAL (
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id = s.organization_id
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) d ON true
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
   if (!$sub) {
     Response::json(['error' => 'Assinatura não encontrada'], 404);
     return;
   }
+  if ((string)($sub['organization_id'] ?? '') !== $orgId) {
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado'], 403);
+    return;
+  }
+
+  $action = financialAuditNotifier()->recordActionRequested([
+    'action_type' => 'RETRY_PAYMENT',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'deal_id' => (string)($sub['deal_id'] ?? ''),
+    'request_id' => $requestId,
+    'correlation_id' => $requestId,
+    'payload' => ['asaas_subscription_id' => $sid],
+    'source' => 'PORTAL_API',
+  ]);
+  $actionId = (string)($action['action_id'] ?? '');
+
   $asaas = new AsaasClient();
   $payments = $asaas->getPaymentsBySubscription($sid, 1);
   $payment = $payments['data'][0] ?? null;
   $redirectUrl = null;
+  $paymentId = null;
   if (is_array($payment)) {
+    $paymentId = (string)($payment['id'] ?? '');
     $redirectUrl = $payment['invoiceUrl'] ?? $payment['bankSlipUrl'] ?? $payment['paymentLink'] ?? null;
   }
-  Response::json(['ok' => true, 'payment_redirect_url' => $redirectUrl, 'retry_url' => $redirectUrl]);
+
+  if ((string)$redirectUrl === '') {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Nenhuma cobrança pendente encontrada para retentativa',
+      'payload' => ['payments_response' => FinancialAuditNotifier::sanitizePayload($payments)],
+    ]);
+    Response::json(['error' => 'Nenhuma cobrança pendente encontrada no ASAAS', 'action_id' => $actionId], 404);
+    return;
+  }
+
+  financialAuditNotifier()->recordActionConfirmed([
+    'action_id' => $actionId,
+    'after_state' => [
+      'payment_id' => $paymentId !== '' ? $paymentId : null,
+      'payment_redirect_url' => $redirectUrl,
+    ],
+  ]);
+  Response::json([
+    'ok' => true,
+    'payment_redirect_url' => $redirectUrl,
+    'retry_url' => $redirectUrl,
+    'action_id' => $actionId,
+    'request_id' => $requestId,
+  ]);
 });
 
 $router->post('/api/billing/card/update', function(Request $request) {
   requireClientAuth();
   requireCsrf($request);
+  $requestId = requestCorrelationId($request);
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $action = financialAuditNotifier()->recordActionRequested([
+    'action_type' => 'UPDATE_CARD',
+    'entity_type' => 'BILLING_PROFILE',
+    'entity_id' => $orgId,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'request_id' => $requestId,
+    'correlation_id' => $requestId,
+    'payload' => ['status' => 'ENDPOINT_DISABLED'],
+    'source' => 'PORTAL_API',
+  ]);
+  financialAuditNotifier()->recordActionFailed([
+    'action_id' => (string)($action['action_id'] ?? ''),
+    'error_reason' => 'Atualização direta de cartão desativada por política de segurança',
+  ]);
   Response::json([
     'error' => 'Atualização direta de cartão desativada. Utilize o checkout seguro do ASAAS para alterar o método de pagamento.',
+    'action_id' => (string)($action['action_id'] ?? ''),
+    'request_id' => $requestId,
   ], 410);
+});
+
+$router->post('/api/billing/subscriptions/{id}/cancel', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  $requestId = requestCorrelationId($request);
+  if (!featureFlagEnabled('FEATURE_PORTAL_CANCEL_SUBSCRIPTION', false)) {
+    Response::json(['error' => 'Funcionalidade de cancelamento não habilitada neste ambiente', 'request_id' => $requestId], 403);
+    return;
+  }
+  $sid = (string)($request->query['id'] ?? '');
+  if ($sid === '') {
+    Response::json(['error' => 'Assinatura inválida'], 422);
+    return;
+  }
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $userId = (string)($_SESSION['client_user']['id'] ?? '');
+  $cancelMode = strtoupper(trim((string)$request->input('mode', 'END_OF_CYCLE')));
+  if (!in_array($cancelMode, ['END_OF_CYCLE', 'IMMEDIATE'], true)) {
+    $cancelMode = 'END_OF_CYCLE';
+  }
+  $sub = db()->one("
+    SELECT s.id::text AS id, s.organization_id::text AS organization_id, s.status, d.id::text AS deal_id
+    FROM client.subscriptions s
+    LEFT JOIN LATERAL (
+      SELECT id
+      FROM crm.deal
+      WHERE organization_id = s.organization_id
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) d ON true
+    WHERE s.asaas_subscription_id=:sid
+    LIMIT 1
+  ", [':sid' => $sid]);
+  if (!$sub || (string)($sub['organization_id'] ?? '') !== $orgId) {
+    Response::json(['error' => 'Assinatura não pertence ao usuário autenticado'], 403);
+    return;
+  }
+  $action = financialAuditNotifier()->recordActionRequested([
+    'action_type' => 'CANCEL_SUBSCRIPTION',
+    'entity_type' => 'SUBSCRIPTION',
+    'entity_id' => $sid,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'deal_id' => (string)($sub['deal_id'] ?? ''),
+    'request_id' => $requestId,
+    'correlation_id' => $requestId,
+    'before_state' => ['subscription_status' => (string)($sub['status'] ?? '')],
+    'payload' => ['mode' => $cancelMode, 'asaas_subscription_id' => $sid],
+    'source' => 'PORTAL_API',
+  ]);
+  $actionId = (string)($action['action_id'] ?? '');
+  $asaas = new AsaasClient();
+  $result = $asaas->cancelSubscription($sid);
+  if (!$asaas->isSuccess($result)) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao solicitar cancelamento no ASAAS',
+      'payload' => ['asaas_response' => FinancialAuditNotifier::sanitizePayload($result)],
+    ]);
+    Response::json(['error' => 'Falha ao solicitar cancelamento', 'action_id' => $actionId, 'request_id' => $requestId], 502);
+    return;
+  }
+  Response::json(['ok' => true, 'asaas' => $result, 'action_id' => $actionId, 'request_id' => $requestId]);
 });
 
 $router->post('/api/profile/update', function(Request $request) {
@@ -6655,10 +6910,93 @@ $router->post('/api/tickets', function(Request $request) {
     ':q' => $queue,
   ]);
 
+  if (featureFlagEnabled('FEATURE_TICKET_THREAD_SYNC', false)) {
+    $authorName = (string)($_SESSION['client_user']['name'] ?? 'Cliente');
+    $authorEmail = (string)($_SESSION['client_user']['email'] ?? '');
+    db()->exec("
+      INSERT INTO client.ticket_messages(ticket_id, source, author_name, author_email, message, visibility)
+      VALUES(CAST(:tid AS uuid), 'CLIENT', :name, :email, :message, 'BOTH')
+    ", [
+      ':tid' => (string)$ticketId,
+      ':name' => $authorName,
+      ':email' => $authorEmail,
+      ':message' => (string)$d['description'],
+    ]);
+  }
+
   Response::json(['ok' => true, 'ticket_id' => $ticketId], 201);
 });
 
+$router->get('/api/tickets/{id}/messages', function(Request $request) {
+  requireClientAuth();
+  if (!featureFlagEnabled('FEATURE_TICKET_THREAD_SYNC', false)) {
+    Response::json(['ok' => true, 'messages' => []]);
+    return;
+  }
+  $ticketId = (string)($request->query['id'] ?? '');
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  if ($ticketId === '' || $orgId === '') {
+    Response::json(['error' => 'Requisição inválida'], 422);
+    return;
+  }
+  $ticket = db()->one("SELECT id FROM client.tickets WHERE id=CAST(:id AS uuid) AND organization_id=CAST(:oid AS uuid) LIMIT 1", [
+    ':id' => $ticketId,
+    ':oid' => $orgId,
+  ]);
+  if (!$ticket) {
+    Response::json(['error' => 'Ticket não encontrado'], 404);
+    return;
+  }
+  $messages = db()->all("
+    SELECT id::text AS id, source, author_name, author_email, message, visibility, created_at
+    FROM client.ticket_messages
+    WHERE ticket_id=CAST(:tid AS uuid)
+      AND visibility IN ('CLIENT', 'BOTH')
+    ORDER BY created_at ASC
+  ", [':tid' => $ticketId]);
+  Response::json(['ok' => true, 'messages' => $messages]);
+});
+
+$router->post('/api/tickets/{id}/messages', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  if (!featureFlagEnabled('FEATURE_TICKET_THREAD_SYNC', false)) {
+    Response::json(['error' => 'Funcionalidade desabilitada'], 403);
+    return;
+  }
+  $ticketId = (string)($request->query['id'] ?? '');
+  $orgId = (string)($_SESSION['client_user']['organization_id'] ?? '');
+  $authorName = (string)($_SESSION['client_user']['name'] ?? 'Cliente');
+  $authorEmail = (string)($_SESSION['client_user']['email'] ?? '');
+  $message = trim((string)$request->input('message', ''));
+  if ($ticketId === '' || $orgId === '' || $message === '') {
+    Response::json(['error' => 'Dados obrigatórios ausentes'], 422);
+    return;
+  }
+  $ticket = db()->one("SELECT id FROM client.tickets WHERE id=CAST(:id AS uuid) AND organization_id=CAST(:oid AS uuid) LIMIT 1", [
+    ':id' => $ticketId,
+    ':oid' => $orgId,
+  ]);
+  if (!$ticket) {
+    Response::json(['error' => 'Ticket não encontrado'], 404);
+    return;
+  }
+  $row = db()->one("
+    INSERT INTO client.ticket_messages(ticket_id, source, author_name, author_email, message, visibility)
+    VALUES(CAST(:tid AS uuid), 'CLIENT', :author_name, :author_email, :message, 'BOTH')
+    RETURNING id::text AS id, created_at
+  ", [
+    ':tid' => $ticketId,
+    ':author_name' => $authorName,
+    ':author_email' => $authorEmail,
+    ':message' => $message,
+  ]);
+  db()->exec("UPDATE client.tickets SET updated_at=now() WHERE id=CAST(:id AS uuid)", [':id' => $ticketId]);
+  Response::json(['ok' => true, 'message_id' => (string)($row['id'] ?? ''), 'created_at' => $row['created_at'] ?? null]);
+});
+
 $router->post('/api/webhooks/asaas', function(Request $request) {
+  $requestId = requestCorrelationId($request);
   if (!rateLimitAllow('asaas-webhook', 600, 300)) {
     Response::json(['error' => 'Rate limit'], 429);
     return;
@@ -6677,12 +7015,6 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
   $eventId = (string)($event['id'] ?? sha1(json_encode($event)));
   $eventType = (string)($event['event'] ?? 'UNKNOWN');
 
-  $exists = db()->one("SELECT id FROM client.webhook_events WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
-  if ($exists) {
-    Response::json(['ok' => true, 'idempotent' => true]);
-    return;
-  }
-
   $safeEvent = $event;
   if (isset($safeEvent['payment']['creditCard'])) {
     unset($safeEvent['payment']['creditCard']);
@@ -6690,59 +7022,195 @@ $router->post('/api/webhooks/asaas', function(Request $request) {
   if (isset($safeEvent['payment']['creditCardHolderInfo'])) {
     unset($safeEvent['payment']['creditCardHolderInfo']);
   }
+  $audit = financialAuditNotifier();
+  $pdo = db()->pdo();
+  $subCode = (string)($event['payment']['subscription'] ?? $event['subscription']['id'] ?? '');
+  $paymentId = (string)($event['payment']['id'] ?? '');
+  $isSubscriptionChanged = str_contains($eventType, 'SUBSCRIPTION_CREATED') || str_contains($eventType, 'SUBSCRIPTION_UPDATED');
+  $isPaymentConfirmed = str_contains($eventType, 'PAYMENT_CONFIRMED') || str_contains($eventType, 'PAYMENT_RECEIVED');
+  $isPaymentProblem = str_contains($eventType, 'PAYMENT_OVERDUE') || str_contains($eventType, 'PAYMENT_FAILED');
+  $isSubscriptionCanceled = str_contains($eventType, 'SUBSCRIPTION_DELETED') || str_contains($eventType, 'SUBSCRIPTION_CANCELED');
 
-  db()->exec("INSERT INTO client.webhook_events(provider,event_id,event_type,payload,processed) VALUES('ASAAS',:eid,:et,:p,false)", [
-    ':eid' => $eventId,
-    ':et' => $eventType,
-    ':p' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
-  ]);
+  try {
+    $pdo->beginTransaction();
 
-  $subCode = $event['payment']['subscription'] ?? $event['subscription']['id'] ?? null;
-  if ($subCode) {
-    if (str_contains($eventType, 'SUBSCRIPTION_CREATED') || str_contains($eventType, 'SUBSCRIPTION_UPDATED')) {
-      db()->exec("UPDATE client.subscriptions SET status='PENDING', updated_at=now() WHERE asaas_subscription_id=:sid AND status <> 'ACTIVE'", [':sid' => $subCode]);
-      $org = db()->one("
-        SELECT organization_id
-        FROM client.subscriptions
-        WHERE asaas_subscription_id=:sid
-        ORDER BY created_at DESC
-        LIMIT 1
-      ", [':sid' => $subCode]);
-      if ($org && !empty($org['organization_id'])) {
-        syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_updated');
-      }
+    $exists = db()->one("SELECT id FROM client.webhook_events WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
+    if ($exists) {
+      $pdo->rollBack();
+      Response::json(['ok' => true, 'idempotent' => true]);
+      return;
     }
-    if (str_contains($eventType, 'PAYMENT_CONFIRMED') || str_contains($eventType, 'PAYMENT_RECEIVED')) {
-      db()->exec("UPDATE client.subscriptions SET status='ACTIVE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
 
-      $sub = db()->one("SELECT s.id, s.organization_id, p.monthly_price FROM client.subscriptions s JOIN client.plans p ON p.id=s.plan_id WHERE s.asaas_subscription_id=:sid", [':sid' => $subCode]);
-      if ($sub) {
-        $paymentId = (string)($event['payment']['id'] ?? ('pay_' . substr($eventId, 0, 12)));
-        $alreadyPayment = db()->one("SELECT id FROM client.payments WHERE asaas_payment_id=:pid LIMIT 1", [
-          ':pid' => $paymentId,
-        ]);
-        if (!$alreadyPayment) {
-          db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload) VALUES(:sid,:pay,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
-            ':sid' => $sub['id'],
-            ':pay' => $paymentId,
-            ':amount' => (float)$sub['monthly_price'],
-            ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
-            ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
-          ]);
+    db()->exec("INSERT INTO client.webhook_events(provider,event_id,event_type,payload,processed) VALUES('ASAAS',:eid,:et,:p,false)", [
+      ':eid' => $eventId,
+      ':et' => $eventType,
+      ':p' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+    ]);
+
+    if ($subCode !== '') {
+      if ($isSubscriptionChanged) {
+        db()->exec("UPDATE client.subscriptions SET status='PENDING', updated_at=now() WHERE asaas_subscription_id=:sid AND status <> 'ACTIVE'", [':sid' => $subCode]);
+
+        if (featureFlagEnabled('FEATURE_PLAN_CHANGE_WEBHOOK_CONFIRMED', true)) {
+          $pendingPlanAction = db()->one("
+            SELECT action_id::text AS action_id, payload, org_id::text AS org_id
+            FROM audit.financial_actions
+            WHERE action_type='CHANGE_PLAN'
+              AND status='REQUESTED'
+              AND coalesce(payload->>'asaas_subscription_id','') = :sid
+            ORDER BY created_at DESC
+            LIMIT 1
+          ", [':sid' => $subCode]);
+          if ($pendingPlanAction) {
+            $payloadRaw = $pendingPlanAction['payload'] ?? [];
+            if (is_string($payloadRaw)) {
+              $decodedPayload = json_decode($payloadRaw, true);
+              $payloadRaw = is_array($decodedPayload) ? $decodedPayload : [];
+            }
+            $payload = is_array($payloadRaw) ? $payloadRaw : [];
+            $requestedPlan = trim((string)($payload['requested_plan_code'] ?? ''));
+            if ($requestedPlan !== '') {
+              $plan = db()->one("SELECT id, code FROM client.plans WHERE code=:code LIMIT 1", [':code' => $requestedPlan]);
+              if ($plan) {
+                db()->exec("UPDATE client.subscriptions SET plan_id=:pid, updated_at=now() WHERE asaas_subscription_id=:sid", [
+                  ':pid' => $plan['id'],
+                  ':sid' => $subCode,
+                ]);
+              }
+            }
+            $audit->recordActionConfirmed([
+              'action_id' => (string)$pendingPlanAction['action_id'],
+              'after_state' => ['subscription_id' => $subCode, 'event_type' => $eventType],
+              'payload' => ['webhook_event_id' => $eventId, 'webhook_type' => $eventType],
+            ]);
+          } else {
+            $systemActionId = toUuidFromScalar('SYS_SUBSCRIPTION:' . $eventId . ':' . $subCode);
+            $audit->recordActionRequested([
+              'action_id' => $systemActionId,
+              'action_type' => 'SYSTEM_SUBSCRIPTION_EVENT',
+              'entity_type' => 'SUBSCRIPTION',
+              'entity_id' => $subCode,
+              'request_id' => $requestId,
+              'correlation_id' => $requestId,
+              'payload' => ['webhook_event_id' => $eventId, 'webhook_type' => $eventType, 'subscription_id' => $subCode],
+              'source' => 'ASAAS_WEBHOOK',
+            ], false);
+            $audit->recordActionConfirmed([
+              'action_id' => $systemActionId,
+              'after_state' => ['subscription_id' => $subCode, 'event_type' => $eventType],
+            ], false);
+          }
         }
 
-        $org = db()->one("SELECT legal_name,billing_email,whatsapp FROM client.organizations WHERE id=:oid", [':oid' => $sub['organization_id']]);
-        if ($org) {
-          queueWelcomeMessages((string)$sub['organization_id'], (string)$org['legal_name'], (string)$org['billing_email'], (string)$org['whatsapp']);
-          queueBillingEventEmail(
-            (string)$sub['organization_id'],
-            (string)$org['billing_email'],
-            'Pagamento confirmado - Assinatura KoddaHub',
-            "Recebemos a confirmação do seu pagamento.\n\nEntre agora em https://clientes.koddahub.com.br/login e preencha o briefing para publicar seu primeiro site em até 24h."
-          );
+        $org = db()->one("
+          SELECT organization_id
+          FROM client.subscriptions
+          WHERE asaas_subscription_id=:sid
+          ORDER BY created_at DESC
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($org && !empty($org['organization_id'])) {
+          syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_updated');
         }
+      }
 
-        db()->exec("UPDATE crm.signup_session
+      if ($isPaymentConfirmed) {
+        db()->exec("UPDATE client.subscriptions SET status='ACTIVE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+
+        $sub = db()->one("SELECT s.id, s.organization_id, p.monthly_price FROM client.subscriptions s JOIN client.plans p ON p.id=s.plan_id WHERE s.asaas_subscription_id=:sid", [':sid' => $subCode]);
+        if ($sub) {
+          $paymentIdSafe = $paymentId !== '' ? $paymentId : ('pay_' . substr($eventId, 0, 12));
+          try {
+            db()->exec("
+              INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload)
+              VALUES(:sid,:pay,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)
+              ON CONFLICT (asaas_payment_id)
+              DO UPDATE SET
+                status=EXCLUDED.status,
+                billing_type=EXCLUDED.billing_type,
+                paid_at=coalesce(client.payments.paid_at, EXCLUDED.paid_at),
+                raw_payload=EXCLUDED.raw_payload
+            ", [
+              ':sid' => $sub['id'],
+              ':pay' => $paymentIdSafe,
+              ':amount' => (float)$sub['monthly_price'],
+              ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
+              ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+            ]);
+          } catch (Throwable $upsertError) {
+            $alreadyPayment = db()->one("SELECT id FROM client.payments WHERE asaas_payment_id=:pid LIMIT 1", [':pid' => $paymentIdSafe]);
+            if ($alreadyPayment) {
+              db()->exec("
+                UPDATE client.payments
+                SET status='RECEIVED', billing_type=:type, paid_at=coalesce(paid_at, now()), raw_payload=:raw
+                WHERE id=:id
+              ", [
+                ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
+                ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+                ':id' => $alreadyPayment['id'],
+              ]);
+            } else {
+              db()->exec("INSERT INTO client.payments(subscription_id,asaas_payment_id,amount,status,billing_type,due_date,paid_at,raw_payload) VALUES(:sid,:pay,:amount,'RECEIVED',:type,CURRENT_DATE,now(),:raw)", [
+                ':sid' => $sub['id'],
+                ':pay' => $paymentIdSafe,
+                ':amount' => (float)$sub['monthly_price'],
+                ':type' => (string)($event['payment']['billingType'] ?? 'PIX'),
+                ':raw' => json_encode($safeEvent, JSON_UNESCAPED_UNICODE),
+              ]);
+            }
+          }
+
+          $systemActionId = toUuidFromScalar('SYS_PAYMENT:' . $eventId . ':' . $paymentIdSafe);
+          $audit->recordActionRequested([
+            'action_id' => $systemActionId,
+            'action_type' => 'SYSTEM_PAYMENT_EVENT',
+            'entity_type' => 'PAYMENT',
+            'entity_id' => $paymentIdSafe,
+            'org_id' => (string)$sub['organization_id'],
+            'request_id' => $requestId,
+            'correlation_id' => $requestId,
+            'payload' => [
+              'webhook_event_id' => $eventId,
+              'webhook_type' => $eventType,
+              'subscription_id' => $subCode,
+              'payment_id' => $paymentIdSafe,
+            ],
+            'source' => 'ASAAS_WEBHOOK',
+          ], false);
+          $audit->recordActionConfirmed([
+            'action_id' => $systemActionId,
+            'after_state' => ['payment_id' => $paymentIdSafe, 'status' => 'RECEIVED'],
+          ], false);
+
+          $pendingRetryAction = db()->one("
+            SELECT action_id::text AS action_id
+            FROM audit.financial_actions
+            WHERE action_type='RETRY_PAYMENT'
+              AND status='REQUESTED'
+              AND coalesce(payload->>'asaas_subscription_id','') = :sid
+            ORDER BY created_at DESC
+            LIMIT 1
+          ", [':sid' => $subCode]);
+          if ($pendingRetryAction) {
+            $audit->recordActionConfirmed([
+              'action_id' => (string)$pendingRetryAction['action_id'],
+              'after_state' => ['payment_id' => $paymentIdSafe, 'event_type' => $eventType],
+              'payload' => ['webhook_event_id' => $eventId],
+            ]);
+          }
+
+          $org = db()->one("SELECT legal_name,billing_email,whatsapp FROM client.organizations WHERE id=:oid", [':oid' => $sub['organization_id']]);
+          if ($org) {
+            queueWelcomeMessages((string)$sub['organization_id'], (string)$org['legal_name'], (string)$org['billing_email'], (string)$org['whatsapp']);
+            queueBillingEventEmail(
+              (string)$sub['organization_id'],
+              (string)$org['billing_email'],
+              'Pagamento confirmado - Assinatura KoddaHub',
+              "Recebemos a confirmação do seu pagamento.\n\nEntre agora em https://clientes.koddahub.com.br/login e preencha o briefing para publicar seu primeiro site em até 24h."
+            );
+          }
+
+          db()->exec("UPDATE crm.signup_session
 SET payment_confirmed=true,
     status='PAYMENT_CONFIRMED',
     updated_at=now()
@@ -6753,53 +7221,96 @@ WHERE id IN (
   ORDER BY created_at DESC
   LIMIT 1
 )", [
-          ':oid' => $sub['organization_id'],
-          ':sid' => $subCode,
-        ]);
+            ':oid' => $sub['organization_id'],
+            ':sid' => $subCode,
+          ]);
 
-        syncHospedagemDealByOrganization((string)$sub['organization_id'], (string)$subCode, 'webhook_payment_confirmed');
+          syncHospedagemDealByOrganization((string)$sub['organization_id'], (string)$subCode, 'webhook_payment_confirmed');
+        }
+      }
+
+      if ($isPaymentProblem) {
+        db()->exec("UPDATE client.subscriptions SET status='OVERDUE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+        db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('PAYMENT_ISSUE','Pagamento pendente ou falhou no ASAAS',:meta)", [
+          ':meta' => json_encode(['asaas_subscription_id' => $subCode, 'event_type' => $eventType], JSON_UNESCAPED_UNICODE),
+        ]);
+        $org = db()->one("
+          SELECT o.id, o.billing_email
+          FROM client.organizations o
+          JOIN client.subscriptions s ON s.organization_id=o.id
+          WHERE s.asaas_subscription_id=:sid
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($org) {
+          queueBillingEventEmail(
+            (string)$org['id'],
+            (string)$org['billing_email'],
+            'Ação necessária - Pagamento pendente da assinatura KoddaHub',
+            'Identificamos uma pendência no pagamento da sua assinatura. Acesse sua área do cliente para regularizar a cobrança.'
+          );
+          syncHospedagemDealByOrganization((string)$org['id'], (string)$subCode, 'webhook_payment_overdue');
+        }
+      }
+
+      if ($isSubscriptionCanceled) {
+        db()->exec("UPDATE client.subscriptions SET status='CANCELED', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
+        $pendingCancel = db()->one("
+          SELECT action_id::text AS action_id
+          FROM audit.financial_actions
+          WHERE action_type='CANCEL_SUBSCRIPTION'
+            AND status='REQUESTED'
+            AND coalesce(payload->>'asaas_subscription_id','') = :sid
+          ORDER BY created_at DESC
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($pendingCancel) {
+          $audit->recordActionConfirmed([
+            'action_id' => (string)$pendingCancel['action_id'],
+            'after_state' => ['subscription_status' => 'CANCELED', 'event_type' => $eventType],
+            'payload' => ['webhook_event_id' => $eventId],
+          ]);
+        } else {
+          $systemActionId = toUuidFromScalar('SYS_CANCEL:' . $eventId . ':' . $subCode);
+          $audit->recordActionRequested([
+            'action_id' => $systemActionId,
+            'action_type' => 'SYSTEM_CANCEL_EVENT',
+            'entity_type' => 'SUBSCRIPTION',
+            'entity_id' => $subCode,
+            'request_id' => $requestId,
+            'correlation_id' => $requestId,
+            'payload' => ['webhook_event_id' => $eventId, 'webhook_type' => $eventType, 'subscription_id' => $subCode],
+            'source' => 'ASAAS_WEBHOOK',
+          ], false);
+          $audit->recordActionConfirmed([
+            'action_id' => $systemActionId,
+            'after_state' => ['subscription_status' => 'CANCELED', 'event_type' => $eventType],
+          ], false);
+        }
+        $org = db()->one("
+          SELECT organization_id
+          FROM client.subscriptions
+          WHERE asaas_subscription_id=:sid
+          ORDER BY created_at DESC
+          LIMIT 1
+        ", [':sid' => $subCode]);
+        if ($org && !empty($org['organization_id'])) {
+          syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_canceled');
+        }
       }
     }
-    if (str_contains($eventType, 'PAYMENT_OVERDUE') || str_contains($eventType, 'PAYMENT_FAILED')) {
-      db()->exec("UPDATE client.subscriptions SET status='OVERDUE', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
-      db()->exec("INSERT INTO crm.activities(activity_type,message,metadata) VALUES('PAYMENT_ISSUE','Pagamento pendente ou falhou no ASAAS',:meta)", [
-        ':meta' => json_encode(['asaas_subscription_id' => $subCode, 'event_type' => $eventType], JSON_UNESCAPED_UNICODE),
-      ]);
-      $org = db()->one("
-        SELECT o.id, o.billing_email
-        FROM client.organizations o
-        JOIN client.subscriptions s ON s.organization_id=o.id
-        WHERE s.asaas_subscription_id=:sid
-        LIMIT 1
-      ", [':sid' => $subCode]);
-      if ($org) {
-        queueBillingEventEmail(
-          (string)$org['id'],
-          (string)$org['billing_email'],
-          'Ação necessária - Pagamento pendente da assinatura KoddaHub',
-          'Identificamos uma pendência no pagamento da sua assinatura. Acesse sua área do cliente para regularizar a cobrança.'
-        );
-        syncHospedagemDealByOrganization((string)$org['id'], (string)$subCode, 'webhook_payment_overdue');
-      }
+
+    db()->exec("UPDATE client.webhook_events SET processed=true WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
+    $pdo->commit();
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+      $pdo->rollBack();
     }
-    if (str_contains($eventType, 'SUBSCRIPTION_DELETED') || str_contains($eventType, 'SUBSCRIPTION_CANCELED')) {
-      db()->exec("UPDATE client.subscriptions SET status='CANCELED', updated_at=now() WHERE asaas_subscription_id=:sid", [':sid' => $subCode]);
-      $org = db()->one("
-        SELECT organization_id
-        FROM client.subscriptions
-        WHERE asaas_subscription_id=:sid
-        ORDER BY created_at DESC
-        LIMIT 1
-      ", [':sid' => $subCode]);
-      if ($org && !empty($org['organization_id'])) {
-        syncHospedagemDealByOrganization((string)$org['organization_id'], (string)$subCode, 'webhook_subscription_canceled');
-      }
-    }
+    error_log('[asaas_webhook_error] request_id=' . $requestId . ' event_id=' . $eventId . ' err=' . $e->getMessage());
+    Response::json(['error' => 'Erro ao processar webhook', 'request_id' => $requestId], 500);
+    return;
   }
 
-  db()->exec("UPDATE client.webhook_events SET processed=true WHERE provider='ASAAS' AND event_id=:eid", [':eid' => $eventId]);
-
-  Response::json(['ok' => true]);
+  Response::json(['ok' => true, 'request_id' => $requestId]);
 });
 
 $router->run();
