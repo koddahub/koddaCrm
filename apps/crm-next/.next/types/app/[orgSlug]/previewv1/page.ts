@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/[orgSlug]/previewv1/page.tsx
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/[orgSlug]/previewv1/page.tsx
 import * as entry from '../../../../../app/[orgSlug]/previewv1/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

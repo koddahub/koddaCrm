@@ -1103,11 +1103,27 @@
       if (toggleBtn) toggleBtn.textContent = open ? 'Ocultar planos' : 'Ver planos';
     });
 
-    setTab('login');
+    const qp = new URLSearchParams(window.location.search || '');
+    const requestedTab = (qp.get('tab') || '').trim().toLowerCase();
+    const requestedPlan = (qp.get('plan') || '').trim().toLowerCase();
+    const requestedSource = (qp.get('source') || '').trim().toLowerCase();
+    const requestedDeal = (qp.get('deal') || '').trim();
+    const initialTab = requestedTab === 'signup' ? 'signup' : 'login';
+
+    setTab(initialTab);
     setStep(1);
     initAuthKeyBehavior();
 
-    const qp = new URLSearchParams(window.location.search || '');
+    if (requestedPlan && ['basic', 'profissional', 'pro'].includes(requestedPlan)) {
+      const select = $('#plan_code');
+      if (select) select.value = requestedPlan;
+      if (initialTab === 'signup') {
+        const sourceSuffix = requestedSource === 'crm_proposal' ? ' via proposta' : '';
+        const dealSuffix = requestedDeal ? ` (deal ${requestedDeal})` : '';
+        setNotice(`Plano ${requestedPlan.toUpperCase()} pré-selecionado${sourceSuffix}${dealSuffix}. Complete o cadastro para ativar.`, 'ok');
+      }
+    }
+
     const sidParam = (qp.get('sid') || '').trim();
     const ssidParam = (qp.get('ssid') || '').trim();
     const paymentState = (qp.get('payment') || '').trim();

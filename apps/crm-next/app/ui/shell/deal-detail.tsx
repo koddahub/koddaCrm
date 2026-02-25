@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { buildProposalPresentation, getPlanOptions, getProjectFeatures, getProjectTypeOptions } from '@/lib/proposal-template';
 
 type DealDetailProps = {
   dealId: string;
@@ -84,10 +85,13 @@ type DealData = {
   proposals: {
     id: string;
     title: string;
+    scope: string | null;
+    snapshot?: Record<string, unknown> | null;
     status: string;
     valueCents: number | null;
     pdfPath: string | null;
     createdAt: string;
+    updatedAt: string;
   }[];
   tickets: {
     id: string;
@@ -617,9 +621,46 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     projectType: 'Institucional',
     paymentCondition: 'avista',
     baseValue: '',
-    features: '',
+    selectedFeatures: [] as string[],
+    domainOwn: 'sim',
+    migration: 'nao',
+    pages: '1',
+    emailProfessional: 'sim',
     notes: '',
   });
+  const availableProjectFeatures = useMemo(
+    () => getProjectFeatures(proposalForm.projectType),
+    [proposalForm.projectType],
+  );
+  const proposalPreview = useMemo(() => {
+    if (!data) return null;
+    return buildProposalPresentation({
+      title: proposalForm.title,
+      clientName: data.deal.contactName || data.deal.title || 'Cliente',
+      companyName: data.organization?.legalName || '-',
+      proposalType: proposalForm.proposalType === 'personalizado' ? 'personalizado' : 'hospedagem',
+      paymentCondition: proposalForm.paymentCondition === '6x' ? '6x' : 'avista',
+      planCode: proposalForm.planCode,
+      projectType: proposalForm.projectType,
+      domainOwn: proposalForm.domainOwn === 'nao' ? 'nao' : 'sim',
+      migration: proposalForm.migration === 'sim' ? 'sim' : 'nao',
+      pages: proposalForm.pages,
+      emailProfessional: proposalForm.emailProfessional === 'nao' ? 'nao' : 'sim',
+      selectedFeatures: proposalForm.selectedFeatures,
+      notes: proposalForm.notes,
+      scope: proposalForm.scope,
+      baseValueCents: proposalForm.baseValue ? Math.round(Number(proposalForm.baseValue) * 100) : null,
+      createdAt: new Date(),
+    });
+  }, [data, proposalForm]);
+
+  useEffect(() => {
+    setProposalForm((prev) => {
+      const filtered = prev.selectedFeatures.filter((item) => availableProjectFeatures.includes(item));
+      if (filtered.length === prev.selectedFeatures.length) return prev;
+      return { ...prev, selectedFeatures: filtered };
+    });
+  }, [availableProjectFeatures]);
 
   const canShowClientTabs = useMemo(() => data?.deal.lifecycleStatus === 'CLIENT', [data]);
 
@@ -1271,10 +1312,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     const payload = {
       ...proposalForm,
       baseValue: proposalForm.baseValue ? Number(proposalForm.baseValue) : null,
-      features: proposalForm.features
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean),
+      selectedFeatures: proposalForm.selectedFeatures,
     };
 
     const isEditing = Boolean(editingProposalId);
@@ -1313,19 +1351,25 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   function startEditProposal(proposal: DealData['proposals'][number]) {
-    const snapshot = (proposal as unknown as { snapshot?: Record<string, unknown> }).snapshot || {};
-    const features = Array.isArray(snapshot.features) ? snapshot.features.map((item) => String(item)) : [];
+    const snapshot = (proposal.snapshot && typeof proposal.snapshot === 'object') ? proposal.snapshot : {};
+    const selectedFeatures = Array.isArray(snapshot.selectedFeatures)
+      ? snapshot.selectedFeatures.map((item) => String(item))
+      : (Array.isArray(snapshot.features) ? snapshot.features.map((item) => String(item)) : []);
 
     setEditingProposalId(proposal.id);
     setProposalForm({
       title: proposal.title || 'Proposta comercial KoddaHub',
-      scope: (proposal as unknown as { scope?: string | null }).scope || '',
+      scope: proposal.scope || '',
       proposalType: String(snapshot.proposalType || (data?.deal.dealType === 'HOSPEDAGEM' ? 'hospedagem' : 'personalizado')),
       planCode: String(snapshot.planCode || data?.deal.planCode || 'basic'),
       projectType: String(snapshot.projectType || data?.deal.productCode || data?.deal.intent || 'Institucional'),
       paymentCondition: String(snapshot.paymentCondition || 'avista'),
-      baseValue: '',
-      features: features.join(', '),
+      baseValue: snapshot.baseValueCents ? String(Number(snapshot.baseValueCents) / 100) : '',
+      selectedFeatures,
+      domainOwn: String(snapshot.domainOwn || 'sim'),
+      migration: String(snapshot.migration || 'nao'),
+      pages: String(snapshot.pages || '1'),
+      emailProfessional: String(snapshot.emailProfessional || 'sim'),
       notes: String(snapshot.notes || ''),
     });
     openClientModal('proposta');
@@ -1346,6 +1390,15 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     setNotice('Proposta excluída com sucesso.');
     await loadDeal();
+  }
+
+  function toggleProposalFeature(featureName: string) {
+    setProposalForm((prev) => {
+      if (prev.selectedFeatures.includes(featureName)) {
+        return { ...prev, selectedFeatures: prev.selectedFeatures.filter((item) => item !== featureName) };
+      }
+      return { ...prev, selectedFeatures: [...prev.selectedFeatures, featureName] };
+    });
   }
 
   const publicationDomainApprovalStatus = String(operationFlow?.publication?.domainApproval?.status || '').toUpperCase();
@@ -1893,69 +1946,222 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                 <button type="button" className="btn-close" aria-label="Fechar modal de Proposta" autoFocus onClick={closeClientModal} />
               </div>
               <div className="modal-body deal-tab-panel proposal-tab-panel">
-          <form className="stack-form" onSubmit={generateProposal}>
-            <label>Título</label>
-            <input value={proposalForm.title} onChange={(e) => setProposalForm((p) => ({ ...p, title: e.target.value }))} required />
+          <div className="proposal-generator-layout">
+            <form className="stack-form proposal-generator-form" onSubmit={generateProposal}>
+              <label>Título</label>
+              <input value={proposalForm.title} onChange={(e) => setProposalForm((p) => ({ ...p, title: e.target.value }))} required />
 
-            <label>Tipo de proposta</label>
-            <select value={proposalForm.proposalType} onChange={(e) => setProposalForm((p) => ({ ...p, proposalType: e.target.value }))}>
-              <option value="hospedagem">Plano de hospedagem</option>
-              <option value="personalizado">Projeto personalizado</option>
-            </select>
+              <label>Tipo de proposta</label>
+              <select value={proposalForm.proposalType} onChange={(e) => setProposalForm((p) => ({ ...p, proposalType: e.target.value }))}>
+                <option value="hospedagem">Plano de hospedagem</option>
+                <option value="personalizado">Projeto personalizado</option>
+              </select>
 
-            <label>Plano mensal</label>
-            <select value={proposalForm.planCode} onChange={(e) => setProposalForm((p) => ({ ...p, planCode: e.target.value }))}>
-              <option value="basic">Básico</option>
-              <option value="profissional">Profissional</option>
-              <option value="pro">Pro</option>
-            </select>
+              <label>Plano mensal</label>
+              <select value={proposalForm.planCode} onChange={(e) => setProposalForm((p) => ({ ...p, planCode: e.target.value }))}>
+                {getPlanOptions().map((plan) => (
+                  <option key={plan.code} value={plan.code}>{plan.name}</option>
+                ))}
+              </select>
 
-            <label>Tipo de projeto</label>
-            <input value={proposalForm.projectType} onChange={(e) => setProposalForm((p) => ({ ...p, projectType: e.target.value }))} />
+              <label>Condição pagamento projeto</label>
+              <select value={proposalForm.paymentCondition} onChange={(e) => setProposalForm((p) => ({ ...p, paymentCondition: e.target.value }))}>
+                <option value="avista">À vista</option>
+                <option value="6x">Parcelado em 6x</option>
+              </select>
 
-            <label>Valor base do projeto (R$)</label>
-            <input type="number" step="0.01" min="0" value={proposalForm.baseValue} onChange={(e) => setProposalForm((p) => ({ ...p, baseValue: e.target.value }))} />
+              <label>Domínio próprio</label>
+              <select value={proposalForm.domainOwn} onChange={(e) => setProposalForm((p) => ({ ...p, domainOwn: e.target.value }))}>
+                <option value="sim">Sim</option>
+                <option value="nao">Não (.com.br grátis)</option>
+              </select>
 
-            <label>Condição pagamento projeto</label>
-            <select value={proposalForm.paymentCondition} onChange={(e) => setProposalForm((p) => ({ ...p, paymentCondition: e.target.value }))}>
-              <option value="avista">À vista</option>
-              <option value="6x">Parcelado em 6x</option>
-            </select>
+              <label>Migração de site existente</label>
+              <select value={proposalForm.migration} onChange={(e) => setProposalForm((p) => ({ ...p, migration: e.target.value }))}>
+                <option value="nao">Não</option>
+                <option value="sim">Sim (grátis)</option>
+              </select>
 
-            <label>Funcionalidades extras (separadas por vírgula)</label>
-            <input value={proposalForm.features} onChange={(e) => setProposalForm((p) => ({ ...p, features: e.target.value }))} placeholder="Ex: Blog, Chatbot, Área logada" />
+              <label>Quantidade de páginas (1-5)</label>
+              <select value={proposalForm.pages} onChange={(e) => setProposalForm((p) => ({ ...p, pages: e.target.value }))}>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
 
-            <label>Escopo</label>
-            <textarea value={proposalForm.scope} onChange={(e) => setProposalForm((p) => ({ ...p, scope: e.target.value }))} />
+              <label>E-mail profissional</label>
+              <select value={proposalForm.emailProfessional} onChange={(e) => setProposalForm((p) => ({ ...p, emailProfessional: e.target.value }))}>
+                <option value="sim">Sim</option>
+                <option value="nao">Não</option>
+              </select>
 
-            <label>Observações</label>
-            <textarea value={proposalForm.notes} onChange={(e) => setProposalForm((p) => ({ ...p, notes: e.target.value }))} />
+              <label>Tipo de projeto</label>
+              <select value={proposalForm.projectType} onChange={(e) => setProposalForm((p) => ({ ...p, projectType: e.target.value }))}>
+                {getProjectTypeOptions().map((projectType) => (
+                  <option key={projectType} value={projectType}>{projectType}</option>
+                ))}
+              </select>
 
-            <div className="proposal-form-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button type="submit" className="primary-btn">
-                {editingProposalId ? 'Salvar edição da proposta' : 'Gerar proposta com PDF'}
-              </button>
-              {editingProposalId ? (
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={() => {
-                    setEditingProposalId(null);
-                    setProposalForm((prev) => ({
-                      ...prev,
-                      title: 'Proposta comercial KoddaHub',
-                      scope: '',
-                      notes: '',
-                      baseValue: '',
-                      features: '',
-                    }));
-                  }}
-                >
-                  Cancelar edição
-                </button>
+              {proposalForm.proposalType === 'personalizado' ? (
+                <div className="proposal-feature-box">
+                  <strong>Funcionalidades extras (+R$ 150,00 cada)</strong>
+                  <div className="proposal-feature-grid">
+                    {availableProjectFeatures.map((feature) => (
+                      <label key={feature} className="proposal-feature-item">
+                        <input
+                          type="checkbox"
+                          checked={proposalForm.selectedFeatures.includes(feature)}
+                          onChange={() => toggleProposalFeature(feature)}
+                        />
+                        <span>{feature}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ) : null}
-            </div>
-          </form>
+
+              <label>Escopo</label>
+              <textarea value={proposalForm.scope} onChange={(e) => setProposalForm((p) => ({ ...p, scope: e.target.value }))} />
+
+              <label>Observações</label>
+              <textarea value={proposalForm.notes} onChange={(e) => setProposalForm((p) => ({ ...p, notes: e.target.value }))} />
+
+              <div className="proposal-form-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="submit" className="primary-btn">
+                  {editingProposalId ? 'Salvar edição da proposta' : 'Gerar proposta com PDF'}
+                </button>
+                {editingProposalId ? (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => {
+                      setEditingProposalId(null);
+                      setProposalForm((prev) => ({
+                        ...prev,
+                        title: 'Proposta comercial KoddaHub',
+                        scope: '',
+                        notes: '',
+                        baseValue: '',
+                        selectedFeatures: [],
+                        domainOwn: 'sim',
+                        migration: 'nao',
+                        pages: '1',
+                        emailProfessional: 'sim',
+                      }));
+                    }}
+                  >
+                    Cancelar edição
+                  </button>
+                ) : null}
+              </div>
+            </form>
+
+            {proposalPreview ? (
+              <section className="proposal-preview-panel">
+                <article className="proposal-paper">
+                  <div className="pdf-block">
+                    <header className="proposal-header">
+                      <div>
+                        <h2 className="proposal-logo"><span>Kodda</span>Hub</h2>
+                        <p className="meta">Proposta comercial • {proposalPreview.todayLabel} • Válida por 7 dias</p>
+                      </div>
+                      <div className="hero-text">
+                        <h3>Sua Presença Digital Completa por um Preço Imbatível</h3>
+                      </div>
+                    </header>
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>Dados do cliente</h3>
+                    <div className="grid-2">
+                      <div className="box"><span>Cliente</span><strong>{proposalPreview.clientName || '—'}</strong></div>
+                      <div className="box"><span>Empresa</span><strong>{proposalPreview.companyName || '—'}</strong></div>
+                      <div className="box"><span>Tipo</span><strong>{proposalPreview.proposalTypeLabel}</strong></div>
+                      <div className="box"><span>Pagamento projeto</span><strong>{proposalPreview.paymentLabel}</strong></div>
+                    </div>
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>Planos mensais (recorrência)</h3>
+                    <div className="plans">
+                      {proposalPreview.planCards.map((plan) => (
+                        <div key={plan.name} className={`plan-card ${plan.active ? 'active' : ''}`}>
+                          <h4>{plan.name}</h4>
+                          <div className="value">{plan.monthlyLabel}</div>
+                          <p>{plan.description}</p>
+                          <ul className="plan-highlights">
+                            {plan.highlights.map((highlight) => (
+                              <li key={`${plan.code}-${highlight}`}>{highlight}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>Escopo do projeto</h3>
+                    <ul className="bullet-list">
+                      {proposalPreview.scopeItems.map((item) => (
+                        <li key={item.title}>
+                          <strong>{item.title}</strong>
+                          <span>{item.description}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {proposalPreview.scope.trim() ? <p><strong>Escopo adicional:</strong> {proposalPreview.scope.trim()}</p> : null}
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>Investimento objetivo</h3>
+                    <table className="price-table">
+                      <thead>
+                        <tr>
+                          <th>Descrição</th>
+                          <th>Valor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {proposalPreview.investmentRows.map((row) => (
+                          <tr key={`${row.label}-${row.value}`}>
+                            <td>{row.label}</td>
+                            <td>{row.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div className="finance-summary">{proposalPreview.financeSummary}</div>
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>Condições comerciais</h3>
+                    <ul className="bullet-list">
+                      {proposalPreview.terms.map((term) => (
+                        <li key={term}>{term}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="pdf-block section">
+                    <h3>O que está incluso</h3>
+                    <div className="included-grid">
+                      {proposalPreview.includedItems.map((item) => (
+                        <div key={item.label} className={`included-item ${item.off ? 'off' : ''}`}>{item.label}</div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="pdf-block cta">
+                    <strong>Pronto para decolar sua presença digital?</strong>
+                    <p>Esta proposta é válida por 7 dias. Se aprovar, iniciamos o cronograma imediatamente.</p>
+                    {proposalPreview.notes.trim() ? <p><strong>Observações:</strong> {proposalPreview.notes.trim()}</p> : null}
+                  </div>
+                </article>
+              </section>
+            ) : null}
+          </div>
 
           <div className="table-wrap" style={{ marginTop: 16 }}>
             <table>
@@ -2832,6 +3038,56 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                           <td>{doc.mimeType || '-'}</td>
                           <td>{doc.sizeBytes || '-'}</td>
                           <td>{dateTime(doc.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <h6 style={{ margin: '10px 12px' }}>Propostas</h6>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Título</th>
+                        <th>Status</th>
+                        <th>Valor</th>
+                        <th>PDF</th>
+                        <th>Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.proposals.length === 0 ? (
+                        <tr>
+                          <td colSpan={5}>Nenhuma proposta gerada</td>
+                        </tr>
+                      ) : data.proposals.map((proposal) => (
+                        <tr key={proposal.id}>
+                          <td>{proposal.title}</td>
+                          <td>{proposal.status}</td>
+                          <td>{currency(proposal.valueCents)}</td>
+                          <td>{proposal.pdfPath ? 'Gerado' : '-'}</td>
+                          <td>
+                            <div className="row-actions proposal-row-actions documentos-proposal-actions">
+                              <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id)}>
+                                Enviar por e-mail
+                              </button>
+                              <button
+                                type="button"
+                                className="primary-btn"
+                                onClick={() => window.open(`/api/deals/${dealId}/proposals/${proposal.id}/pdf`, '_blank')}
+                                disabled={!proposal.pdfPath}
+                              >
+                                Abrir PDF
+                              </button>
+                              <button type="button" className="secondary-btn" onClick={() => startEditProposal(proposal)}>
+                                Editar
+                              </button>
+                              <button type="button" className="danger-btn" onClick={() => setDeletingProposalId(proposal.id)}>
+                                Excluir
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

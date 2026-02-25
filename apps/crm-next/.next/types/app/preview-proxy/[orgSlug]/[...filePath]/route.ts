@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/preview-proxy/[orgSlug]/[...filePath]/route.ts
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/preview-proxy/[orgSlug]/[...filePath]/route.ts
 import * as entry from '../../../../../../app/preview-proxy/[orgSlug]/[...filePath]/route.js'
 import type { NextRequest } from 'next/server.js'
 

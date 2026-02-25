@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/api/auth/logout/route.ts
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/api/auth/logout/route.ts
 import * as entry from '../../../../../../app/api/auth/logout/route.js'
 import type { NextRequest } from 'next/server.js'
 

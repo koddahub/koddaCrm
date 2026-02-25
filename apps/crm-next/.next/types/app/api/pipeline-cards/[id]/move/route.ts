@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/api/pipeline-cards/[id]/move/route.ts
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/api/pipeline-cards/[id]/move/route.ts
 import * as entry from '../../../../../../../app/api/pipeline-cards/[id]/move/route.js'
 import type { NextRequest } from 'next/server.js'
 

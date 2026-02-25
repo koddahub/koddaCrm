@@ -3,7 +3,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
-import { buildProposalLines, buildProposalValueCents, renderSimpleProposalPdf } from '@/lib/proposals';
+import { renderProposalPdfBuffer } from '@/lib/proposal-pdf';
+import { buildProposalPresentation, computePersistedValueCents, type PaymentCondition, type ProposalType } from '@/lib/proposal-template';
 import { prisma } from '@/lib/prisma';
 import { absoluteFromStoredPath, storageRelativePath, uploadsDir } from '@/lib/storage';
 
@@ -19,6 +20,7 @@ async function getProposal(dealId: string, proposalId: string) {
         include: {
           organization: {
             select: {
+              id: true,
               legalName: true,
               billingEmail: true,
             },
@@ -27,6 +29,43 @@ async function getProposal(dealId: string, proposalId: string) {
       },
     },
   });
+}
+
+function normalizeProposalType(value: unknown, fallback: ProposalType): ProposalType {
+  const normalized = String(value || '').toLowerCase();
+  if (normalized === 'personalizado') return 'personalizado';
+  if (normalized === 'hospedagem') return 'hospedagem';
+  return fallback;
+}
+
+function normalizePaymentCondition(value: unknown): PaymentCondition {
+  return String(value || '').toLowerCase() === '6x' ? '6x' : 'avista';
+}
+
+function parseSelectedFeatures(body: Record<string, unknown>, snapshot: Record<string, unknown>) {
+  if (Array.isArray(body.selectedFeatures)) {
+    return body.selectedFeatures.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (Array.isArray(body.features)) {
+    return body.features.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (Array.isArray(snapshot.selectedFeatures)) {
+    return snapshot.selectedFeatures.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (Array.isArray(snapshot.features)) {
+    return snapshot.features.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function parseBaseValueCents(bodyValue: unknown, snapshotValue: unknown) {
+  const target = bodyValue === undefined ? snapshotValue : bodyValue;
+  if (target === null || target === undefined || target === '') return null;
+  const asNumber = Number(target);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return Math.round(asNumber * 100);
+  }
+  return null;
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string; proposalId: string } }) {
@@ -38,48 +77,76 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: 'Proposta não encontrada para este deal' }, { status: 404 });
   }
 
-  const body = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const snapshot = (proposal.snapshot && typeof proposal.snapshot === 'object' ? proposal.snapshot : {}) as Record<string, unknown>;
 
   const title = String(body.title || proposal.title || 'Proposta comercial KoddaHub').trim();
   const scope = body.scope !== undefined ? String(body.scope || '') : String(proposal.scope || '');
-  const proposalType = String(body.proposalType || snapshot.proposalType || (proposal.deal.dealType === 'HOSPEDAGEM' ? 'hospedagem' : 'personalizado')).toLowerCase();
+  const defaultProposalType: ProposalType = proposal.deal.dealType === 'HOSPEDAGEM' ? 'hospedagem' : 'personalizado';
+  const proposalType = normalizeProposalType(body.proposalType || snapshot.proposalType, defaultProposalType);
   const planCode = String(body.planCode || snapshot.planCode || proposal.deal.planCode || 'basic').toLowerCase();
-  const projectType = String(body.projectType || snapshot.projectType || proposal.deal.productCode || proposal.deal.intent || '-');
-  const paymentCondition = String(body.paymentCondition || snapshot.paymentCondition || 'avista');
+  const projectType = String(body.projectType || snapshot.projectType || proposal.deal.productCode || proposal.deal.intent || 'Institucional');
+  const paymentCondition = normalizePaymentCondition(body.paymentCondition || snapshot.paymentCondition);
   const notes = String(body.notes || snapshot.notes || '');
+  const domainOwn = String(body.domainOwn || snapshot.domainOwn || 'sim') === 'nao' ? 'nao' : 'sim';
+  const migration = String(body.migration || snapshot.migration || 'nao') === 'sim' ? 'sim' : 'nao';
+  const emailProfessional = String(body.emailProfessional || snapshot.emailProfessional || 'sim') === 'nao' ? 'nao' : 'sim';
+  const pages = String(body.pages || snapshot.pages || '1');
+  const selectedFeatures = parseSelectedFeatures(body, snapshot);
+  const baseValueCents = parseBaseValueCents(body.baseValue, snapshot.baseValueCents);
 
-  const features = Array.isArray(body.features)
-    ? body.features.map((item: unknown) => String(item).trim()).filter(Boolean)
-    : Array.isArray(snapshot.features)
-      ? snapshot.features.map((item) => String(item).trim()).filter(Boolean)
-      : [];
+  const clientName = String(body.clientName || snapshot.clientName || proposal.deal.contactName || proposal.deal.title || 'Cliente');
+  const companyName = String(body.companyName || snapshot.companyName || proposal.deal.organization?.legalName || '-');
 
-  const valueCents = buildProposalValueCents({
-    proposalType,
-    planCode,
-    baseValue: body.baseValue !== undefined ? body.baseValue : snapshot.baseValue,
-    features,
-  });
-
-  const lines = buildProposalLines({
+  const presentation = buildProposalPresentation({
     title,
-    customer: proposal.deal.contactName || proposal.deal.organization?.legalName || proposal.deal.title,
-    email: proposal.deal.contactEmail || proposal.deal.organization?.billingEmail || '-',
+    clientName,
+    companyName,
     proposalType,
+    paymentCondition,
     planCode,
     projectType,
-    paymentCondition,
-    scope,
+    domainOwn,
+    migration,
+    pages,
+    emailProfessional,
+    selectedFeatures,
     notes,
-    valueCents,
-    features,
+    scope,
+    baseValueCents,
+    createdAt: new Date(),
   });
 
-  const pdfBuffer = renderSimpleProposalPdf(lines);
-  await fs.mkdir(PROPOSALS_DIR, { recursive: true });
-  const storedName = `${Date.now()}-${randomUUID()}-proposta-${params.id}.pdf`;
-  const fullPath = path.join(PROPOSALS_DIR, storedName);
+  const valueCents = computePersistedValueCents({
+    dealType: proposal.deal.dealType,
+    proposalType,
+    breakdown: presentation.breakdown,
+  });
+
+  const pdfBuffer = await renderProposalPdfBuffer({
+    title,
+    clientName,
+    companyName,
+    proposalType,
+    paymentCondition,
+    planCode,
+    projectType,
+    domainOwn,
+    migration,
+    pages,
+    emailProfessional,
+    selectedFeatures,
+    notes,
+    scope,
+    baseValueCents,
+    createdAt: new Date(),
+  });
+
+  const organizationKey = proposal.deal.organizationId || 'no-org';
+  const targetDir = path.join(PROPOSALS_DIR, organizationKey, params.id);
+  await fs.mkdir(targetDir, { recursive: true });
+  const storedName = `${Date.now()}-${randomUUID()}-proposta.pdf`;
+  const fullPath = path.join(targetDir, storedName);
   await fs.writeFile(fullPath, pdfBuffer);
 
   if (proposal.pdfPath) {
@@ -98,11 +165,26 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         planCode,
         projectType,
         paymentCondition,
-        features,
+        selectedFeatures,
         notes,
-        valueCents,
+        domainOwn,
+        migration,
+        pages,
+        emailProfessional,
+        clientName,
+        companyName,
+        baseValueCents,
+        breakdown: presentation.breakdown,
+        proposalTypeLabel: presentation.proposalTypeLabel,
+        paymentLabel: presentation.paymentLabel,
+        selectedPlanCode: presentation.selectedPlanCode,
+        selectedPlanName: presentation.selectedPlanName,
+        selectedPlanMonthlyLabel: presentation.selectedPlanMonthlyLabel,
+        selectedPlanHighlights: presentation.selectedPlanHighlights,
+        financeSummary: presentation.financeSummary,
+        investmentRows: presentation.investmentRows,
       },
-      pdfPath: storageRelativePath('proposals', storedName),
+      pdfPath: storageRelativePath('proposals', organizationKey, params.id, storedName),
       status: 'GERADA',
       updatedAt: new Date(),
     },

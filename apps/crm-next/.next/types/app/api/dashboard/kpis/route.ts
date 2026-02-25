@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/api/dashboard/kpis/route.ts
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/api/dashboard/kpis/route.ts
 import * as entry from '../../../../../../app/api/dashboard/kpis/route.js'
 import type { NextRequest } from 'next/server.js'
 

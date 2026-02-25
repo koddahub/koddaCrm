@@ -1,4 +1,4 @@
-// File: /home/server/projects/projero-area-cliente/apps/crm-next/app/api/deals/[id]/preprompt/request-info/route.ts
+// File: /home/server/projects/projeto-area-cliente/apps/crm-next/app/api/deals/[id]/preprompt/request-info/route.ts
 import * as entry from '../../../../../../../../app/api/deals/[id]/preprompt/request-info/route.js'
 import type { NextRequest } from 'next/server.js'
 
