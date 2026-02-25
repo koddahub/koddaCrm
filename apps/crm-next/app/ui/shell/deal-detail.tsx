@@ -533,6 +533,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [activeModal, setActiveModal] = useState<ClientModalKey | null>(null);
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
+  const [proposalFeedbackModal, setProposalFeedbackModal] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
   const [operationStageTab, setOperationStageTab] = useState('briefing_pendente');
   const [prePromptForm, setPrePromptForm] = useState({
@@ -702,6 +706,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     setShowEmailPreview(false);
     setPreviewModal(null);
     setDeletingProposalId(null);
+    setProposalFeedbackModal(null);
     setPublicationRequestModalOpen(false);
     setPublicationNoteModal(null);
   }
@@ -717,6 +722,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     if (deletingProposalId) {
       setDeletingProposalId(null);
+      return true;
+    }
+    if (proposalFeedbackModal) {
+      setProposalFeedbackModal(null);
       return true;
     }
     if (previewModal) {
@@ -1330,12 +1339,18 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setNotice(body.error || 'Falha ao gerar proposta');
       return;
     }
+    const actionLabel = isEditing ? 'atualizada' : 'gerada';
+    const proposalTitle = String(body?.proposal?.title || payload.title || 'Proposta comercial KoddaHub');
     setEditingProposalId(null);
+    setProposalFeedbackModal({
+      title: isEditing ? 'PDF da proposta atualizado' : 'PDF gerado com sucesso',
+      message: `A proposta "${proposalTitle}" foi ${actionLabel} e o PDF já está disponível para visualização no CRM.`,
+    });
     setNotice(isEditing ? 'Proposta atualizada com sucesso.' : 'Proposta gerada com PDF anexável.');
     await loadDeal();
   }
 
-  async function sendProposal(proposalId: string) {
+  async function sendProposal(proposalId: string, proposalTitle?: string) {
     const res = await fetch(`/api/deals/${dealId}/proposals/send-email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1346,8 +1361,24 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setNotice(body.error || 'Falha ao enviar proposta por e-mail');
       return;
     }
+    setProposalFeedbackModal({
+      title: 'Proposta enviada por e-mail',
+      message: `A proposta "${proposalTitle || 'selecionada'}" foi encaminhada para o e-mail do cliente cadastrado.`,
+    });
     setNotice('Proposta enviada para fila de e-mail.');
     await loadDeal();
+  }
+
+  function openProposalPdf(proposal: DealData['proposals'][number]) {
+    if (!proposal.pdfPath) {
+      setNotice('Esta proposta ainda não possui PDF gerado.');
+      return;
+    }
+    window.open(`/api/deals/${dealId}/proposals/${proposal.id}/pdf`, '_blank');
+    setProposalFeedbackModal({
+      title: 'PDF aberto com sucesso',
+      message: `O PDF da proposta "${proposal.title}" foi aberto em uma nova guia.`,
+    });
   }
 
   function startEditProposal(proposal: DealData['proposals'][number]) {
@@ -1973,7 +2004,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               <label>Domínio próprio</label>
               <select value={proposalForm.domainOwn} onChange={(e) => setProposalForm((p) => ({ ...p, domainOwn: e.target.value }))}>
                 <option value="sim">Sim</option>
-                <option value="nao">Não (.com.br grátis)</option>
+                <option value="nao">Não (domínio grátis)</option>
               </select>
 
               <label>Migração de site existente</label>
@@ -2031,6 +2062,20 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
               <div className="proposal-form-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button type="submit" className="primary-btn">
                   {editingProposalId ? 'Salvar edição da proposta' : 'Gerar proposta com PDF'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => {
+                    if (!editingProposalId) {
+                      setNotice('Para enviar direto deste formulário, abra uma proposta em modo edição.');
+                      return;
+                    }
+                    const editingProposal = data.proposals.find((proposal) => proposal.id === editingProposalId) || null;
+                    void sendProposal(editingProposalId, editingProposal?.title || proposalForm.title);
+                  }}
+                >
+                  Enviar por e-mail
                 </button>
                 {editingProposalId ? (
                   <button
@@ -2183,13 +2228,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     <td>{proposal.pdfPath ? 'Gerado' : '-'}</td>
                     <td>
                       <div className="row-actions proposal-row-actions">
-                        <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id)}>
+                        <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id, proposal.title)}>
                           Enviar por e-mail
                         </button>
                         <button
                           type="button"
                           className="primary-btn"
-                          onClick={() => window.open(`/api/deals/${dealId}/proposals/${proposal.id}/pdf`, '_blank')}
+                          onClick={() => openProposalPdf(proposal)}
                           disabled={!proposal.pdfPath}
                         >
                           Ver PDF
@@ -3069,13 +3114,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                           <td>{proposal.pdfPath ? 'Gerado' : '-'}</td>
                           <td>
                             <div className="row-actions proposal-row-actions documentos-proposal-actions">
-                              <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id)}>
+                              <button type="button" className="secondary-btn" onClick={() => sendProposal(proposal.id, proposal.title)}>
                                 Enviar por e-mail
                               </button>
                               <button
                                 type="button"
                                 className="primary-btn"
-                                onClick={() => window.open(`/api/deals/${dealId}/proposals/${proposal.id}/pdf`, '_blank')}
+                                onClick={() => openProposalPdf(proposal)}
                                 disabled={!proposal.pdfPath}
                               >
                                 Abrir PDF
@@ -3656,6 +3701,28 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                 Selecionar esta versão
               </button>
               <button type="button" className="secondary-btn" onClick={() => setPreviewModal(null)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {proposalFeedbackModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmação da proposta">
+          <div className="crm-v2-modal-backdrop" />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>{proposalFeedbackModal.title}</h3>
+              <button type="button" onClick={() => setProposalFeedbackModal(null)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p style={{ marginTop: 6, color: '#334155' }}>
+              {proposalFeedbackModal.message}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="primary-btn" onClick={() => setProposalFeedbackModal(null)}>
+                Ok, entendi
+              </button>
             </div>
           </div>
         </div>

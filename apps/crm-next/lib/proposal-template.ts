@@ -145,7 +145,7 @@ const PROJECT_CONFIG: Record<string, ProjectCatalog> = {
 
 const INCLUDED_ITEMS = [
   'Hospedagem com SSL Grátis',
-  'Domínio .com.br incluso (12 meses)',
+  'Domínio nacional incluso (12 meses)',
   'Suporte Técnico Ilimitado',
   'Backup Diário Automático',
   'Manutenção Mensal',
@@ -229,7 +229,7 @@ export function buildProposalPresentation(input: ProposalInput): ProposalPresent
     {
       title: 'Domínio',
       description: input.domainOwn === 'nao'
-        ? 'Domínio .com.br incluso por 12 meses.'
+        ? 'Domínio nacional incluso por 12 meses.'
         : 'Configuração do domínio próprio inclusa.',
     },
     {

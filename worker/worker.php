@@ -821,12 +821,52 @@ function containsHtmlBody(string $body): bool
     return preg_match('/<[^>]+>/', $body) === 1;
 }
 
+function unpackMimePayload(string $body): array
+{
+    $prefix = 'KH_MIME_V1:';
+    if (!str_starts_with($body, $prefix)) {
+        return [
+            'html' => $body,
+            'text' => null,
+        ];
+    }
+
+    $raw = substr($body, strlen($prefix));
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return [
+            'html' => $body,
+            'text' => null,
+        ];
+    }
+
+    $html = isset($decoded['html']) ? (string)$decoded['html'] : '';
+    $text = isset($decoded['text']) ? trim((string)$decoded['text']) : '';
+    return [
+        'html' => $html,
+        'text' => $text !== '' ? $text : null,
+    ];
+}
+
+function sanitizeEmailHtml(string $html): string
+{
+    $sanitized = $html;
+    // Remove bloco de toggle/collapse que alguns templates antigos inseriam.
+    $sanitized = preg_replace('/<div\b[^>]*class=["\'][^"\']*\bajT\b[^"\']*["\'][^>]*>\s*<\/div>/i', '', $sanitized) ?? $sanitized;
+    return $sanitized;
+}
+
 function htmlToPlainText(string $html): string
 {
-    $text = preg_replace('/<(br|\/p|\/div|\/li)>/i', "\n", $html) ?? $html;
+    $text = preg_replace('/<style\b[^>]*>.*?<\/style>/is', ' ', $html) ?? $html;
+    $text = preg_replace('/<script\b[^>]*>.*?<\/script>/is', ' ', $text) ?? $text;
+    $text = preg_replace('/<head\b[^>]*>.*?<\/head>/is', ' ', $text) ?? $text;
+    $text = preg_replace('/<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/is', '$2 ($1)', $text) ?? $text;
+    $text = preg_replace('/<(br|\/p|\/div|\/li)>/i', "\n", $text) ?? $text;
     $text = strip_tags($text);
     $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $text = preg_replace("/\n{3,}/", "\n\n", $text) ?? $text;
+    $text = preg_replace("/[ \t]{2,}/", ' ', $text) ?? $text;
     return trim((string)$text);
 }
 
@@ -852,9 +892,15 @@ function attachmentMimeType(string $path): string
 
 function buildMimeMessage(string $fromEmail, string $fromName, string $toEmail, string $subject, string $body, array $attachmentPaths = []): string
 {
-    $hasHtml = containsHtmlBody($body);
-    $plainBody = $hasHtml ? htmlToPlainText($body) : $body;
-    $htmlBody = $hasHtml ? $body : nl2br(htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    $payload = unpackMimePayload($body);
+    $htmlCandidate = sanitizeEmailHtml((string)($payload['html'] ?? $body));
+    $textCandidate = isset($payload['text']) ? (string)$payload['text'] : null;
+
+    $hasHtml = containsHtmlBody($htmlCandidate);
+    $plainBody = ($textCandidate !== null && trim($textCandidate) !== '')
+        ? $textCandidate
+        : ($hasHtml ? htmlToPlainText($htmlCandidate) : $htmlCandidate);
+    $htmlBody = $hasHtml ? $htmlCandidate : nl2br(htmlspecialchars($htmlCandidate, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
     $plainBody = normalizeMailBody($plainBody);
     $htmlBody = normalizeMailBody($htmlBody);
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
-import { renderProposalEmailHtml } from '@/lib/proposal-email';
+import { renderProposalEmailHtml, renderProposalEmailPlainText } from '@/lib/proposal-email';
 import { type PaymentCondition, type ProposalType } from '@/lib/proposal-template';
 import { prisma } from '@/lib/prisma';
 
@@ -79,14 +79,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const baseValueCents = parseBaseValueCents(snapshot.baseValueCents);
   const notes = String(snapshot.notes || '');
   const scope = String(snapshot.scope || proposal.scope || '');
-  const domainOwn = String(snapshot.domainOwn || 'sim') === 'nao' ? 'nao' : 'sim';
-  const migration = String(snapshot.migration || 'nao') === 'sim' ? 'sim' : 'nao';
-  const emailProfessional = String(snapshot.emailProfessional || 'sim') === 'nao' ? 'nao' : 'sim';
+  const domainOwn: 'sim' | 'nao' = String(snapshot.domainOwn || 'sim') === 'nao' ? 'nao' : 'sim';
+  const migration: 'sim' | 'nao' = String(snapshot.migration || 'nao') === 'sim' ? 'sim' : 'nao';
+  const emailProfessional: 'sim' | 'nao' = String(snapshot.emailProfessional || 'sim') === 'nao' ? 'nao' : 'sim';
   const pages = String(snapshot.pages || '1');
   const clientName = String(snapshot.clientName || proposal.deal.contactName || proposal.deal.title || 'Cliente');
   const companyName = String(snapshot.companyName || proposal.deal.organization?.legalName || '-');
 
-  const htmlBody = renderProposalEmailHtml({
+  const proposalInput = {
     title: proposal.title,
     clientName,
     companyName,
@@ -103,20 +103,24 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     scope,
     baseValueCents,
     createdAt: proposal.createdAt,
-  }, {
+  };
+  const emailOptions = {
     dealId: proposal.dealId,
     portalBaseUrl: process.env.PORTAL_BASE_URL,
     catalogUrl: 'https://koddahub.com.br',
     whatsappPhone: '5541992272854',
     whatsappMessage: 'Olá! Tenho dúvidas sobre a proposta da KoddaHub e gostaria de falar com o time.',
-  });
+  };
+  const htmlBody = renderProposalEmailHtml(proposalInput, emailOptions);
+  const plainBody = renderProposalEmailPlainText(proposalInput, emailOptions);
+  const packedBody = `KH_MIME_V1:${JSON.stringify({ html: htmlBody, text: plainBody })}`;
 
   await prisma.emailQueue.create({
     data: {
       organizationId,
       emailTo,
       subject: `[KoddaHub] ${proposal.title}`,
-      body: htmlBody,
+      body: packedBody,
       attachments: [],
       status: 'PENDING',
     },
