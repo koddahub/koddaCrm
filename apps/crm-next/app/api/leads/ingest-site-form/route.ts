@@ -1,25 +1,49 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { Prisma } from '@prisma/client';
-import { ensureApiAuth } from '@/lib/api-auth';
-import { inferCategory, inferDealType, normalizeIntent, normalizePhone, ORIGINS } from '@/lib/domain';
-import { resolvePipelineAndStages } from '@/lib/deals';
-import { prisma } from '@/lib/prisma';
+import { ensureApiAuth } from "@/lib/api-auth";
+import { resolvePipelineAndStages } from "@/lib/deals";
+import {
+  inferCategory,
+  inferDealType,
+  normalizeIntent,
+  normalizePhone,
+  ORIGINS,
+} from "@/lib/domain";
+import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
+import { NextRequest, NextResponse } from "next/server";
 
 function dayBucket(value: Date): Date {
-  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+  return new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()),
+  );
+}
+
+// ⚠️ NOVO: Função para adicionar headers CORS
+function addCorsHeaders(response: NextResponse): NextResponse {
+  response.headers.set("Access-Control-Allow-Origin", "http://127.0.0.1:5509");
+  response.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  response.headers.set("Access-Control-Allow-Credentials", "true");
+  return response;
+}
+
+// ⚠️ NOVO: Handler para OPTIONS (preflight)
+export async function OPTIONS(req: NextRequest) {
+  return addCorsHeaders(new NextResponse(null, { status: 204 }));
 }
 
 export async function GET(req: NextRequest) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
 
-  const mode = req.nextUrl.searchParams.get('mode');
-  if (mode !== 'list') {
-    return NextResponse.json({ error: 'Modo inválido' }, { status: 400 });
+  const mode = req.nextUrl.searchParams.get("mode");
+  if (mode !== "list") {
+    return addCorsHeaders(
+      NextResponse.json({ error: "Modo inválido" }, { status: 400 }),
+    );
   }
 
   const items = await prisma.lead.findMany({
-    orderBy: { createdAt: 'desc' },
+    orderBy: { createdAt: "desc" },
     take: 150,
     select: {
       id: true,
@@ -33,29 +57,36 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ items });
+  return addCorsHeaders(NextResponse.json({ items }));
 }
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const name = String(body.name || '').trim();
+  const name = String(body.name || "").trim();
   const email = body.email ? String(body.email).trim().toLowerCase() : null;
   const phone = normalizePhone(body.phone ? String(body.phone) : null) || null;
-  const rawAssunto = String(body.assunto || body.interest || '').trim();
+  const rawAssunto = String(body.assunto || body.interest || "").trim();
 
   if (!name || (!email && !phone)) {
-    return NextResponse.json({ error: 'name e contato são obrigatórios' }, { status: 422 });
+    return addCorsHeaders(
+      NextResponse.json(
+        { error: "name e contato são obrigatórios" },
+        { status: 422 },
+      ),
+    );
   }
 
   const intent = normalizeIntent(String(body.intent || rawAssunto));
-  const category = body.category ? String(body.category).toUpperCase() : inferCategory(intent);
+  const category = body.category
+    ? String(body.category).toUpperCase()
+    : inferCategory(intent);
   const dealType = inferDealType(category);
   const source = String(body.src || ORIGINS.SITE_FORM).toUpperCase();
   const now = new Date();
   const bucket = dayBucket(now);
 
-  const dedupeBase = `${email || ''}|${phone || ''}|${intent}`;
-  const pipelineType = category === 'RECORRENTE' ? 'hospedagem' : 'avulsos';
+  const dedupeBase = `${email || ""}|${phone || ""}|${intent}`;
+  const pipelineType = category === "RECORRENTE" ? "hospedagem" : "avulsos";
 
   try {
     const pipeline = await resolvePipelineAndStages(pipelineType);
@@ -64,14 +95,14 @@ export async function POST(req: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       const lead = await tx.lead.create({
         data: {
-          source: 'site_form',
+          source: "site_form",
           sourceRef: source,
           name,
           email,
           phone,
           interest: rawAssunto || intent,
           payload: body,
-          stage: 'NOVO',
+          stage: "NOVO",
         },
       });
 
@@ -88,7 +119,7 @@ export async function POST(req: NextRequest) {
         where: {
           pipelineId: pipeline.id,
           stageId: firstStage.id,
-          lifecycleStatus: { not: 'CLIENT' },
+          lifecycleStatus: { not: "CLIENT" },
         },
       });
 
@@ -105,10 +136,12 @@ export async function POST(req: NextRequest) {
           category,
           intent,
           origin: source,
-          planCode: intent.startsWith('hospedagem_') ? intent.replace('hospedagem_', '') : null,
-          productCode: intent.startsWith('hospedagem_') ? null : intent,
+          planCode: intent.startsWith("hospedagem_")
+            ? intent.replace("hospedagem_", "")
+            : null,
+          productCode: intent.startsWith("hospedagem_") ? null : intent,
           positionIndex: stagePosition,
-          lifecycleStatus: 'OPEN',
+          lifecycleStatus: "OPEN",
           isClosed: false,
           metadata: body,
         },
@@ -119,17 +152,17 @@ export async function POST(req: NextRequest) {
           dealId: deal.id,
           fromStageId: null,
           toStageId: firstStage.id,
-          changedBy: 'SYSTEM',
-          reason: 'Lead recebido do formulário do site',
+          changedBy: "SYSTEM",
+          reason: "Lead recebido do formulário do site",
         },
       });
 
       await tx.crmContactEvent.create({
         data: {
           leadId: lead.id,
-          channel: 'WEB_FORM',
-          direction: 'INBOUND',
-          message: 'Lead recebido via formulário do site',
+          channel: "WEB_FORM",
+          direction: "INBOUND",
+          message: "Lead recebido via formulário do site",
           metadata: body,
         },
       });
@@ -137,16 +170,35 @@ export async function POST(req: NextRequest) {
       return { lead, deal };
     });
 
-    return NextResponse.json({ ok: true, leadId: result.lead.id, dealId: result.deal.id }, { status: 201 });
+    return addCorsHeaders(
+      NextResponse.json(
+        { ok: true, leadId: result.lead.id, dealId: result.deal.id },
+        { status: 201 },
+      ),
+    );
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
       const existing = await prisma.leadDedupeKey.findFirst({
         where: { source, dedupeKey: dedupeBase, dayBucket: bucket },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
       });
-      return NextResponse.json({ ok: true, idempotent: true, leadId: existing?.leadId || null });
+      return addCorsHeaders(
+        NextResponse.json({
+          ok: true,
+          idempotent: true,
+          leadId: existing?.leadId || null,
+        }),
+      );
     }
 
-    return NextResponse.json({ error: 'Falha ao ingerir lead', details: String(error) }, { status: 500 });
+    return addCorsHeaders(
+      NextResponse.json(
+        { error: "Falha ao ingerir lead", details: String(error) },
+        { status: 500 },
+      ),
+    );
   }
 }
