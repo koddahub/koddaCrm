@@ -20,7 +20,8 @@ export class CreateProjectForOrganizationError extends Error {
 
 export type CreateProjectForOrganizationInput = {
   organizationId: string;
-  domain: string;
+  domain?: string;
+  projectTag?: string;
   projectType: string;
   planCode: string;
   projectStatus?: string | null;
@@ -56,6 +57,18 @@ function normalizeDomain(value: string): string {
 
 function isDomainValid(value: string): boolean {
   return /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(String(value || ''));
+}
+
+function normalizeProjectTag(value: string): string {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) return '';
+  const clean = raw.replace(/[^A-Z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '');
+  if (!clean) return '';
+  return clean.startsWith('PRJ-') ? clean.slice(0, 190) : `PRJ-${clean}`.slice(0, 190);
+}
+
+function buildAutoProjectTag(seed: string): string {
+  return `PRJ-${String(seed || '').replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase().padEnd(4, '0')}`;
 }
 
 function normalizeProjectType(value: string): string {
@@ -100,7 +113,8 @@ export async function createProjectForOrganization(
   input: CreateProjectForOrganizationInput,
 ): Promise<CreateProjectForOrganizationResult> {
   const organizationId = String(input.organizationId || '').trim();
-  const domain = normalizeDomain(input.domain);
+  let domain = normalizeDomain(input.domain || '');
+  const projectTag = normalizeProjectTag(String(input.projectTag || ''));
   const projectType = normalizeProjectType(input.projectType);
   const planCode = String(input.planCode || '').trim().toLowerCase();
   const projectStatus = normalizeProjectStatus(input.projectStatus, 'PENDING');
@@ -109,8 +123,11 @@ export async function createProjectForOrganization(
   if (!organizationId) {
     throw new CreateProjectForOrganizationError('ORGANIZATION_REQUIRED', 'organization_id é obrigatório.', 422);
   }
-  if (!domain || !isDomainValid(domain)) {
-    throw new CreateProjectForOrganizationError('DOMAIN_INVALID', 'Domínio inválido.', 422);
+  if (!domain) {
+    domain = projectTag || buildAutoProjectTag(organizationId);
+  }
+  if (domain && !isDomainValid(domain)) {
+    domain = normalizeProjectTag(domain) || buildAutoProjectTag(organizationId);
   }
   if (!PROJECT_TYPES.has(projectType)) {
     throw new CreateProjectForOrganizationError('PROJECT_TYPE_INVALID', 'project_type inválido.', 422);

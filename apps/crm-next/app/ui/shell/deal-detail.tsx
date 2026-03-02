@@ -135,6 +135,23 @@ type OperationFlowData = {
     organizationDomain: string | null;
     billingEmail: string | null;
   };
+  projectContext?: {
+    selectedProjectId: string | null;
+    projects: Array<{
+      id: string;
+      domain: string | null;
+      label: string;
+      projectType: string;
+      status: string;
+      planCode: string | null;
+      planName: string | null;
+      itemStatus: string | null;
+      effectivePrice: number | null;
+      operationStage: string | null;
+      operationUpdatedAt: string | null;
+      createdAt: string;
+    }>;
+  };
   operation: {
     activeStageCode: string | null;
     stageTabs: Array<{ code: string; name: string; order: number }>;
@@ -569,6 +586,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     message: string;
   } | null>(null);
   const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
+  const [selectedOperationProjectId, setSelectedOperationProjectId] = useState<string>('');
   const [operationStageTab, setOperationStageTab] = useState('briefing_pendente');
   const [prePromptForm, setPrePromptForm] = useState({
     promptText: '',
@@ -842,13 +860,22 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function loadOperationFlow() {
-    const res = await fetch(`/api/deals/${dealId}/operation-flow`);
+    const qp = new URLSearchParams();
+    if (selectedOperationProjectId) {
+      qp.set('projectId', selectedOperationProjectId);
+    }
+    const endpoint = `/api/deals/${dealId}/operation-flow${qp.toString() ? `?${qp.toString()}` : ''}`;
+    const res = await fetch(endpoint);
     const body = await res.json();
     if (!res.ok) {
       setNotice(body.error || 'Falha ao carregar fluxo de operação');
       return;
     }
     setOperationFlow(body);
+    const resolvedProjectId = String(body?.projectContext?.selectedProjectId || '').trim();
+    if (resolvedProjectId && resolvedProjectId !== selectedOperationProjectId) {
+      setSelectedOperationProjectId(resolvedProjectId);
+    }
     setOperationStageTab(body.operation?.activeStageCode || body.operation?.stageTabs?.[0]?.code || 'briefing_pendente');
     setPublicationRequestForm((prev) => ({
       ...prev,
@@ -965,6 +992,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   useEffect(() => {
+    setSelectedOperationProjectId('');
     loadDeal();
   }, [dealId]);
 
@@ -972,7 +1000,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     if (activeModal === 'operacao' && canShowClientTabs) {
       loadOperationFlow();
     }
-  }, [activeModal, canShowClientTabs]);
+  }, [activeModal, canShowClientTabs, selectedOperationProjectId]);
 
   useEffect(() => {
     if (activeModal !== 'tickets' || !data) return;
@@ -1079,10 +1107,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function moveOperationStage(operationStageCode: string) {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto para alterar a etapa operacional.');
+      return;
+    }
     const res = await fetch(`/api/deals/${dealId}/operation/stage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stageCode: operationStageCode }),
+      body: JSON.stringify({ stageCode: operationStageCode, projectId: selectedOperationProjectId }),
     });
     const body = await res.json();
     if (!res.ok) {
@@ -1676,6 +1708,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   const operationTabs = operationFlow?.operation?.stageTabs || [];
+  const operationProjects = operationFlow?.projectContext?.projects || [];
+  const selectedOperationProject = operationProjects.find((item) => item.id === selectedOperationProjectId)
+    || operationProjects.find((item) => item.id === operationFlow?.projectContext?.selectedProjectId)
+    || operationProjects[0]
+    || null;
   const activeOperationStageCode = operationFlow?.operation?.activeStageCode || operationTabs[0]?.code || null;
   const publicationReady = operationFlow?.publication?.summary?.ready || false;
   const publishedByChecks = Boolean(
@@ -2505,6 +2542,27 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                   <p className="small text-body-secondary mb-0">
                     {data.organization?.legalName || data.deal.contactName || data.deal.title} • {data.deal.planCode || data.deal.productCode || '-'} • Etapa atual: {STAGE_LABEL[activeOperationStageCode || ''] || '-'}
                   </p>
+                  {operationProjects.length > 0 ? (
+                    <div className="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                      <label htmlFor="operationProjectSelect" className="small text-body-secondary mb-0">Projeto monitorado:</label>
+                      <select
+                        id="operationProjectSelect"
+                        className="form-select form-select-sm"
+                        style={{ maxWidth: 320 }}
+                        value={selectedOperationProject?.id || ''}
+                        onChange={(event) => setSelectedOperationProjectId(String(event.target.value || ''))}
+                      >
+                        {operationProjects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.label} ({project.status})
+                          </option>
+                        ))}
+                      </select>
+                      <span className="badge text-bg-secondary">
+                        {selectedOperationProject?.operationStage ? (STAGE_LABEL[selectedOperationProject.operationStage] || selectedOperationProject.operationStage) : 'Briefing pendente'}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="d-flex align-items-center gap-2">
                   {data.organization?.domain ? (

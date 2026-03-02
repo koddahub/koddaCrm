@@ -10,9 +10,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const body = await req.json().catch(() => ({}));
   const stageCode = String(body.stageCode || '').trim();
+  const projectId = String(body.projectId || '').trim();
   const reason = String(body.reason || 'Mudança manual de etapa operacional').trim();
   if (!stageCode) {
     return NextResponse.json({ error: 'stageCode é obrigatório' }, { status: 422 });
+  }
+  if (!projectId) {
+    return NextResponse.json({ error: 'projectId é obrigatório' }, { status: 422 });
   }
 
   try {
@@ -24,27 +28,58 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           title: true,
           dealType: true,
           lifecycleStatus: true,
+          organizationId: true,
         },
       });
       if (!deal) throw new Error('Deal não encontrado');
       if (deal.lifecycleStatus !== 'CLIENT') throw new Error('Operação disponível apenas para cliente fechado');
+      if (!deal.organizationId) throw new Error('Deal sem organização vinculada');
 
       const allowed = new Set<string>(operationStagesByDealType(deal.dealType).map((item) => item.code));
       if (!allowed.has(stageCode)) throw new Error('Etapa operacional inválida');
 
+      const ownedProjectRows = await tx.$queryRaw<Array<{ id: string; domain: string | null }>>`
+        SELECT id::text AS id, domain
+        FROM client.projects
+        WHERE id = ${projectId}::uuid
+          AND organization_id = ${deal.organizationId}::uuid
+        LIMIT 1
+      `;
+      const ownedProject = ownedProjectRows[0] || null;
+      if (!ownedProject) throw new Error('Projeto não pertence ao cliente deste deal');
+
       const operation = await ensureDealOperation(tx, { id: deal.id, dealType: deal.dealType }, stageCode);
+      await tx.$executeRaw`
+        INSERT INTO crm.project_operation_state (
+          organization_id, project_id, deal_id, stage, created_at, updated_at
+        )
+        VALUES (
+          ${deal.organizationId}::uuid, ${projectId}::uuid, ${deal.id}::uuid, ${operation.stageCode}, now(), now()
+        )
+        ON CONFLICT (project_id)
+        DO UPDATE SET
+          stage = EXCLUDED.stage,
+          deal_id = EXCLUDED.deal_id,
+          updated_at = now()
+      `;
       await tx.dealActivity.create({
         data: {
           dealId: deal.id,
           activityType: 'OPERATION_STAGE_CHANGED',
-          content: `Etapa operacional alterada para ${operation.stageName}.`,
-          metadata: { stageCode: operation.stageCode, reason },
+          content: `Etapa operacional do projeto alterada para ${operation.stageName}.`,
+          metadata: {
+            stageCode: operation.stageCode,
+            reason,
+            project_id: projectId,
+            project_domain: ownedProject.domain || null,
+          },
           createdBy: 'ADMIN',
         },
       });
 
       return {
         dealId: deal.id,
+        projectId,
         stageCode: operation.stageCode,
         stageName: operation.stageName,
         stageOrder: operation.stageOrder,

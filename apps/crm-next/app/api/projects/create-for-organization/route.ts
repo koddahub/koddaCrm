@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
     const result = await createProjectForOrganization({
       organizationId: String(body.organization_id || body.organizationId || '').trim(),
       domain: String(body.domain || '').trim(),
+      projectTag: String(body.project_tag || body.projectTag || '').trim(),
       projectType: String(body.project_type || body.projectType || 'hospedagem').trim(),
       planCode: String(body.plan_code || body.planCode || '').trim(),
       projectStatus: body.project_status ? String(body.project_status) : (body.projectStatus ? String(body.projectStatus) : null),

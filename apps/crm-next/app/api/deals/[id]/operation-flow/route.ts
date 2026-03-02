@@ -39,6 +39,17 @@ async function safeStat(filePath: string) {
   }
 }
 
+function isDomainLike(value: string) {
+  return /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(String(value || '').trim());
+}
+
+function projectLabelFromDomain(domain: string | null, projectId: string) {
+  const raw = String(domain || '').trim();
+  if (!raw) return `PRJ-${projectId.slice(0, 4).toUpperCase()}`;
+  if (isDomainLike(raw)) return raw.toLowerCase();
+  return raw.toUpperCase();
+}
+
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
@@ -115,6 +126,65 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     order: item.order,
   }));
   const activeStageCode = deal.operations.find((item) => item.status === 'ACTIVE')?.stageCode || stageTabs[0]?.code || null;
+  const requestedProjectId = String(req.nextUrl.searchParams.get('projectId') || '').trim();
+
+  const projectRows = deal.organizationId
+    ? await prisma.$queryRaw<Array<{
+        id: string;
+        domain: string | null;
+        project_type: string;
+        status: string;
+        created_at: Date;
+        plan_code: string | null;
+        plan_name: string | null;
+        item_status: string | null;
+        effective_price: number | null;
+        operation_stage: string | null;
+        operation_updated_at: Date | null;
+      }>>`
+        SELECT
+          p.id::text AS id,
+          p.domain,
+          p.project_type,
+          p.status,
+          p.created_at,
+          pl.code AS plan_code,
+          pl.name AS plan_name,
+          si.status AS item_status,
+          coalesce(si.price_override, pl.monthly_price)::float AS effective_price,
+          pos.stage AS operation_stage,
+          pos.updated_at AS operation_updated_at
+        FROM client.projects p
+        LEFT JOIN client.subscription_items si ON si.project_id = p.id
+        LEFT JOIN client.plans pl ON pl.id = si.plan_id
+        LEFT JOIN crm.project_operation_state pos ON pos.project_id = p.id
+        WHERE p.organization_id = ${deal.organizationId}::uuid
+        ORDER BY
+          CASE WHEN upper(coalesce(p.status, '')) = 'ACTIVE' THEN 0 ELSE 1 END,
+          p.created_at DESC
+      `
+    : [];
+
+  const normalizedProjects = projectRows.map((row) => ({
+    id: row.id,
+    domain: row.domain ? String(row.domain).toLowerCase() : null,
+    label: projectLabelFromDomain(row.domain, row.id),
+    projectType: row.project_type,
+    status: String(row.status || 'PENDING').toUpperCase(),
+    planCode: row.plan_code,
+    planName: row.plan_name,
+    itemStatus: row.item_status ? String(row.item_status).toUpperCase() : null,
+    effectivePrice: row.effective_price !== null ? Number(row.effective_price) : null,
+    operationStage: row.operation_stage || null,
+    operationUpdatedAt: row.operation_updated_at ? row.operation_updated_at.toISOString() : null,
+    createdAt: row.created_at.toISOString(),
+  }));
+
+  const selectedProject = normalizedProjects.find((item) => item.id === requestedProjectId)
+    || normalizedProjects.find((item) => item.status === 'ACTIVE')
+    || normalizedProjects[0]
+    || null;
+  const resolvedActiveStageCode = selectedProject?.operationStage || activeStageCode;
 
   const templateCatalog = await listTemplateModels();
   const siteReleases = await listDealSiteReleases(deal.id);
@@ -393,11 +463,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       lifecycleStatus: deal.lifecycleStatus,
       organizationId: deal.organizationId,
       organizationName: deal.organization?.legalName || null,
-      organizationDomain: deal.organization?.domain || null,
+      organizationDomain: selectedProject?.domain || deal.organization?.domain || null,
       billingEmail: deal.organization?.billingEmail || deal.contactEmail || null,
     },
+    projectContext: {
+      selectedProjectId: selectedProject?.id || null,
+      projects: normalizedProjects,
+    },
     operation: {
-      activeStageCode,
+      activeStageCode: resolvedActiveStageCode,
       stageTabs,
       history: deal.operations,
     },
