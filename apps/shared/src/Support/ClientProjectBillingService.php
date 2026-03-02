@@ -33,6 +33,11 @@ final class ClientProjectBillingService
             "SELECT
                 p.id::text AS id,
                 p.domain,
+                CASE
+                  WHEN lower(coalesce(p.domain, '')) ~ '^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$'
+                  THEN lower(coalesce(p.domain, ''))
+                  ELSE upper(coalesce(p.domain, ''))
+                END AS project_label,
                 p.project_type,
                 p.status,
                 p.created_at::text AS created_at,
@@ -73,12 +78,18 @@ final class ClientProjectBillingService
     public function createProjectWithItem(string $organizationId, array $input): array
     {
         $domain = $this->normalizeDomain($input['domain'] ?? null);
+        if ($domain === '') {
+            $domain = $this->normalizeProjectTag($input['project_tag'] ?? null);
+        }
+        if ($domain === '') {
+            $domain = $this->nextProjectTag($organizationId);
+        }
         $projectType = $this->normalizeProjectType($input['project_type'] ?? null);
         $planCode = strtolower(trim((string)($input['plan_code'] ?? '')));
         $projectStatus = strtoupper(trim((string)($input['project_status'] ?? 'PENDING')));
         $itemStatus = strtoupper(trim((string)($input['item_status'] ?? 'ACTIVE')));
 
-        if ($organizationId === '' || $domain === '' || $planCode === '') {
+        if ($organizationId === '' || $planCode === '') {
             throw new \RuntimeException('Dados obrigatórios ausentes para criar projeto.');
         }
 
@@ -453,5 +464,54 @@ final class ClientProjectBillingService
             $type = substr($type, 0, 40);
         }
         return $type;
+    }
+
+    private function normalizeProjectTag(?string $value): string
+    {
+        $raw = strtoupper(trim((string)$value));
+        if ($raw === '') {
+            return '';
+        }
+        $raw = preg_replace('/[^A-Z0-9_-]+/', '-', $raw) ?? $raw;
+        $raw = preg_replace('/-+/', '-', $raw) ?? $raw;
+        $raw = trim($raw, '-_');
+        if ($raw === '') {
+            return '';
+        }
+        if (!str_starts_with($raw, 'PRJ-')) {
+            $raw = 'PRJ-' . $raw;
+        }
+        if (strlen($raw) > 190) {
+            $raw = substr($raw, 0, 190);
+        }
+        return $raw;
+    }
+
+    private function nextProjectTag(string $organizationId): string
+    {
+        if ($organizationId === '') {
+            return 'PRJ-' . strtoupper(substr(md5((string)microtime(true)), 0, 4));
+        }
+
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $suffix = strtoupper(substr(md5($organizationId . '|' . $attempt . '|' . microtime(true)), 0, 4));
+            $candidate = 'PRJ-' . $suffix;
+            $exists = $this->db->one(
+                "SELECT id::text AS id
+                 FROM client.projects
+                 WHERE organization_id = CAST(:oid AS uuid)
+                   AND lower(coalesce(domain, '')) = lower(:domain)
+                 LIMIT 1",
+                [
+                    ':oid' => $organizationId,
+                    ':domain' => $candidate,
+                ]
+            );
+            if (!$exists) {
+                return $candidate;
+            }
+        }
+
+        return 'PRJ-' . strtoupper(substr(md5($organizationId . '|' . microtime(true)), 0, 4));
     }
 }
