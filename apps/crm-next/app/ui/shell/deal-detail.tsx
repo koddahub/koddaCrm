@@ -426,6 +426,63 @@ const OPERATION_STAGE_QUERY_MAP: Record<string, string> = {
   publicado: 'publicado',
 };
 
+const INITIAL_PRE_PROMPT_FORM = {
+  promptText: '',
+  subject: 'Solicitação de informações adicionais do briefing',
+  requestItems: '',
+  message: '',
+  dueAt: '',
+};
+
+const INITIAL_QUICK_BRIEF = {
+  objetivo: '',
+  publico: '',
+  cores: '',
+  tom: 'Profissional',
+};
+
+const INITIAL_BRIEF_CONTEXT = {
+  differentials: '',
+  services: '',
+  cta: '',
+  integrations: '',
+  domainTarget: '',
+  extraRequirements: '',
+  visualReferences: '',
+  legalContent: '',
+};
+
+const INITIAL_SEO_FORM = {
+  title: '',
+  description: '',
+  keywords: '',
+  schemaEnabled: true,
+};
+
+const INITIAL_SITE_SECTIONS: Array<{ id: string; name: string; active: boolean }> = [
+  { id: 'hero', name: 'Hero', active: true },
+  { id: 'sobre', name: 'Sobre', active: true },
+  { id: 'servicos', name: 'Serviços', active: true },
+  { id: 'diferenciais', name: 'Diferenciais', active: true },
+  { id: 'contato', name: 'Contato', active: true },
+  { id: 'faq', name: 'FAQ', active: true },
+  { id: 'rodape', name: 'Rodapé', active: true },
+];
+
+const INITIAL_VARIANT_PROMPTS: Record<'V1' | 'V2' | 'V3', string> = {
+  V1: '',
+  V2: '',
+  V3: '',
+};
+
+const INITIAL_TEMPLATE_FORM = {
+  entryFile: 'index.html',
+  templateModelCode: 'template_v1_institucional_1pagina',
+  copyMode: 'if_empty_or_missing',
+  releaseVersion: '',
+  variantCode: 'V1',
+};
+
 const QUERY_STEP_OPERATION_MAP = Object.fromEntries(
   Object.entries(OPERATION_STAGE_QUERY_MAP).map(([stageCode, queryStep]) => [queryStep, stageCode]),
 ) as Record<string, string>;
@@ -588,44 +645,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [operationFlow, setOperationFlow] = useState<OperationFlowData | null>(null);
   const [selectedOperationProjectId, setSelectedOperationProjectId] = useState<string>('');
   const [operationStageTab, setOperationStageTab] = useState('briefing_pendente');
-  const [prePromptForm, setPrePromptForm] = useState({
-    promptText: '',
-    subject: 'Solicitação de informações adicionais do briefing',
-    requestItems: '',
-    message: '',
-    dueAt: '',
-  });
-  const [quickBrief, setQuickBrief] = useState({
-    objetivo: '',
-    publico: '',
-    cores: '',
-    tom: 'Profissional',
-  });
-  const [briefContext, setBriefContext] = useState({
-    differentials: '',
-    services: '',
-    cta: '',
-    integrations: '',
-    domainTarget: '',
-    extraRequirements: '',
-    visualReferences: '',
-    legalContent: '',
-  });
-  const [seoForm, setSeoForm] = useState({
-    title: '',
-    description: '',
-    keywords: '',
-    schemaEnabled: true,
-  });
-  const [siteSections, setSiteSections] = useState<Array<{ id: string; name: string; active: boolean }>>([
-    { id: 'hero', name: 'Hero', active: true },
-    { id: 'sobre', name: 'Sobre', active: true },
-    { id: 'servicos', name: 'Serviços', active: true },
-    { id: 'diferenciais', name: 'Diferenciais', active: true },
-    { id: 'contato', name: 'Contato', active: true },
-    { id: 'faq', name: 'FAQ', active: true },
-    { id: 'rodape', name: 'Rodapé', active: true },
-  ]);
+  const [prePromptForm, setPrePromptForm] = useState(INITIAL_PRE_PROMPT_FORM);
+  const [quickBrief, setQuickBrief] = useState(INITIAL_QUICK_BRIEF);
+  const [briefContext, setBriefContext] = useState(INITIAL_BRIEF_CONTEXT);
+  const [seoForm, setSeoForm] = useState(INITIAL_SEO_FORM);
+  const [siteSections, setSiteSections] = useState<Array<{ id: string; name: string; active: boolean }>>(INITIAL_SITE_SECTIONS);
   const [newSectionName, setNewSectionName] = useState('');
   const [selectedTemplateCard, setSelectedTemplateCard] = useState<'V1' | 'V2' | 'V3' | null>(null);
   const [previewModal, setPreviewModal] = useState<{ variantCode: 'V1' | 'V2' | 'V3'; url: string; title: string } | null>(null);
@@ -635,19 +659,9 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [showSeoModal, setShowSeoModal] = useState(false);
   const [showBrandModal, setShowBrandModal] = useState(false);
   const [promptVariantTab, setPromptVariantTab] = useState<'V1' | 'V2' | 'V3'>('V1');
-  const [variantPrompts, setVariantPrompts] = useState<Record<'V1' | 'V2' | 'V3', string>>({
-    V1: '',
-    V2: '',
-    V3: '',
-  });
+  const [variantPrompts, setVariantPrompts] = useState<Record<'V1' | 'V2' | 'V3', string>>(INITIAL_VARIANT_PROMPTS);
   const [brandPalette, setBrandPalette] = useState<string[]>(['#0A1A2F', '#FF8A00', '#1E3A5F', '#0F9F6F']);
-  const [templateForm, setTemplateForm] = useState({
-    entryFile: 'index.html',
-    templateModelCode: 'template_v1_institucional_1pagina',
-    copyMode: 'if_empty_or_missing',
-    releaseVersion: '',
-    variantCode: 'V1',
-  });
+  const [templateForm, setTemplateForm] = useState(INITIAL_TEMPLATE_FORM);
   const [approvalSending, setApprovalSending] = useState(false);
   const [updatingSubstepId, setUpdatingSubstepId] = useState<string | null>(null);
   const [publicationRequestSending, setPublicationRequestSending] = useState(false);
@@ -741,12 +755,18 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     if (!nextModal) {
       params.delete('modal');
       params.delete('step');
+      params.delete('projectId');
     } else {
       params.set('modal', nextModal);
       if (nextModal === 'operacao' && nextStep) {
         params.set('step', nextStep);
       } else {
         params.delete('step');
+      }
+      if (nextModal === 'operacao' && selectedOperationProjectId) {
+        params.set('projectId', selectedOperationProjectId);
+      } else {
+        params.delete('projectId');
       }
     }
     const query = params.toString();
@@ -778,6 +798,26 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     setDemoEmailModalOpen(false);
     setPublicationRequestModalOpen(false);
     setPublicationNoteModal(null);
+  }
+
+  function resetOperationScopedUiState() {
+    resetNestedClientOverlays();
+    setPublicationRequestFeedback(null);
+    setOperationFlow(null);
+    setOperationStageTab('briefing_pendente');
+    setPrePromptForm({ ...INITIAL_PRE_PROMPT_FORM });
+    setQuickBrief({ ...INITIAL_QUICK_BRIEF });
+    setBriefContext({ ...INITIAL_BRIEF_CONTEXT });
+    setSeoForm({ ...INITIAL_SEO_FORM });
+    setSiteSections([...INITIAL_SITE_SECTIONS]);
+    setVariantPrompts({ ...INITIAL_VARIANT_PROMPTS });
+    setTemplateForm({ ...INITIAL_TEMPLATE_FORM });
+    setSelectedTemplateCard(null);
+    setPublicationRequestForm({
+      domain: '',
+      message: 'Confirme o domínio final e os dados necessários para concluir a publicação.',
+      dueAt: '',
+    });
   }
 
   function closeTopMostNestedOverlay() {
@@ -877,17 +917,23 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setSelectedOperationProjectId(resolvedProjectId);
     }
     setOperationStageTab(body.operation?.activeStageCode || body.operation?.stageTabs?.[0]?.code || 'briefing_pendente');
-    setPublicationRequestForm((prev) => ({
-      ...prev,
-      domain: prev.domain || body.deal?.organizationDomain || '',
-    }));
-    if (body.prompt?.latest?.promptText || body.prompt?.latest?.requestedNotes) {
-      setPrePromptForm((prev) => ({
-        ...prev,
-        promptText: body.prompt.latest?.promptText || prev.promptText,
-        message: body.prompt.latest?.requestedNotes || prev.message,
-      }));
-    }
+    setPublicationRequestForm({
+      domain: String(body.deal?.organizationDomain || ''),
+      message: 'Confirme o domínio final e os dados necessários para concluir a publicação.',
+      dueAt: '',
+    });
+    setPrePromptForm({
+      ...INITIAL_PRE_PROMPT_FORM,
+      promptText: String(body.prompt?.latest?.promptText || ''),
+      message: String(body.prompt?.latest?.requestedNotes || ''),
+    });
+    setQuickBrief({ ...INITIAL_QUICK_BRIEF });
+    setBriefContext({ ...INITIAL_BRIEF_CONTEXT });
+    setSeoForm({ ...INITIAL_SEO_FORM });
+    setSiteSections([...INITIAL_SITE_SECTIONS]);
+    setVariantPrompts({ ...INITIAL_VARIANT_PROMPTS });
+    setTemplateForm({ ...INITIAL_TEMPLATE_FORM });
+    setSelectedTemplateCard(null);
     const promptJson = body.prompt?.latest?.promptJson as
       | {
         brand?: { cores?: string; tom?: string };
@@ -931,7 +977,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         legalContent: String(promptJson?.content?.conteudo_legal || ''),
       });
       setSeoForm((prev) => ({
-        ...prev,
+        ...INITIAL_SEO_FORM,
         title: String(promptJson?.seo?.title || ''),
         description: String(promptJson?.seo?.description || ''),
         keywords: String(promptJson?.seo?.keywords || ''),
@@ -977,14 +1023,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         body.activeRelease?.variants?.find((item: { variantCode: string }) => item.variantCode === selectedVariantCode)?.entryFile ||
         body.template?.latest?.entryFile ||
         'index.html';
-      setTemplateForm((prev) => ({
-        ...prev,
+      setTemplateForm({
+        ...INITIAL_TEMPLATE_FORM,
         entryFile: selectedVariantEntry,
-        templateModelCode: body.template?.catalog?.find((item: { isDefault: boolean }) => item.isDefault)?.code || prev.templateModelCode,
-        copyMode: prev.copyMode || 'if_empty_or_missing',
-        releaseVersion: selectedReleaseVersion || prev.releaseVersion,
+        templateModelCode: body.template?.catalog?.find((item: { isDefault: boolean }) => item.isDefault)?.code || INITIAL_TEMPLATE_FORM.templateModelCode,
+        copyMode: INITIAL_TEMPLATE_FORM.copyMode,
+        releaseVersion: selectedReleaseVersion,
         variantCode: selectedVariantCode,
-      }));
+      });
       if (selectedVariantCode) {
         setSelectedTemplateCard(selectedVariantCode);
       }
@@ -1001,6 +1047,11 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       loadOperationFlow();
     }
   }, [activeModal, canShowClientTabs, selectedOperationProjectId]);
+
+  useEffect(() => {
+    if (activeModal !== 'operacao') return;
+    replaceModalQuery('operacao', OPERATION_STAGE_QUERY_MAP[operationStageTab] || null);
+  }, [activeModal, operationStageTab, selectedOperationProjectId]);
 
   useEffect(() => {
     if (activeModal !== 'tickets' || !data) return;
@@ -1058,8 +1109,12 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       if (stageFromQuery && stageFromQuery !== operationStageTab) {
         setOperationStageTab(stageFromQuery);
       }
+      const projectFromQuery = String(searchParams?.get('projectId') || '').trim();
+      if (projectFromQuery && projectFromQuery !== selectedOperationProjectId) {
+        setSelectedOperationProjectId(projectFromQuery);
+      }
     }
-  }, [searchParams, canShowClientTabs]);
+  }, [searchParams, canShowClientTabs, operationStageTab, selectedOperationProjectId]);
 
   useEffect(() => {
     if (!activeModal) return;
@@ -1130,6 +1185,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function savePrePromptDraft() {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto antes de salvar o pré-prompt.');
+      return;
+    }
     const resolvedVariants = {
       ...variantPrompts,
       [promptVariantTab]: prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || buildConditionalPromptForVariant(promptVariantTab),
@@ -1140,7 +1199,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     const res = await fetch(`/api/deals/${dealId}/preprompt/draft`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ promptText, promptJson }),
+      body: JSON.stringify({ promptText, promptJson, projectId: selectedOperationProjectId }),
     });
     const body = await res.json();
     if (!res.ok) {
@@ -1166,6 +1225,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function approvePrePrompt() {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto antes de aprovar o pré-prompt.');
+      return;
+    }
     const resolvedVariants = {
       ...variantPrompts,
       [promptVariantTab]: prePromptForm.promptText.trim() || variantPrompts[promptVariantTab] || buildConditionalPromptForVariant(promptVariantTab),
@@ -1176,6 +1239,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        projectId: selectedOperationProjectId,
         promptText,
         promptJson,
         releaseVersion: selectedRelease?.version || null,
@@ -1212,6 +1276,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function requestPrePromptInfo() {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto para solicitar informações ao cliente.');
+      return;
+    }
     if (!prePromptForm.message.trim() && !prePromptForm.requestItems.trim()) {
       setNotice('Descreva a mensagem e/ou itens de informação a solicitar ao cliente.');
       return;
@@ -1233,6 +1301,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
           .split('\n')
           .map((item) => item.trim())
           .filter(Boolean),
+        projectId: selectedOperationProjectId,
         dueAt: prePromptForm.dueAt || null,
         promptText: resolvedVariants[promptVariantTab],
         promptJson: buildPromptJsonFromEditor(resolvedVariants),
@@ -1249,11 +1318,15 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function updatePublicationSubstep(substepId: string, payload: { status?: string; owner?: string; notes?: string }) {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto para alterar sub-etapas.');
+      return;
+    }
     setUpdatingSubstepId(substepId);
     const res = await fetch(`/api/deals/${dealId}/operation/substeps/${substepId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, projectId: selectedOperationProjectId }),
     });
     const body = await res.json();
     setUpdatingSubstepId(null);
@@ -1281,6 +1354,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function sendPublicationRequest() {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto para solicitar validação de publicação.');
+      return;
+    }
     const domain = publicationRequestForm.domain.trim();
     const message = publicationRequestForm.message.trim();
     if (!domain && !message) {
@@ -1296,6 +1373,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         domain,
         subject: '[KoddaHub] Aprovação de domínio/publicação',
         message,
+        projectId: selectedOperationProjectId,
         dueAt: publicationRequestForm.dueAt || null,
         requestItems: domain ? [`Domínio para publicação: ${domain}`] : [],
       }),
@@ -1351,12 +1429,17 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     if (approvalSending) {
       return;
     }
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto antes de enviar aprovação.');
+      return;
+    }
     setApprovalSending(true);
     const res = await fetch(`/api/deals/${dealId}/template/send-approval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         templateRevisionId: templateRevisionId || null,
+        projectId: selectedOperationProjectId,
         releaseVersion: selectedReleaseVersion,
         variantCode: selectedVariantCode || 'V1',
       }),
@@ -2097,6 +2180,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }
 
   async function approveSelectedTemplateToClient() {
+    if (!selectedOperationProjectId) {
+      setNotice('Selecione um projeto antes de enviar template para aprovação.');
+      return;
+    }
     if (!selectedTemplateCard || !selectedRelease) {
       setNotice('Selecione uma versão V1, V2 ou V3 antes de enviar.');
       return;
@@ -2112,6 +2199,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: selectedOperationProjectId,
           releaseVersion: selectedRelease.version,
           variantCode: selectedTemplateCard,
           entryFile: variant.entryFile || 'index.html',
@@ -2129,6 +2217,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           templateRevisionId: generateBody?.revision?.id || null,
+          projectId: selectedOperationProjectId,
           releaseVersion: selectedRelease.version,
           variantCode: selectedTemplateCard,
         }),
@@ -2550,7 +2639,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                         className="form-select form-select-sm"
                         style={{ maxWidth: 320 }}
                         value={selectedOperationProject?.id || ''}
-                        onChange={(event) => setSelectedOperationProjectId(String(event.target.value || ''))}
+                        onChange={(event) => {
+                          const nextProjectId = String(event.target.value || '').trim();
+                          if (!nextProjectId || nextProjectId === selectedOperationProjectId) return;
+                          resetOperationScopedUiState();
+                          setSelectedOperationProjectId(nextProjectId);
+                          replaceModalQuery('operacao', OPERATION_STAGE_QUERY_MAP.briefing_pendente);
+                        }}
                       >
                         {operationProjects.map((project) => (
                           <option key={project.id} value={project.id}>
@@ -2560,6 +2655,13 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                       </select>
                       <span className="badge text-bg-secondary">
                         {selectedOperationProject?.operationStage ? (STAGE_LABEL[selectedOperationProject.operationStage] || selectedOperationProject.operationStage) : 'Briefing pendente'}
+                      </span>
+                    </div>
+                  ) : null}
+                  {selectedOperationProject ? (
+                    <div className="mt-2">
+                      <span className="badge text-bg-primary">
+                        Você está operando o projeto: {selectedOperationProject.label}
                       </span>
                     </div>
                   ) : null}
