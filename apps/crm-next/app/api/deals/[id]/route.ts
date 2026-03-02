@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { ensureDealSuppressionTable, purgeOrganizationData } from '@/lib/deal-purge';
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       })
     : [];
 
-  const tickets = deal.organizationId
+  const clientTickets = deal.organizationId
     ? await prisma.$queryRaw<Array<{ id: string; ticket_type: string; subject: string; status: string; created_at: Date }>>`
         SELECT id::text, ticket_type, subject, status, created_at
         FROM client.tickets
@@ -95,6 +96,45 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         LIMIT 200
       `
     : [];
+
+  const freelasTickets = await prisma.$queryRaw<Array<{
+    id: string;
+    status: string;
+    created_at: Date;
+    project_title: string;
+    project_link: string;
+    project_payload: Prisma.JsonValue;
+    analysis_payload: Prisma.JsonValue;
+    proposal_text: string;
+    offer_amount_cents: number | null;
+    final_offer_amount_cents: number | null;
+    estimated_duration_text: string | null;
+    details_text: string;
+    review_notes: string | null;
+    approved_by: string | null;
+    approved_at: Date | null;
+  }>>`
+    SELECT
+      id::text,
+      status,
+      created_at,
+      project_title,
+      project_link,
+      project_payload,
+      analysis_payload,
+      proposal_text,
+      offer_amount_cents,
+      final_offer_amount_cents,
+      estimated_duration_text,
+      details_text,
+      review_notes,
+      approved_by,
+      approved_at
+    FROM crm.freelas_proposal_ticket
+    WHERE deal_id = ${deal.id}::uuid
+    ORDER BY created_at DESC
+    LIMIT 200
+  `;
 
   const ticketMessages = process.env.FEATURE_TICKET_THREAD_SYNC === '1' && deal.organizationId
     ? await prisma.$queryRaw<Array<{ id: string; ticket_id: string; source: string; author_name: string | null; message: string; visibility: string; created_at: Date }>>`
@@ -152,13 +192,38 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       sizeBytes: doc.sizeBytes ? doc.sizeBytes.toString() : null,
     })),
     proposals: deal.proposals,
-    tickets: tickets.map((ticket) => ({
-      id: ticket.id,
-      ticketType: ticket.ticket_type,
-      subject: ticket.subject,
-      status: ticket.status,
-      createdAt: ticket.created_at,
-    })),
+    tickets: [
+      ...clientTickets.map((ticket) => ({
+        id: ticket.id,
+        source: 'CLIENT',
+        ticketType: ticket.ticket_type,
+        subject: ticket.subject,
+        status: ticket.status,
+        createdAt: ticket.created_at,
+      })),
+      ...freelasTickets.map((ticket) => ({
+        id: ticket.id,
+        source: 'FREELAS',
+        ticketType: 'PROPOSTA_99FREELAS',
+        subject: ticket.project_title,
+        status: ticket.status,
+        createdAt: ticket.created_at,
+        freelas: {
+          projectLink: ticket.project_link,
+          projectTitle: ticket.project_title,
+          projectPayload: ticket.project_payload,
+          analysisPayload: ticket.analysis_payload,
+          proposalText: ticket.proposal_text,
+          offerAmountCents: ticket.offer_amount_cents,
+          finalOfferAmountCents: ticket.final_offer_amount_cents,
+          estimatedDurationText: ticket.estimated_duration_text,
+          detailsText: ticket.details_text,
+          reviewNotes: ticket.review_notes,
+          approvedBy: ticket.approved_by,
+          approvedAt: ticket.approved_at,
+        },
+      })),
+    ].sort((a, b) => Number(new Date(b.createdAt)) - Number(new Date(a.createdAt))),
     ticketMessages: ticketMessages.map((item) => ({
       id: item.id,
       ticketId: item.ticket_id,

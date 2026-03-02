@@ -1,0 +1,28 @@
+{
+  "files.associations": {
+    "*html*": "html",
+    "*css*": "css",
+    "*js*": "javascript",
+    "*md*": "markdown",
+    "*json*": "json",
+    "*php*": "php"
+  },
+  "liveServer.settings.port": 5500,
+  "liveServer.settings.root": ".",
+  "liveServer.settings.host": "127.0.0.1",
+  "liveServer.settings.wait": 1000,
+  "liveServer.settings.donotShowInfoMsg": true,
+  "markdown.preview.breaks": true,
+  "markdown.preview.scrollEditorWithPreview": true,
+  "markdown.preview.scrollPreviewWithEditor": true,
+  "markdown.extension.preview.autoShowPreviewToSide": false,
+  "markdown.extension.toc.levels": "2..6",
+  "html.autoClosingTags": true,
+  "css.validate": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "prettier.singleQuote": true,
+  "prettier.tabWidth": 2,
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "chatgpt.openOnStartup": true
+}

@@ -17,27 +17,44 @@ function dayBucket(value: Date): Date {
   );
 }
 
-// ⚠️ NOVO: Função para adicionar headers CORS
-function addCorsHeaders(response: NextResponse): NextResponse {
-  response.headers.set("Access-Control-Allow-Origin", "http://127.0.0.1:5509");
-  response.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+// ✅ Função para adicionar headers CORS (já está correta)
+const ALLOWED_ORIGINS = new Set([
+  "https://koddahub.com.br",
+  "https://www.koddahub.com.br",
+  "http://127.0.0.1:5500",
+  "http://127.0.0.1:5509",
+  "http://127.0.0.1:5504",
+  "http://localhost:5500",
+  "http://localhost:5509",
+  "http://localhost:5504",
+]);
+
+function addCorsHeaders(req: NextRequest, response: NextResponse): NextResponse {
+  const origin = req.headers.get("origin");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    response.headers.set("Access-Control-Allow-Origin", origin);
+  }
+  response.headers.set("Vary", "Origin");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   response.headers.set("Access-Control-Allow-Credentials", "true");
   return response;
 }
 
-// ⚠️ NOVO: Handler para OPTIONS (preflight)
+// ✅ Handler OBRIGATÓRIO para OPTIONS (preflight)
 export async function OPTIONS(req: NextRequest) {
-  return addCorsHeaders(new NextResponse(null, { status: 204 }));
+  // Retorna 204 (No Content) com os headers CORS
+  return addCorsHeaders(req, new NextResponse(null, { status: 204 }));
 }
 
 export async function GET(req: NextRequest) {
   const denied = ensureApiAuth(req);
-  if (denied) return denied;
+  if (denied) return addCorsHeaders(req, denied);
 
   const mode = req.nextUrl.searchParams.get("mode");
   if (mode !== "list") {
     return addCorsHeaders(
+      req,
       NextResponse.json({ error: "Modo inválido" }, { status: 400 }),
     );
   }
@@ -57,10 +74,11 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return addCorsHeaders(NextResponse.json({ items }));
+  return addCorsHeaders(req, NextResponse.json({ items }));
 }
 
 export async function POST(req: NextRequest) {
+  // ⚠️ IMPORTANTE: Adicione addCorsHeaders a TODAS as respostas, inclusive as de erro.
   const body = await req.json().catch(() => ({}));
   const name = String(body.name || "").trim();
   const email = body.email ? String(body.email).trim().toLowerCase() : null;
@@ -68,7 +86,9 @@ export async function POST(req: NextRequest) {
   const rawAssunto = String(body.assunto || body.interest || "").trim();
 
   if (!name || (!email && !phone)) {
+    // ✅ Resposta de erro com CORS
     return addCorsHeaders(
+      req,
       NextResponse.json(
         { error: "name e contato são obrigatórios" },
         { status: 422 },
@@ -170,7 +190,9 @@ export async function POST(req: NextRequest) {
       return { lead, deal };
     });
 
+    // ✅ Resposta de sucesso com CORS
     return addCorsHeaders(
+      req,
       NextResponse.json(
         { ok: true, leadId: result.lead.id, dealId: result.deal.id },
         { status: 201 },
@@ -185,7 +207,9 @@ export async function POST(req: NextRequest) {
         where: { source, dedupeKey: dedupeBase, dayBucket: bucket },
         orderBy: { createdAt: "desc" },
       });
+      // ✅ Resposta idempotente com CORS
       return addCorsHeaders(
+        req,
         NextResponse.json({
           ok: true,
           idempotent: true,
@@ -193,8 +217,9 @@ export async function POST(req: NextRequest) {
         }),
       );
     }
-
+    // ✅ Resposta de erro genérico com CORS
     return addCorsHeaders(
+      req,
       NextResponse.json(
         { error: "Falha ao ingerir lead", details: String(error) },
         { status: 500 },

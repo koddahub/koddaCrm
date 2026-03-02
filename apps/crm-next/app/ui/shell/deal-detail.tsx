@@ -95,10 +95,25 @@ type DealData = {
   }[];
   tickets: {
     id: string;
+    source: 'CLIENT' | 'FREELAS';
     ticketType: string;
     subject: string;
     status: string;
     createdAt: string;
+    freelas?: {
+      projectLink: string;
+      projectTitle: string;
+      projectPayload: Record<string, unknown> | null;
+      analysisPayload: Record<string, unknown> | null;
+      proposalText: string;
+      offerAmountCents: number | null;
+      finalOfferAmountCents: number | null;
+      estimatedDurationText: string | null;
+      detailsText: string;
+      reviewNotes: string | null;
+      approvedBy: string | null;
+      approvedAt: string | null;
+    };
   }[];
   payments: {
     id: string;
@@ -456,6 +471,22 @@ function dateTime(value?: string | null) {
   return new Date(value).toLocaleString('pt-BR');
 }
 
+function moneyInputFromCents(cents?: number | null) {
+  if (cents === null || cents === undefined) return '';
+  return (cents / 100).toFixed(2).replace('.', ',');
+}
+
+function ticketStatusLabel(status?: string | null) {
+  const value = String(status || '').trim().toUpperCase();
+  if (value === 'NEW') return 'Novo';
+  if (value === 'UNDER_REVIEW') return 'Em revisão';
+  if (value === 'APPROVED') return 'Aprovado';
+  if (value === 'REJECTED') return 'Rejeitado';
+  if (value === 'DISPATCH_SIMULATED') return 'Dispatch simulado';
+  if (value === 'DISPATCH_FAILED') return 'Falha no dispatch';
+  return value || '-';
+}
+
 function normalizeTone(value?: string | null) {
   const tone = String(value || '').trim().toLowerCase();
   if (tone.includes('descontra')) return 'Descontraído';
@@ -604,6 +635,14 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   const [publicationRequestSending, setPublicationRequestSending] = useState(false);
   const [publicationRequestModalOpen, setPublicationRequestModalOpen] = useState(false);
   const [publicationRequestFeedback, setPublicationRequestFeedback] = useState<{ type: 'success' | 'danger'; message: string } | null>(null);
+  const [demoEmailModalOpen, setDemoEmailModalOpen] = useState(false);
+  const [demoEmailSending, setDemoEmailSending] = useState(false);
+  const [demoEmailForm, setDemoEmailForm] = useState({
+    subject: '[KoddaHub] Acesso à demo da loja',
+    demoUrl: 'https://ecommerce.koddahub.com.br/index.php',
+    accessEmail: '',
+    additionalMessage: '',
+  });
   const [publicationNoteModal, setPublicationNoteModal] = useState<{
     substepId: string;
     substepName: string;
@@ -617,6 +656,17 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
 
   const [activityForm, setActivityForm] = useState({ activityType: 'NOTE', content: '' });
   const [agendaForm, setAgendaForm] = useState({ title: '', description: '', dueAt: '' });
+  const [selectedFreelasTicketId, setSelectedFreelasTicketId] = useState<string | null>(null);
+  const [freelasTicketForm, setFreelasTicketForm] = useState({
+    offerAmount: '',
+    finalOfferAmount: '',
+    estimatedDurationText: '',
+    detailsText: '',
+    reviewNotes: '',
+  });
+  const [freelasSaving, setFreelasSaving] = useState(false);
+  const [freelasApproving, setFreelasApproving] = useState(false);
+  const [freelasRejecting, setFreelasRejecting] = useState(false);
   const [proposalForm, setProposalForm] = useState({
     title: 'Proposta comercial KoddaHub',
     scope: '',
@@ -707,6 +757,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     setPreviewModal(null);
     setDeletingProposalId(null);
     setProposalFeedbackModal(null);
+    setDemoEmailModalOpen(false);
     setPublicationRequestModalOpen(false);
     setPublicationNoteModal(null);
   }
@@ -722,6 +773,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
     if (deletingProposalId) {
       setDeletingProposalId(null);
+      return true;
+    }
+    if (demoEmailModalOpen) {
+      setDemoEmailModalOpen(false);
       return true;
     }
     if (proposalFeedbackModal) {
@@ -769,6 +824,10 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     }
 
     setData(body);
+    setDemoEmailForm((prev) => ({
+      ...prev,
+      accessEmail: prev.accessEmail || body.deal?.contactEmail || body.organization?.billingEmail || '',
+    }));
 
     if (body.deal?.planCode) {
       setProposalForm((prev) => ({ ...prev, planCode: body.deal.planCode }));
@@ -916,6 +975,21 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
   }, [activeModal, canShowClientTabs]);
 
   useEffect(() => {
+    if (activeModal !== 'tickets' || !data) return;
+    const freelasTickets = data.tickets.filter((item) => item.source === 'FREELAS');
+    if (freelasTickets.length === 0) {
+      setSelectedFreelasTicketId(null);
+      return;
+    }
+
+    const selected = freelasTickets.find((item) => item.id === selectedFreelasTicketId) || freelasTickets[0];
+    if (selected.id !== selectedFreelasTicketId) {
+      setSelectedFreelasTicketId(selected.id);
+    }
+    hydrateFreelasFormFromTicket(selected);
+  }, [activeModal, data, selectedFreelasTicketId]);
+
+  useEffect(() => {
     const current = variantPrompts[promptVariantTab];
     if (current && current !== prePromptForm.promptText) {
       setPrePromptForm((prev) => ({ ...prev, promptText: current }));
@@ -981,6 +1055,7 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     publicationNoteModal,
     publicationRequestModalOpen,
     deletingProposalId,
+    demoEmailModalOpen,
     previewModal,
     showEmailPreview,
     showSeoModal,
@@ -1369,6 +1444,48 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
     await loadDeal();
   }
 
+  async function sendDemoAccessEmail() {
+    if (!data) return;
+    const registeredEmail = data.deal.contactEmail || data.organization?.billingEmail || '';
+    if (!registeredEmail) {
+      setNotice('Este cliente não possui e-mail cadastrado para envio da demo.');
+      return;
+    }
+
+    const demoUrl = String(demoEmailForm.demoUrl || '').trim();
+    if (!demoUrl) {
+      setNotice('Informe o link da demo antes de enviar.');
+      return;
+    }
+
+    setDemoEmailSending(true);
+    const res = await fetch(`/api/deals/${dealId}/demo/send-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subject: demoEmailForm.subject,
+        demoUrl,
+        accessEmail: demoEmailForm.accessEmail || registeredEmail,
+        additionalMessage: demoEmailForm.additionalMessage,
+      }),
+    });
+    const body = await res.json();
+    setDemoEmailSending(false);
+
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao enviar e-mail de acesso da demo');
+      return;
+    }
+
+    setDemoEmailModalOpen(false);
+    setProposalFeedbackModal({
+      title: 'Acesso da demo enviado',
+      message: `O cliente recebeu no e-mail cadastrado (${registeredEmail}) as orientações e o link da demo.`,
+    });
+    setNotice('E-mail de acesso da demo enviado para a fila.');
+    await loadDeal();
+  }
+
   function openProposalPdf(proposal: DealData['proposals'][number]) {
     if (!proposal.pdfPath) {
       setNotice('Esta proposta ainda não possui PDF gerado.');
@@ -1420,6 +1537,114 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
       setEditingProposalId(null);
     }
     setNotice('Proposta excluída com sucesso.');
+    await loadDeal();
+  }
+
+  function hydrateFreelasFormFromTicket(ticket: DealData['tickets'][number]) {
+    if (ticket.source !== 'FREELAS' || !ticket.freelas) return;
+    setFreelasTicketForm({
+      offerAmount: moneyInputFromCents(ticket.freelas.offerAmountCents),
+      finalOfferAmount: moneyInputFromCents(ticket.freelas.finalOfferAmountCents),
+      estimatedDurationText: ticket.freelas.estimatedDurationText || '',
+      detailsText: ticket.freelas.detailsText || ticket.freelas.proposalText || '',
+      reviewNotes: ticket.freelas.reviewNotes || '',
+    });
+  }
+
+  async function saveFreelasTicket() {
+    const selected = data?.tickets.find((item) => item.id === selectedFreelasTicketId);
+    if (!selected || selected.source !== 'FREELAS') {
+      setNotice('Selecione um ticket Freelas para salvar.');
+      return;
+    }
+
+    setFreelasSaving(true);
+    const res = await fetch(`/api/integrations/freelas/tickets/${selected.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offerAmountCents: freelasTicketForm.offerAmount,
+        finalOfferAmountCents: freelasTicketForm.finalOfferAmount,
+        estimatedDurationText: freelasTicketForm.estimatedDurationText,
+        detailsText: freelasTicketForm.detailsText,
+        reviewNotes: freelasTicketForm.reviewNotes,
+      }),
+    });
+    const body = await res.json();
+    setFreelasSaving(false);
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao salvar ticket Freelas');
+      return;
+    }
+    setNotice('Ticket Freelas atualizado para revisão.');
+    await loadDeal();
+  }
+
+  async function approveFreelasTicket() {
+    const selected = data?.tickets.find((item) => item.id === selectedFreelasTicketId);
+    if (!selected || selected.source !== 'FREELAS') {
+      setNotice('Selecione um ticket Freelas para aprovar.');
+      return;
+    }
+
+    setFreelasApproving(true);
+    const saveRes = await fetch(`/api/integrations/freelas/tickets/${selected.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offerAmountCents: freelasTicketForm.offerAmount,
+        finalOfferAmountCents: freelasTicketForm.finalOfferAmount,
+        estimatedDurationText: freelasTicketForm.estimatedDurationText,
+        detailsText: freelasTicketForm.detailsText,
+        reviewNotes: freelasTicketForm.reviewNotes,
+      }),
+    });
+    const saveBody = await saveRes.json();
+    if (!saveRes.ok) {
+      setFreelasApproving(false);
+      setNotice(saveBody.error || 'Falha ao preparar aprovação');
+      return;
+    }
+
+    const res = await fetch(`/api/integrations/freelas/tickets/${selected.id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewNotes: freelasTicketForm.reviewNotes }),
+    });
+    const body = await res.json();
+    setFreelasApproving(false);
+    if (!res.ok) {
+      if (res.status === 422 && Array.isArray(body.missing)) {
+        setNotice(`Campos obrigatórios: ${body.missing.join(', ')}`);
+        return;
+      }
+      setNotice(body.error || 'Falha ao aprovar ticket Freelas');
+      return;
+    }
+    setNotice('Ticket aprovado com dispatch simulado (DRY_RUN).');
+    await loadDeal();
+  }
+
+  async function rejectFreelasTicket() {
+    const selected = data?.tickets.find((item) => item.id === selectedFreelasTicketId);
+    if (!selected || selected.source !== 'FREELAS') {
+      setNotice('Selecione um ticket Freelas para rejeitar.');
+      return;
+    }
+
+    setFreelasRejecting(true);
+    const res = await fetch(`/api/integrations/freelas/tickets/${selected.id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewNotes: freelasTicketForm.reviewNotes }),
+    });
+    const body = await res.json();
+    setFreelasRejecting(false);
+    if (!res.ok) {
+      setNotice(body.error || 'Falha ao rejeitar ticket Freelas');
+      return;
+    }
+    setNotice('Ticket Freelas rejeitado.');
     await loadDeal();
   }
 
@@ -1963,6 +2188,15 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                     {action.label}
                   </button>
                 ))}
+              <button
+                type="button"
+                className="btn btn-outline-success btn-sm"
+                aria-label="Enviar acesso da demo por e-mail"
+                onClick={() => setDemoEmailModalOpen(true)}
+              >
+                <i className="bi bi-envelope-paper me-2" aria-hidden="true" />
+                Enviar acesso demo
+              </button>
             </div>
           </div>
         </div>
@@ -3260,33 +3494,208 @@ export function DealDetail({ dealId, setNotice }: DealDetailProps) {
                 <button type="button" className="btn-close" aria-label="Fechar modal de Tickets" autoFocus onClick={closeClientModal} />
               </div>
               <div className="modal-body deal-tab-panel">
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Tipo</th>
-                        <th>Assunto</th>
-                        <th>Status</th>
-                        <th>Data</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.tickets.map((ticket) => (
-                        <tr key={ticket.id}>
-                          <td>{ticket.ticketType}</td>
-                          <td>{ticket.subject}</td>
-                          <td>{ticket.status}</td>
-                          <td>{dateTime(ticket.createdAt)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="row g-3">
+                  <div className="col-12 col-lg-6">
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Fonte</th>
+                            <th>Tipo</th>
+                            <th>Assunto</th>
+                            <th>Status</th>
+                            <th>Data</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.tickets.map((ticket) => (
+                            <tr
+                              key={ticket.id}
+                              style={{ cursor: ticket.source === 'FREELAS' ? 'pointer' : 'default' }}
+                              onClick={() => {
+                                if (ticket.source !== 'FREELAS') return;
+                                setSelectedFreelasTicketId(ticket.id);
+                                hydrateFreelasFormFromTicket(ticket);
+                              }}
+                            >
+                              <td>{ticket.source === 'FREELAS' ? 'Freelas' : 'Cliente'}</td>
+                              <td>{ticket.ticketType}</td>
+                              <td>{ticket.subject}</td>
+                              <td>{ticketStatusLabel(ticket.status)}</td>
+                              <td>{dateTime(ticket.createdAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div className="col-12 col-lg-6">
+                    {data.tickets.some((item) => item.source === 'FREELAS') ? (
+                      (() => {
+                        const selected = data.tickets.find((item) => item.id === selectedFreelasTicketId && item.source === 'FREELAS');
+                        if (!selected || !selected.freelas) {
+                          return <p className="text-muted mb-0">Selecione um ticket Freelas para revisar.</p>;
+                        }
+                        const analysis = selected.freelas.analysisPayload || {};
+                        const score = analysis && typeof analysis === 'object' ? String((analysis as Record<string, unknown>).score || '-') : '-';
+                        const offerType = analysis && typeof analysis === 'object'
+                          ? String((analysis as Record<string, unknown>).offer_type || '-')
+                          : '-';
+                        return (
+                          <div className="stack-form">
+                            <label>Projeto</label>
+                            <div>
+                              <strong>{selected.freelas.projectTitle}</strong>
+                              <div><a href={selected.freelas.projectLink} target="_blank" rel="noreferrer">{selected.freelas.projectLink}</a></div>
+                            </div>
+                            <label>Análise do Codex</label>
+                            <div>Score: {score} | Oferta: {offerType}</div>
+                            <label>Sua oferta (R$)</label>
+                            <input
+                              placeholder="Ex: 950,00"
+                              value={freelasTicketForm.offerAmount}
+                              onChange={(event) => setFreelasTicketForm((prev) => ({ ...prev, offerAmount: event.target.value }))}
+                            />
+                            <label>Oferta final (R$)</label>
+                            <input
+                              placeholder="Ex: 850,00"
+                              value={freelasTicketForm.finalOfferAmount}
+                              onChange={(event) => setFreelasTicketForm((prev) => ({ ...prev, finalOfferAmount: event.target.value }))}
+                            />
+                            <label>Duração estimada</label>
+                            <input
+                              placeholder="Ex: 7 dias"
+                              value={freelasTicketForm.estimatedDurationText}
+                              onChange={(event) => setFreelasTicketForm((prev) => ({ ...prev, estimatedDurationText: event.target.value }))}
+                            />
+                            <label>Detalhes</label>
+                            <textarea
+                              rows={10}
+                              value={freelasTicketForm.detailsText}
+                              onChange={(event) => setFreelasTicketForm((prev) => ({ ...prev, detailsText: event.target.value }))}
+                            />
+                            <label>Notas de revisão</label>
+                            <textarea
+                              rows={3}
+                              value={freelasTicketForm.reviewNotes}
+                              onChange={(event) => setFreelasTicketForm((prev) => ({ ...prev, reviewNotes: event.target.value }))}
+                            />
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <button type="button" className="btn btn-outline-secondary" onClick={saveFreelasTicket} disabled={freelasSaving}>
+                                {freelasSaving ? 'Salvando...' : 'Salvar'}
+                              </button>
+                              <button type="button" className="btn btn-success" onClick={approveFreelasTicket} disabled={freelasApproving}>
+                                {freelasApproving ? 'Aprovando...' : 'Aprovar (simular envio)'}
+                              </button>
+                              <button type="button" className="btn btn-outline-danger" onClick={rejectFreelasTicket} disabled={freelasRejecting}>
+                                {freelasRejecting ? 'Rejeitando...' : 'Rejeitar'}
+                              </button>
+                            </div>
+                            <div className="text-muted">
+                              Status: {ticketStatusLabel(selected.status)} | Aprovado por: {selected.freelas.approvedBy || '-'} | Em: {dateTime(selected.freelas.approvedAt)}
+                            </div>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <p className="text-muted mb-0">Nenhum ticket Freelas vinculado a este deal.</p>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-outline-secondary" onClick={closeClientModal}>Fechar</button>
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {demoEmailModalOpen ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Enviar acesso da demo">
+          <div className="crm-v2-modal-backdrop" />
+          <div className="crm-v2-modal-content publication-request-modal-content">
+            <header className="publication-request-modal-header">
+              <div>
+                <h3>Enviar acesso da demo por e-mail</h3>
+                <p className="mb-0 text-body-secondary">Envia para o e-mail cadastrado do cliente com o link da demo e instruções de acesso.</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm"
+                aria-label="Fechar modal de envio da demo"
+                onClick={() => setDemoEmailModalOpen(false)}
+              >
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <form
+              className="publication-request-modal-form row g-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sendDemoAccessEmail();
+              }}
+            >
+              <div className="col-12 col-md-6">
+                <label className="form-label mb-1">E-mail de envio (cadastrado)</label>
+                <input
+                  className="form-control"
+                  value={data.deal.contactEmail || data.organization?.billingEmail || ''}
+                  readOnly
+                />
+              </div>
+              <div className="col-12 col-md-6">
+                <label className="form-label mb-1">E-mail para login na demo</label>
+                <input
+                  className="form-control"
+                  value={demoEmailForm.accessEmail}
+                  onChange={(e) => setDemoEmailForm((prev) => ({ ...prev, accessEmail: e.target.value }))}
+                  placeholder="cliente@empresa.com.br"
+                  required
+                />
+              </div>
+              <div className="col-12">
+                <label className="form-label mb-1">Link da demo (editável)</label>
+                <input
+                  type="url"
+                  className="form-control"
+                  value={demoEmailForm.demoUrl}
+                  onChange={(e) => setDemoEmailForm((prev) => ({ ...prev, demoUrl: e.target.value }))}
+                  placeholder="https://ecommerce.koddahub.com.br/index.php"
+                  required
+                />
+              </div>
+              <div className="col-12">
+                <label className="form-label mb-1">Assunto</label>
+                <input
+                  className="form-control"
+                  value={demoEmailForm.subject}
+                  onChange={(e) => setDemoEmailForm((prev) => ({ ...prev, subject: e.target.value }))}
+                />
+              </div>
+              <div className="col-12">
+                <label className="form-label mb-1">Mensagem adicional (opcional)</label>
+                <textarea
+                  rows={3}
+                  className="form-control"
+                  value={demoEmailForm.additionalMessage}
+                  onChange={(e) => setDemoEmailForm((prev) => ({ ...prev, additionalMessage: e.target.value }))}
+                  placeholder="Ex.: esta demo está com catálogo inicial para avaliação."
+                />
+              </div>
+              <div className="col-12 publication-request-modal-footer">
+                <button type="button" className="btn btn-outline-secondary" onClick={() => setDemoEmailModalOpen(false)}>
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={demoEmailSending}
+                >
+                  {demoEmailSending ? 'Enviando...' : 'Enviar e-mail de demo'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}
