@@ -306,6 +306,73 @@ final class AsaasWebhookProcessor
                     'payload' => ['webhook_event_id' => $eventId, 'webhook_type' => $eventType],
                 ]);
             }
+        } elseif (in_array($eventType, ['PAYMENT_DELETED', 'PAYMENT_OVERDUE'], true)) {
+            try {
+                $session = $this->db->one(
+                    "SELECT
+                       id::text AS id,
+                       organization_id::text AS organization_id,
+                       project_id::text AS project_id,
+                       status
+                     FROM client.project_prorata_payment_sessions
+                     WHERE payment_id = :payment_id
+                     LIMIT 1",
+                    [':payment_id' => $paymentIdSafe]
+                );
+                if ($session && strtoupper((string)($session['status'] ?? 'PENDING')) === 'PENDING') {
+                    $this->db->exec(
+                        "UPDATE client.project_prorata_payment_sessions
+                         SET
+                           status = 'CANCELED',
+                           canceled_at = now(),
+                           updated_at = now(),
+                           metadata = CASE
+                             WHEN metadata IS NULL THEN CAST(:meta AS jsonb)
+                             ELSE metadata || CAST(:meta AS jsonb)
+                           END
+                         WHERE id = CAST(:id AS uuid)",
+                        [
+                            ':id' => (string)$session['id'],
+                            ':meta' => json_encode([
+                                'canceled_by' => 'ASAAS_WEBHOOK',
+                                'event_type' => $eventType,
+                                'event_id' => $eventId,
+                            ], JSON_UNESCAPED_UNICODE),
+                        ]
+                    );
+                    $this->db->exec(
+                        "DELETE FROM client.subscription_items
+                         WHERE project_id = CAST(:project_id AS uuid)
+                           AND organization_id = CAST(:org_id AS uuid)
+                           AND upper(coalesce(status, 'PENDING')) = 'PENDING'",
+                        [
+                            ':project_id' => (string)$session['project_id'],
+                            ':org_id' => (string)$session['organization_id'],
+                        ]
+                    );
+                    $this->db->exec(
+                        "DELETE FROM client.project_briefs
+                         WHERE project_id = CAST(:project_id AS uuid)
+                           AND organization_id = CAST(:org_id AS uuid)",
+                        [
+                            ':project_id' => (string)$session['project_id'],
+                            ':org_id' => (string)$session['organization_id'],
+                        ]
+                    );
+                    $this->db->exec(
+                        "DELETE FROM client.projects
+                         WHERE id = CAST(:project_id AS uuid)
+                           AND organization_id = CAST(:org_id AS uuid)
+                           AND upper(coalesce(status, 'PENDING')) = 'PENDING'",
+                        [
+                            ':project_id' => (string)$session['project_id'],
+                            ':org_id' => (string)$session['organization_id'],
+                        ]
+                    );
+                }
+            } catch (Throwable) {
+                // rollout parcial: falha não bloqueia processamento principal do webhook.
+            }
         }
 
         $this->updateSubscriptionEventClock((string)$subscription['id'], $eventTime);
