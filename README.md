@@ -66,6 +66,7 @@ Login padrão CRM V2:
 - `PATCH /api/proposals-avulsas/:id/status`
 - `POST /api/automation/reconcile`
 - `POST /api/leads/ingest-site-form`
+- `POST /api/projects/create-for-organization`
 
 ## Estrutura
 
