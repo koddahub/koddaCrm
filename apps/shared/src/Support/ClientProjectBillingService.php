@@ -299,7 +299,7 @@ final class ClientProjectBillingService
             'status_code' => 200,
             'error_message_safe' => null,
         ];
-        if ($subscription && !empty($subscription['asaas_subscription_id'])) {
+        if ($subscription && !empty($subscription['asaas_subscription_id']) && $total > 0) {
             $asaasResult = $this->asaas->updateSubscriptionValue(
                 (string)$subscription['asaas_subscription_id'],
                 $total,

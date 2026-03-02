@@ -28,6 +28,7 @@ use Shared\Infra\AsaasClient;
 use Shared\Infra\PromptBuilder;
 use Shared\Support\Auth;
 use Shared\Support\BillingSnapshotService;
+use Shared\Support\ClientProjectBillingService;
 use Shared\Support\FinancialAuditNotifier;
 use Shared\Support\Request;
 use Shared\Support\Response;
@@ -142,6 +143,144 @@ function financialAuditNotifier(): FinancialAuditNotifier {
 
 function safeJson(mixed $value): string {
   return json_encode($value, JSON_UNESCAPED_UNICODE) ?: '{}';
+}
+
+function projectBillingService(): ClientProjectBillingService {
+  static $instance = null;
+  if ($instance instanceof ClientProjectBillingService) {
+    return $instance;
+  }
+  $instance = new ClientProjectBillingService(db());
+  return $instance;
+}
+
+function readIdempotencyKey(Request $request): string {
+  return trim((string)(requestHeader($request, 'Idempotency-Key') ?? requestHeader($request, 'X-Idempotency-Key') ?? ''));
+}
+
+function decodeAuditJsonValue(mixed $raw): array {
+  if (is_array($raw)) {
+    return $raw;
+  }
+  if (is_string($raw) && trim($raw) !== '') {
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) {
+      return $decoded;
+    }
+  }
+  return [];
+}
+
+function loadConfirmedActionPayload(string $actionId): ?array {
+  if ($actionId === '') {
+    return null;
+  }
+  $row = db()->one("
+    SELECT status, payload, after_state
+    FROM audit.financial_actions
+    WHERE action_id = CAST(:action_id AS uuid)
+    LIMIT 1
+  ", [':action_id' => $actionId]);
+  if (!$row || strtoupper((string)($row['status'] ?? '')) !== 'CONFIRMED') {
+    return null;
+  }
+  $payload = decodeAuditJsonValue($row['payload'] ?? null);
+  $afterState = decodeAuditJsonValue($row['after_state'] ?? null);
+  return [
+    'payload' => $payload,
+    'after_state' => $afterState,
+  ];
+}
+
+function logPortalAudit(
+  string $action,
+  ?string $targetType,
+  ?string $targetId,
+  array $details = [],
+  ?string $actor = null,
+  ?string $actorRole = null
+): void {
+  try {
+    db()->exec("
+      INSERT INTO audit.logs(actor, actor_role, action, target_type, target_id, details, created_at)
+      VALUES(:actor, :actor_role, :action, :target_type, :target_id, CAST(:details AS jsonb), now())
+    ", [
+      ':actor' => $actor,
+      ':actor_role' => $actorRole,
+      ':action' => $action,
+      ':target_type' => $targetType,
+      ':target_id' => $targetId,
+      ':details' => safeJson($details),
+    ]);
+  } catch (Throwable) {
+    // best-effort audit log
+  }
+}
+
+function ensureClientProjectTables(): void {
+  static $ready = false;
+  if ($ready) {
+    return;
+  }
+  db()->exec("
+    CREATE TABLE IF NOT EXISTS client.projects (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id UUID NOT NULL REFERENCES client.organizations(id) ON DELETE CASCADE,
+      domain VARCHAR(190),
+      project_type VARCHAR(40) NOT NULL DEFAULT 'hospedagem',
+      status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  ");
+  db()->exec("
+    CREATE TABLE IF NOT EXISTS client.subscription_items (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id UUID NOT NULL REFERENCES client.organizations(id) ON DELETE CASCADE,
+      project_id UUID NOT NULL REFERENCES client.projects(id) ON DELETE CASCADE,
+      plan_id UUID NOT NULL REFERENCES client.plans(id),
+      status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+      price_override NUMERIC(10,2),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  ");
+  db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS consolidated_value NUMERIC(10,2)");
+  db()->exec("ALTER TABLE client.subscriptions ADD COLUMN IF NOT EXISTS last_recalc_at TIMESTAMPTZ");
+  db()->exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_projects_org_domain ON client.projects(organization_id, lower(coalesce(domain, '')))");
+  db()->exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_client_subscription_items_project ON client.subscription_items(project_id)");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_client_projects_org_status ON client.projects(organization_id, status, created_at DESC)");
+  db()->exec("CREATE INDEX IF NOT EXISTS idx_client_subscription_items_org_status ON client.subscription_items(organization_id, status, created_at DESC)");
+  $ready = true;
+}
+
+function loadProjectOwnedByOrganization(string $projectId, string $organizationId): ?array {
+  if ($projectId === '' || $organizationId === '') {
+    return null;
+  }
+  return db()->one("
+    SELECT id::text AS id, organization_id::text AS organization_id, domain, project_type, status
+    FROM client.projects
+    WHERE id = CAST(:pid AS uuid)
+      AND organization_id = CAST(:oid AS uuid)
+    LIMIT 1
+  ", [
+    ':pid' => $projectId,
+    ':oid' => $organizationId,
+  ]);
+}
+
+function currentClientProjectId(string $organizationId): ?string {
+  $raw = trim((string)($_SESSION['current_project_id'] ?? ''));
+  if ($raw === '' || $organizationId === '') {
+    return null;
+  }
+  $project = loadProjectOwnedByOrganization($raw, $organizationId);
+  if (!$project) {
+    unset($_SESSION['current_project_id']);
+    return null;
+  }
+  return (string)$project['id'];
 }
 
 function requireCsrf(Request $request): void {
@@ -5196,6 +5335,220 @@ function syncHospedagemDealByOrganization(string $organizationId, ?string $subsc
   return (string)$created['id'];
 }
 
+function deriveProjectDealStageAndLifecycle(?string $projectStatus): array {
+  $status = strtoupper(trim((string)$projectStatus));
+  if (in_array($status, ['CANCELED', 'CANCELLED'], true)) {
+    return ['stage_code' => 'perdido', 'lifecycle' => 'LOST', 'closed' => true];
+  }
+  if ($status === 'ACTIVE') {
+    return ['stage_code' => 'pagamento_pendente', 'lifecycle' => 'OPEN', 'closed' => false];
+  }
+  return ['stage_code' => 'cadastro_iniciado', 'lifecycle' => 'OPEN', 'closed' => false];
+}
+
+function syncProjectDealByOrganization(
+  string $organizationId,
+  array $project,
+  ?string $planCode = null,
+  ?float $effectivePrice = null,
+  string $reason = 'portal_project_sync'
+): ?string {
+  $pipeline = resolveHospedagemPipelineMeta();
+  if (!$pipeline) {
+    return null;
+  }
+  $projectId = trim((string)($project['id'] ?? ''));
+  if ($projectId === '') {
+    return null;
+  }
+
+  $derivation = deriveProjectDealStageAndLifecycle((string)($project['status'] ?? 'PENDING'));
+  $stage = $pipeline['stages'][$derivation['stage_code']] ?? null;
+  if (!$stage) {
+    return null;
+  }
+
+  $org = db()->one("
+    SELECT
+      o.id::text AS organization_id,
+      o.legal_name,
+      o.billing_email,
+      o.whatsapp,
+      s.id::text AS subscription_row_id
+    FROM client.organizations o
+    LEFT JOIN LATERAL (
+      SELECT s1.*
+      FROM client.subscriptions s1
+      WHERE s1.organization_id = o.id
+      ORDER BY s1.created_at DESC
+      LIMIT 1
+    ) s ON true
+    WHERE o.id = CAST(:oid AS uuid)
+    LIMIT 1
+  ", [':oid' => $organizationId]);
+  if (!$org) {
+    return null;
+  }
+
+  $domain = trim((string)($project['domain'] ?? ''));
+  $title = $domain !== '' ? $domain : ('Projeto ' . substr($projectId, 0, 8));
+  $safePlanCode = $planCode !== null ? strtolower(trim($planCode)) : null;
+  $valueCents = $effectivePrice !== null ? (int)round($effectivePrice * 100) : null;
+  $closedAt = !empty($derivation['closed']) ? date('Y-m-d H:i:s') : null;
+  $projectType = strtolower(trim((string)($project['project_type'] ?? 'hospedagem')));
+
+  $existing = db()->one("
+    SELECT id::text AS id, stage_id::text AS stage_id
+    FROM crm.deal
+    WHERE pipeline_id = CAST(:pid AS uuid)
+      AND deal_type = 'HOSPEDAGEM'
+      AND organization_id = CAST(:oid AS uuid)
+      AND coalesce(metadata->>'project_id', '') = :project_id
+    ORDER BY updated_at DESC
+    LIMIT 1
+  ", [
+    ':pid' => $pipeline['id'],
+    ':oid' => $organizationId,
+    ':project_id' => $projectId,
+  ]);
+
+  $meta = [
+    'source' => 'client_portal_project',
+    'project_id' => $projectId,
+    'project_domain' => $domain !== '' ? $domain : null,
+    'project_type' => $projectType,
+    'sync_reason' => $reason,
+    'synced_at' => gmdate(DATE_ATOM),
+  ];
+
+  if ($existing) {
+    db()->exec("
+      UPDATE crm.deal
+      SET
+        stage_id = CAST(:stage_id AS uuid),
+        subscription_id = CASE WHEN :subscription_id <> '' THEN CAST(:subscription_id AS uuid) ELSE subscription_id END,
+        title = :title,
+        contact_name = :contact_name,
+        contact_email = :contact_email,
+        contact_phone = :contact_phone,
+        plan_code = :plan_code,
+        value_cents = :value_cents,
+        lifecycle_status = :lifecycle_status,
+        is_closed = :is_closed,
+        closed_at = :closed_at,
+        metadata = coalesce(metadata, '{}'::jsonb) || CAST(:metadata AS jsonb),
+        updated_at = now()
+      WHERE id = CAST(:id AS uuid)
+    ", [
+      ':id' => (string)$existing['id'],
+      ':stage_id' => (string)$stage['id'],
+      ':subscription_id' => (string)($org['subscription_row_id'] ?? ''),
+      ':title' => $title,
+      ':contact_name' => $title,
+      ':contact_email' => $org['billing_email'] ?? null,
+      ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
+      ':plan_code' => $safePlanCode,
+      ':value_cents' => $valueCents,
+      ':lifecycle_status' => $derivation['lifecycle'],
+      ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
+      ':closed_at' => $closedAt,
+      ':metadata' => safeJson($meta),
+    ]);
+
+    if ((string)$existing['stage_id'] !== (string)$stage['id']) {
+      db()->exec("
+        INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
+        VALUES(CAST(:deal_id AS uuid), CAST(:from_stage_id AS uuid), CAST(:to_stage_id AS uuid), 'CLIENT_PORTAL', :reason, now())
+      ", [
+        ':deal_id' => (string)$existing['id'],
+        ':from_stage_id' => (string)$existing['stage_id'],
+        ':to_stage_id' => (string)$stage['id'],
+        ':reason' => 'Sincronização de projeto pela área do cliente',
+      ]);
+    }
+
+    db()->exec("
+      INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+      VALUES(CAST(:deal_id AS uuid), 'FLOW_UPDATE', :content, CAST(:metadata AS jsonb), 'CLIENT_PORTAL')
+    ", [
+      ':deal_id' => (string)$existing['id'],
+      ':content' => 'Projeto sincronizado pela área do cliente.',
+      ':metadata' => safeJson($meta),
+    ]);
+    return (string)$existing['id'];
+  }
+
+  $position = db()->one("
+    SELECT COUNT(*)::int AS qty
+    FROM crm.deal
+    WHERE pipeline_id = CAST(:pid AS uuid)
+      AND stage_id = CAST(:sid AS uuid)
+      AND lifecycle_status <> 'CLIENT'
+  ", [
+    ':pid' => $pipeline['id'],
+    ':sid' => $stage['id'],
+  ]);
+  $positionIndex = (int)($position['qty'] ?? 0);
+
+  $created = db()->one("
+    INSERT INTO crm.deal(
+      pipeline_id, stage_id, organization_id, subscription_id, title, contact_name, contact_email, contact_phone,
+      deal_type, category, intent, origin, plan_code, product_code, value_cents, position_index,
+      lifecycle_status, is_closed, closed_at, metadata, created_at, updated_at
+    )
+    VALUES(
+      CAST(:pipeline_id AS uuid), CAST(:stage_id AS uuid), CAST(:organization_id AS uuid),
+      CASE WHEN :subscription_id <> '' THEN CAST(:subscription_id AS uuid) ELSE NULL END,
+      :title, :contact_name, :contact_email, :contact_phone,
+      'HOSPEDAGEM', 'RECORRENTE', :intent, 'CLIENT_PORTAL_PROJECT',
+      :plan_code, :product_code, :value_cents, :position_index,
+      :lifecycle_status, :is_closed, :closed_at, CAST(:metadata AS jsonb), now(), now()
+    )
+    RETURNING id::text AS id
+  ", [
+    ':pipeline_id' => $pipeline['id'],
+    ':stage_id' => (string)$stage['id'],
+    ':organization_id' => $organizationId,
+    ':subscription_id' => (string)($org['subscription_row_id'] ?? ''),
+    ':title' => $title,
+    ':contact_name' => $title,
+    ':contact_email' => $org['billing_email'] ?? null,
+    ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
+    ':intent' => $safePlanCode ? ('hospedagem_' . $safePlanCode) : 'hospedagem_basico',
+    ':plan_code' => $safePlanCode,
+    ':product_code' => $projectType,
+    ':value_cents' => $valueCents,
+    ':position_index' => $positionIndex,
+    ':lifecycle_status' => $derivation['lifecycle'],
+    ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
+    ':closed_at' => $closedAt,
+    ':metadata' => safeJson($meta),
+  ]);
+  if (!$created || empty($created['id'])) {
+    return null;
+  }
+
+  db()->exec("
+    INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
+    VALUES(CAST(:deal_id AS uuid), NULL, CAST(:to_stage_id AS uuid), 'CLIENT_PORTAL', :reason, now())
+  ", [
+    ':deal_id' => (string)$created['id'],
+    ':to_stage_id' => (string)$stage['id'],
+    ':reason' => 'Deal de projeto criado pela área do cliente',
+  ]);
+
+  db()->exec("
+    INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
+    VALUES(CAST(:deal_id AS uuid), 'FLOW_UPDATE', :content, CAST(:metadata AS jsonb), 'CLIENT_PORTAL')
+  ", [
+    ':deal_id' => (string)$created['id'],
+    ':content' => 'Deal de projeto criado pela área do cliente.',
+    ':metadata' => safeJson($meta),
+  ]);
+
+  return (string)$created['id'];
+}
+
 function parseReleaseVariantFromProjectPath(?string $projectPath): array {
   $normalized = str_replace('\\', '/', (string)$projectPath);
   $releaseVersion = null;
@@ -6969,6 +7322,7 @@ $router->post('/api/auth/register-contract', function(Request $request) {
 $router->get('/api/billing/me', function(Request $request) {
   requireClientAuth();
   ensureSubscriptionRecurringTables();
+  ensureClientProjectTables();
   $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
   if ($orgId === '') {
     Response::json(['error' => 'Organização não vinculada à sessão.'], 422);
@@ -6979,6 +7333,479 @@ $router->get('/api/billing/me', function(Request $request) {
   $service = new BillingSnapshotService(db());
   $snapshot = $service->snapshot($orgId, $reconcile);
   Response::json($snapshot);
+});
+
+$router->get('/api/projects', function(Request $request) {
+  requireClientAuth();
+  ensureClientProjectTables();
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não vinculada à sessão.'], 422);
+    return;
+  }
+
+  $itemsRaw = projectBillingService()->listProjectsByOrganization($orgId);
+  $items = array_map(static function(array $row): array {
+    return [
+      'id' => (string)($row['id'] ?? ''),
+      'domain' => (string)($row['domain'] ?? ''),
+      'type' => (string)($row['project_type'] ?? 'hospedagem'),
+      'status' => strtoupper((string)($row['status'] ?? 'PENDING')),
+      'plan_code' => isset($row['plan_code']) ? (string)$row['plan_code'] : null,
+      'price' => isset($row['effective_price']) ? round((float)$row['effective_price'], 2) : null,
+      'created_at' => isset($row['created_at']) ? (string)$row['created_at'] : null,
+      'operational_status' => isset($row['operational_status']) ? (string)$row['operational_status'] : null,
+      'financial_status' => isset($row['subscription_item_status']) ? strtoupper((string)$row['subscription_item_status']) : null,
+      'deal_id' => isset($row['deal_id']) ? (string)$row['deal_id'] : null,
+    ];
+  }, $itemsRaw);
+
+  $currentProjectId = currentClientProjectId($orgId);
+  Response::json([
+    'ok' => true,
+    'current_project_id' => $currentProjectId,
+    'items' => $items,
+  ]);
+});
+
+$router->post('/api/projects/select', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureClientProjectTables();
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não vinculada à sessão.'], 422);
+    return;
+  }
+
+  $rawProjectId = trim((string)$request->input('project_id', ''));
+  if ($rawProjectId === '' || strtolower($rawProjectId) === 'null') {
+    unset($_SESSION['current_project_id']);
+    Response::json([
+      'ok' => true,
+      'current_project_id' => null,
+      'mode' => 'GLOBAL',
+    ]);
+    return;
+  }
+
+  $project = loadProjectOwnedByOrganization($rawProjectId, $orgId);
+  if (!$project) {
+    Response::json(['error' => 'Projeto não pertence à organização autenticada.'], 403);
+    return;
+  }
+
+  $_SESSION['current_project_id'] = (string)$project['id'];
+  Response::json([
+    'ok' => true,
+    'current_project_id' => (string)$project['id'],
+    'mode' => 'PROJECT',
+    'project' => [
+      'id' => (string)$project['id'],
+      'domain' => (string)($project['domain'] ?? ''),
+      'status' => strtoupper((string)($project['status'] ?? 'PENDING')),
+      'type' => (string)($project['project_type'] ?? 'hospedagem'),
+    ],
+  ]);
+});
+
+$router->post('/api/projects', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureClientProjectTables();
+  $requestId = requestCorrelationId($request);
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  $userId = trim((string)($_SESSION['client_user']['id'] ?? ''));
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não vinculada à sessão.', 'request_id' => $requestId], 422);
+    return;
+  }
+
+  $domain = normalizeDomainInput((string)$request->input('domain', ''));
+  $projectType = trim((string)$request->input('project_type', 'hospedagem'));
+  $planCode = strtolower(trim((string)$request->input('plan_code', '')));
+  if ($domain === '' || !isValidDomainName($domain) || $planCode === '') {
+    Response::json([
+      'error' => 'Dados inválidos para criação do projeto.',
+      'request_id' => $requestId,
+      'details' => [
+        'domain' => $domain !== '' && isValidDomainName($domain) ? null : 'Domínio inválido.',
+        'plan_code' => $planCode !== '' ? null : 'Plano obrigatório.',
+      ],
+    ], 422);
+    return;
+  }
+
+  $idempotencyKey = readIdempotencyKey($request);
+  $actionSeed = $idempotencyKey !== '' ? $idempotencyKey : $requestId;
+  $actionId = toUuidFromScalar('PROJECT_CREATE:' . $orgId . ':' . $domain . ':' . $actionSeed);
+  if ($idempotencyKey !== '') {
+    $existingConfirmed = loadConfirmedActionPayload($actionId);
+    if ($existingConfirmed) {
+      Response::json([
+        'ok' => true,
+        'idempotent' => true,
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+        'result' => $existingConfirmed['payload'] ?: $existingConfirmed['after_state'],
+      ]);
+      return;
+    }
+  }
+
+  financialAuditNotifier()->recordActionRequested([
+    'action_id' => $actionId,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'action_type' => 'CREATE_PROJECT',
+    'entity_type' => 'PROJECT',
+    'entity_id' => '',
+    'request_id' => $requestId,
+    'correlation_id' => $idempotencyKey,
+    'payload' => [
+      'domain' => $domain,
+      'project_type' => $projectType,
+      'plan_code' => $planCode,
+    ],
+    'source' => 'PORTAL_API',
+  ], false);
+
+  try {
+    $project = projectBillingService()->createProjectWithItem($orgId, [
+      'domain' => $domain,
+      'project_type' => $projectType,
+      'plan_code' => $planCode,
+      'project_status' => 'PENDING',
+      'item_status' => 'ACTIVE',
+    ]);
+    $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
+      'request_id' => $requestId,
+      'user_id' => $userId,
+      'action_seed' => 'project-create:' . $actionSeed,
+      'reason' => 'project_created',
+      'source' => 'PORTAL_API',
+    ]);
+    $dealId = syncProjectDealByOrganization(
+      $orgId,
+      $project,
+      isset($project['plan_code']) ? (string)$project['plan_code'] : $planCode,
+      isset($project['effective_price']) ? (float)$project['effective_price'] : null,
+      'portal_project_created'
+    );
+    $summary = projectBillingService()->billingSummaryByOrganization($orgId);
+
+    $resultPayload = [
+      'project' => $project,
+      'deal_id' => $dealId,
+      'billing_summary' => $summary,
+      'recalc' => $recalc,
+    ];
+    financialAuditNotifier()->recordActionConfirmed([
+      'action_id' => $actionId,
+      'after_state' => [
+        'project_id' => (string)($project['id'] ?? ''),
+        'deal_id' => $dealId,
+        'consolidated_value' => (float)($recalc['total'] ?? 0),
+      ],
+      'payload' => $resultPayload,
+    ], false);
+
+    logPortalAudit('PROJECT_CREATED', 'PROJECT', (string)($project['id'] ?? ''), [
+      'request_id' => $requestId,
+      'organization_id' => $orgId,
+      'user_id' => $userId,
+      'domain' => $domain,
+      'deal_id' => $dealId,
+      'action_id' => $actionId,
+    ], $userId, 'CLIENTE');
+
+    Response::json([
+      'ok' => true,
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+      'result' => $resultPayload,
+    ], 201);
+  } catch (Throwable $e) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao criar projeto no portal',
+      'payload' => ['error' => substr($e->getMessage(), 0, 350)],
+    ], false);
+    $status = str_contains(strtolower($e->getMessage()), 'já existe projeto') ? 409 : 500;
+    Response::json([
+      'error' => $status === 409 ? 'Projeto já cadastrado para este domínio.' : 'Não foi possível criar o projeto agora.',
+      'request_id' => $requestId,
+      'action_id' => $actionId,
+    ], $status);
+  }
+});
+
+$router->get('/api/billing/summary', function(Request $request) {
+  requireClientAuth();
+  ensureSubscriptionRecurringTables();
+  ensureClientProjectTables();
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  if ($orgId === '') {
+    Response::json(['error' => 'Organização não vinculada à sessão.'], 422);
+    return;
+  }
+
+  $summary = projectBillingService()->billingSummaryByOrganization($orgId);
+  $subscription = is_array($summary['subscription'] ?? null) ? $summary['subscription'] : null;
+  $itemsRaw = is_array($summary['items'] ?? null) ? $summary['items'] : [];
+  $items = array_map(static function(array $row): array {
+    return [
+      'project_id' => (string)($row['id'] ?? ''),
+      'domain' => (string)($row['domain'] ?? ''),
+      'project_type' => (string)($row['project_type'] ?? 'hospedagem'),
+      'project_status' => strtoupper((string)($row['status'] ?? 'PENDING')),
+      'item_status' => strtoupper((string)($row['subscription_item_status'] ?? 'PENDING')),
+      'plan_code' => isset($row['plan_code']) ? (string)$row['plan_code'] : null,
+      'plan_name' => isset($row['plan_name']) ? (string)$row['plan_name'] : null,
+      'price' => isset($row['effective_price']) ? round((float)$row['effective_price'], 2) : null,
+      'created_at' => isset($row['created_at']) ? (string)$row['created_at'] : null,
+      'operational_status' => isset($row['operational_status']) ? (string)$row['operational_status'] : null,
+    ];
+  }, $itemsRaw);
+
+  Response::json([
+    'ok' => true,
+    'subscription' => $subscription ? [
+      'id' => (string)($subscription['id'] ?? ''),
+      'asaas_subscription_id' => (string)($subscription['asaas_subscription_id'] ?? ''),
+      'asaas_customer_id' => (string)($subscription['asaas_customer_id'] ?? ''),
+      'status' => (string)($subscription['status'] ?? ''),
+      'payment_method' => (string)($subscription['payment_method'] ?? ''),
+      'next_due_date' => $subscription['next_due_date'] ?? null,
+      'consolidated_value' => isset($subscription['consolidated_value']) ? (float)$subscription['consolidated_value'] : null,
+      'last_recalc_at' => $subscription['last_recalc_at'] ?? null,
+    ] : null,
+    'items' => $items,
+    'total' => round((float)($summary['total'] ?? 0), 2),
+  ]);
+});
+
+$router->post('/api/billing/items/{project_id}/change-plan', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureClientProjectTables();
+  $requestId = requestCorrelationId($request);
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  $userId = trim((string)($_SESSION['client_user']['id'] ?? ''));
+  $projectId = trim((string)($request->query['project_id'] ?? ''));
+  $planCode = strtolower(trim((string)$request->input('plan_code', '')));
+  if ($orgId === '' || $projectId === '' || $planCode === '') {
+    Response::json(['error' => 'Dados obrigatórios ausentes.', 'request_id' => $requestId], 422);
+    return;
+  }
+  $project = loadProjectOwnedByOrganization($projectId, $orgId);
+  if (!$project) {
+    Response::json(['error' => 'Projeto não pertence à organização autenticada.', 'request_id' => $requestId], 403);
+    return;
+  }
+
+  $idempotencyKey = readIdempotencyKey($request);
+  $actionSeed = $idempotencyKey !== '' ? $idempotencyKey : $requestId;
+  $actionId = toUuidFromScalar('PROJECT_ITEM_CHANGE_PLAN:' . $orgId . ':' . $projectId . ':' . $planCode . ':' . $actionSeed);
+  if ($idempotencyKey !== '') {
+    $existingConfirmed = loadConfirmedActionPayload($actionId);
+    if ($existingConfirmed) {
+      Response::json([
+        'ok' => true,
+        'idempotent' => true,
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+        'result' => $existingConfirmed['payload'] ?: $existingConfirmed['after_state'],
+      ]);
+      return;
+    }
+  }
+
+  financialAuditNotifier()->recordActionRequested([
+    'action_id' => $actionId,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'action_type' => 'CHANGE_PROJECT_PLAN',
+    'entity_type' => 'PROJECT',
+    'entity_id' => $projectId,
+    'request_id' => $requestId,
+    'correlation_id' => $idempotencyKey,
+    'payload' => ['plan_code' => $planCode],
+    'source' => 'PORTAL_API',
+  ], false);
+
+  try {
+    $updatedProject = projectBillingService()->changeProjectPlan($orgId, $projectId, $planCode);
+    $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
+      'request_id' => $requestId,
+      'user_id' => $userId,
+      'action_seed' => 'item-change-plan:' . $actionSeed,
+      'reason' => 'project_plan_changed',
+      'source' => 'PORTAL_API',
+    ]);
+    $dealId = syncProjectDealByOrganization(
+      $orgId,
+      $updatedProject,
+      isset($updatedProject['plan_code']) ? (string)$updatedProject['plan_code'] : $planCode,
+      isset($updatedProject['effective_price']) ? (float)$updatedProject['effective_price'] : null,
+      'portal_project_plan_changed'
+    );
+    $summary = projectBillingService()->billingSummaryByOrganization($orgId);
+
+    $resultPayload = [
+      'project' => $updatedProject,
+      'deal_id' => $dealId,
+      'billing_summary' => $summary,
+      'recalc' => $recalc,
+    ];
+    financialAuditNotifier()->recordActionConfirmed([
+      'action_id' => $actionId,
+      'after_state' => [
+        'project_id' => $projectId,
+        'plan_code' => (string)($updatedProject['plan_code'] ?? $planCode),
+        'consolidated_value' => (float)($recalc['total'] ?? 0),
+      ],
+      'payload' => $resultPayload,
+    ], false);
+
+    logPortalAudit('PROJECT_PLAN_CHANGED', 'PROJECT', $projectId, [
+      'request_id' => $requestId,
+      'organization_id' => $orgId,
+      'user_id' => $userId,
+      'plan_code' => $planCode,
+      'action_id' => $actionId,
+      'deal_id' => $dealId,
+    ], $userId, 'CLIENTE');
+
+    Response::json([
+      'ok' => true,
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+      'result' => $resultPayload,
+    ]);
+  } catch (Throwable $e) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao trocar plano do item do projeto',
+      'payload' => ['error' => substr($e->getMessage(), 0, 350)],
+    ], false);
+    Response::json([
+      'error' => 'Não foi possível trocar o plano do projeto.',
+      'request_id' => $requestId,
+      'action_id' => $actionId,
+    ], 500);
+  }
+});
+
+$router->post('/api/billing/items/{project_id}/cancel', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureClientProjectTables();
+  $requestId = requestCorrelationId($request);
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  $userId = trim((string)($_SESSION['client_user']['id'] ?? ''));
+  $projectId = trim((string)($request->query['project_id'] ?? ''));
+  if ($orgId === '' || $projectId === '') {
+    Response::json(['error' => 'Dados obrigatórios ausentes.', 'request_id' => $requestId], 422);
+    return;
+  }
+  $project = loadProjectOwnedByOrganization($projectId, $orgId);
+  if (!$project) {
+    Response::json(['error' => 'Projeto não pertence à organização autenticada.', 'request_id' => $requestId], 403);
+    return;
+  }
+
+  $idempotencyKey = readIdempotencyKey($request);
+  $actionSeed = $idempotencyKey !== '' ? $idempotencyKey : $requestId;
+  $actionId = toUuidFromScalar('PROJECT_ITEM_CANCEL:' . $orgId . ':' . $projectId . ':' . $actionSeed);
+  if ($idempotencyKey !== '') {
+    $existingConfirmed = loadConfirmedActionPayload($actionId);
+    if ($existingConfirmed) {
+      Response::json([
+        'ok' => true,
+        'idempotent' => true,
+        'action_id' => $actionId,
+        'request_id' => $requestId,
+        'result' => $existingConfirmed['payload'] ?: $existingConfirmed['after_state'],
+      ]);
+      return;
+    }
+  }
+
+  financialAuditNotifier()->recordActionRequested([
+    'action_id' => $actionId,
+    'org_id' => $orgId,
+    'user_id' => $userId,
+    'action_type' => 'CANCEL_PROJECT_ITEM',
+    'entity_type' => 'PROJECT',
+    'entity_id' => $projectId,
+    'request_id' => $requestId,
+    'correlation_id' => $idempotencyKey,
+    'payload' => ['cancel' => true],
+    'source' => 'PORTAL_API',
+  ], false);
+
+  try {
+    $updatedProject = projectBillingService()->cancelProjectItem($orgId, $projectId);
+    $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
+      'request_id' => $requestId,
+      'user_id' => $userId,
+      'action_seed' => 'item-cancel:' . $actionSeed,
+      'reason' => 'project_item_canceled',
+      'source' => 'PORTAL_API',
+    ]);
+    $dealId = syncProjectDealByOrganization(
+      $orgId,
+      $updatedProject,
+      isset($updatedProject['plan_code']) ? (string)$updatedProject['plan_code'] : null,
+      isset($updatedProject['effective_price']) ? (float)$updatedProject['effective_price'] : null,
+      'portal_project_item_canceled'
+    );
+    $summary = projectBillingService()->billingSummaryByOrganization($orgId);
+
+    $resultPayload = [
+      'project' => $updatedProject,
+      'deal_id' => $dealId,
+      'billing_summary' => $summary,
+      'recalc' => $recalc,
+    ];
+    financialAuditNotifier()->recordActionConfirmed([
+      'action_id' => $actionId,
+      'after_state' => [
+        'project_id' => $projectId,
+        'project_status' => (string)($updatedProject['status'] ?? 'CANCELED'),
+        'item_status' => (string)($updatedProject['subscription_item_status'] ?? 'CANCELED'),
+        'consolidated_value' => (float)($recalc['total'] ?? 0),
+      ],
+      'payload' => $resultPayload,
+    ], false);
+
+    logPortalAudit('PROJECT_ITEM_CANCELED', 'PROJECT', $projectId, [
+      'request_id' => $requestId,
+      'organization_id' => $orgId,
+      'user_id' => $userId,
+      'action_id' => $actionId,
+      'deal_id' => $dealId,
+    ], $userId, 'CLIENTE');
+
+    Response::json([
+      'ok' => true,
+      'action_id' => $actionId,
+      'request_id' => $requestId,
+      'result' => $resultPayload,
+    ]);
+  } catch (Throwable $e) {
+    financialAuditNotifier()->recordActionFailed([
+      'action_id' => $actionId,
+      'error_reason' => 'Falha ao cancelar item do projeto',
+      'payload' => ['error' => substr($e->getMessage(), 0, 350)],
+    ], false);
+    Response::json([
+      'error' => 'Não foi possível cancelar o item do projeto.',
+      'request_id' => $requestId,
+      'action_id' => $actionId,
+    ], 500);
+  }
 });
 
 $router->post('/api/billing/subscriptions/{id}/change-plan/prepare', function(Request $request) {
