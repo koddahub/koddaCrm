@@ -1239,6 +1239,21 @@
         return { __raw_text: '', __parse_error: true };
       }
     };
+    const projectContextSelect = $('#projectContextSelect');
+    const openProjectCreateBtn = $('#openProjectCreateBtn');
+    const openProjectCreateBtnDashboard = $('#openProjectCreateBtnDashboard');
+    const projectCreateModal = $('#projectCreateModal');
+    const projectCreateForm = $('#projectCreateForm');
+    const projectCreateDomain = $('#projectCreateDomain');
+    const projectCreateType = $('#projectCreateType');
+    const projectCreatePlanCode = $('#projectCreatePlanCode');
+    const projectCreateNotice = $('#projectCreateNotice');
+    const projectCreateSubmitBtn = $('#projectCreateSubmitBtn');
+    const projectCreateCancelBtn = $('#projectCreateCancelBtn');
+    const projectCreateCloseBtn = $('#projectCreateCloseBtn');
+    let projectContextSyncInFlight = false;
+    let projectCreateSubmitting = false;
+    let currentProjectSelection = String(projectContextSelect?.value || document.body?.dataset?.currentProjectId || '').trim();
 
     const ticketForm = $('#ticketForm');
     const ticketSubmitBtn = $('#ticketSubmitBtn');
@@ -1480,6 +1495,196 @@
       portalDescricaoCounter.classList.toggle('text-success', valid);
       portalDescricaoCounter.classList.toggle('text-danger', !valid);
     };
+    const setProjectCreateNotice = (type, message) => {
+      setInlineAlert(projectCreateNotice, type, message);
+    };
+    const setProjectCreateSubmitting = (loading) => {
+      projectCreateSubmitting = !!loading;
+      setButtonLoading(projectCreateSubmitBtn, loading);
+      if (loading) {
+        projectCreateCancelBtn?.setAttribute('disabled', 'disabled');
+        projectCreateCloseBtn?.setAttribute('disabled', 'disabled');
+        projectCreateForm?.querySelectorAll('input, select').forEach((field) => {
+          if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) {
+            field.setAttribute('disabled', 'disabled');
+          }
+        });
+        return;
+      }
+      projectCreateCancelBtn?.removeAttribute('disabled');
+      projectCreateCloseBtn?.removeAttribute('disabled');
+      projectCreateForm?.querySelectorAll('input, select').forEach((field) => {
+        if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) {
+          field.removeAttribute('disabled');
+        }
+      });
+    };
+    const resetProjectCreateModalState = () => {
+      if (projectCreateForm) {
+        projectCreateForm.reset();
+      }
+      projectCreateDomain?.classList.remove('is-invalid');
+      projectCreatePlanCode?.classList.remove('is-invalid');
+      setProjectCreateNotice('', '');
+    };
+    const openProjectCreateModal = () => {
+      if (!projectCreateModal) return;
+      resetProjectCreateModalState();
+      openPortalModal(projectCreateModal);
+      projectCreateDomain?.focus();
+    };
+    const closeProjectCreateModal = () => {
+      if (projectCreateSubmitting) return;
+      closePortalModal(projectCreateModal);
+    };
+    const reloadDashboardWithCurrentSection = (delayMs = 0) => {
+      const reload = () => {
+        if (!window.location.hash) {
+          window.location.reload();
+          return;
+        }
+        window.location.href = `/portal/dashboard${window.location.hash}`;
+      };
+      if (delayMs > 0) {
+        window.setTimeout(reload, delayMs);
+        return;
+      }
+      reload();
+    };
+    const submitProjectCreate = async () => {
+      if (!projectCreateForm || projectCreateSubmitting) return;
+      const domain = sanitizeDomainInput(projectCreateDomain?.value || '');
+      const projectType = String(projectCreateType?.value || 'hospedagem').trim().toLowerCase();
+      const planCode = String(projectCreatePlanCode?.value || '').trim().toLowerCase();
+      if (projectCreateDomain) {
+        projectCreateDomain.value = domain;
+        projectCreateDomain.classList.remove('is-invalid');
+      }
+      projectCreatePlanCode?.classList.remove('is-invalid');
+      setProjectCreateNotice('', '');
+      if (!domain || !isDomainValid(domain)) {
+        projectCreateDomain?.classList.add('is-invalid');
+        setProjectCreateNotice('danger', 'Informe um domínio válido no formato exemplo.com.br.');
+        projectCreateDomain?.focus();
+        return;
+      }
+      if (!planCode) {
+        projectCreatePlanCode?.classList.add('is-invalid');
+        setProjectCreateNotice('danger', 'Selecione um plano para o novo projeto.');
+        projectCreatePlanCode?.focus();
+        return;
+      }
+
+      const idempotencyKey = `project-create-${generateRequestId()}`;
+      let shouldReload = false;
+      setProjectCreateSubmitting(true);
+      try {
+        const response = await apiFetch('/api/projects', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+          },
+          body: JSON.stringify({
+            domain,
+            project_type: projectType,
+            plan_code: planCode,
+          }),
+        });
+        if (response.redirected || String(response.url || '').includes('/login')) {
+          throw new Error('Sua sessão expirou. Faça login novamente para continuar.');
+        }
+        const data = await parseApiJson(response);
+        if (data?.__parse_error) {
+          throw new Error('Resposta inválida do servidor ao criar o projeto.');
+        }
+        if (!response.ok || !data?.ok) {
+          const details = data?.details && typeof data.details === 'object' ? data.details : {};
+          if (details?.domain) projectCreateDomain?.classList.add('is-invalid');
+          if (details?.plan_code) projectCreatePlanCode?.classList.add('is-invalid');
+          throw new Error(data?.error || 'Não foi possível criar o projeto agora.');
+        }
+
+        const resultProject = data?.result?.project && typeof data.result.project === 'object' ? data.result.project : null;
+        const createdDomain = String(resultProject?.domain || domain);
+        const successMsg = data?.idempotent
+          ? `Solicitação já registrada para ${createdDomain}.`
+          : `Projeto ${createdDomain} solicitado com sucesso.`;
+        setProjectCreateNotice('success', successMsg);
+        setPortalNotice(successMsg, 'ok');
+        showToast('success', 'Projeto solicitado', successMsg);
+        shouldReload = true;
+      } catch (err) {
+        const message = err?.message || 'Falha ao criar projeto.';
+        setProjectCreateNotice('danger', message);
+        setPortalNotice(message, 'err');
+        showToast('danger', 'Novo projeto', message);
+      } finally {
+        setProjectCreateSubmitting(false);
+        if (shouldReload) {
+          closePortalModal(projectCreateModal);
+          reloadDashboardWithCurrentSection(260);
+        }
+      }
+    };
+
+    projectContextSelect?.addEventListener('change', async () => {
+      if (projectContextSyncInFlight) return;
+      const nextProjectId = String(projectContextSelect.value || '').trim();
+      if (nextProjectId === currentProjectSelection) return;
+      projectContextSyncInFlight = true;
+      projectContextSelect.setAttribute('disabled', 'disabled');
+      setPortalNotice('Atualizando contexto do projeto...', 'ok');
+      try {
+        const response = await apiFetch('/api/projects/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project_id: nextProjectId || null }),
+        });
+        if (response.redirected || String(response.url || '').includes('/login')) {
+          throw new Error('Sua sessão expirou. Faça login novamente para continuar.');
+        }
+        const data = await parseApiJson(response);
+        if (data?.__parse_error) {
+          throw new Error('Resposta inválida ao trocar o contexto do projeto.');
+        }
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || 'Não foi possível trocar o contexto do projeto.');
+        }
+        currentProjectSelection = String(data?.current_project_id || '').trim();
+        document.body.dataset.currentProjectId = currentProjectSelection;
+        document.body.dataset.projectViewMode = String(data?.mode || (currentProjectSelection ? 'PROJECT' : 'GLOBAL')).toUpperCase();
+        const successMsg = currentProjectSelection ? 'Projeto ativo atualizado.' : 'Visão geral consolidada ativada.';
+        setPortalNotice(successMsg, 'ok');
+        showToast('success', 'Projeto ativo', successMsg);
+        reloadDashboardWithCurrentSection(160);
+      } catch (err) {
+        if (projectContextSelect) projectContextSelect.value = currentProjectSelection;
+        const message = err?.message || 'Falha ao trocar o projeto ativo.';
+        setPortalNotice(message, 'err');
+        showToast('danger', 'Projeto ativo', message);
+      } finally {
+        projectContextSyncInFlight = false;
+        projectContextSelect?.removeAttribute('disabled');
+      }
+    });
+
+    projectCreateDomain?.addEventListener('blur', () => {
+      if (!projectCreateDomain) return;
+      projectCreateDomain.value = sanitizeDomainInput(projectCreateDomain.value);
+    });
+    projectCreateDomain?.addEventListener('input', () => projectCreateDomain.classList.remove('is-invalid'));
+    projectCreatePlanCode?.addEventListener('change', () => projectCreatePlanCode.classList.remove('is-invalid'));
+    projectCreateForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      submitProjectCreate();
+    });
+    openProjectCreateBtn?.addEventListener('click', openProjectCreateModal);
+    openProjectCreateBtnDashboard?.addEventListener('click', openProjectCreateModal);
+    projectCreateSubmitBtn?.addEventListener('click', submitProjectCreate);
+    projectCreateCancelBtn?.addEventListener('click', closeProjectCreateModal);
+    projectCreateCloseBtn?.addEventListener('click', closeProjectCreateModal);
+    projectCreateModal?.querySelector('.portal-modal-backdrop')?.addEventListener('click', closeProjectCreateModal);
 
     const pendingPlanStorageKey = (() => {
       const sid = String(planForm?.querySelector('[name="asaas_subscription_id"]')?.value || '').trim();

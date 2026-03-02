@@ -1281,6 +1281,36 @@ body[data-page='dashboard'] .client-sidebar-user small {
   color: var(--dash-muted);
 }
 
+body[data-page='dashboard'] .project-context-switcher {
+  padding: 0 20px 18px;
+  border-bottom: 1px solid var(--dash-line);
+  display: grid;
+  gap: 8px;
+}
+
+body[data-page='dashboard'] .project-context-switcher label {
+  margin: 0;
+  font-size: .74rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--dash-muted);
+  font-weight: 700;
+}
+
+body[data-page='dashboard'] .project-context-switcher .form-select {
+  min-height: 38px;
+  font-size: .84rem;
+}
+
+body[data-page='dashboard'] .project-context-switcher .form-select:disabled {
+  opacity: .72;
+  cursor: wait;
+}
+
+body[data-page='dashboard'] .project-context-switcher .btn {
+  min-height: 36px;
+}
+
 body[data-page='dashboard'] .client-sidebar-nav {
   padding: 18px 20px;
   margin-top: 0;
