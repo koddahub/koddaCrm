@@ -209,8 +209,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (denied) return denied;
 
   const body = await req.json().catch(() => ({}));
+  const projectId = String(body.projectId || body.project_id || '').trim();
   const promptText = String(body.promptText || '').trim();
   const promptJson = body.promptJson ?? null;
+  if (!projectId) {
+    return NextResponse.json({ error: 'projectId é obrigatório para salvar o pré-prompt.' }, { status: 422 });
+  }
   if (!promptText) {
     return NextResponse.json({ error: 'Prompt é obrigatório para salvar rascunho.' }, { status: 422 });
   }
@@ -235,6 +239,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (!deal) throw new Error('Deal não encontrado');
       if (deal.dealType !== 'HOSPEDAGEM') throw new Error('Pré-prompt disponível somente para hospedagem');
       if (deal.lifecycleStatus !== 'CLIENT') throw new Error('Deal ainda não está fechado para operação');
+      const ownedProject = deal.organizationId
+        ? await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id::text
+            FROM client.projects
+            WHERE id = ${projectId}::uuid
+              AND organization_id = ${deal.organizationId}::uuid
+            LIMIT 1
+          `
+        : [];
+      if (!ownedProject[0]?.id) throw new Error('Projeto inválido para este cliente');
 
       const latest = await tx.dealPromptRevision.findFirst({
         where: { dealId: deal.id },
@@ -245,6 +259,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
             SELECT *
             FROM client.project_briefs
             WHERE organization_id = CAST(${deal.organizationId} AS uuid)
+              AND project_id = CAST(${projectId} AS uuid)
             ORDER BY created_at DESC
             LIMIT 1
           `
@@ -282,7 +297,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           dealId: deal.id,
           activityType: 'PREPROMPT_DRAFT_SAVED',
           content: `Rascunho do pré-prompt salvo (v${revision.version}).`,
-          metadata: { revisionId: revision.id },
+          metadata: {
+            revisionId: revision.id,
+            project_id: projectId,
+          },
           createdBy: 'ADMIN',
         },
       });
@@ -291,6 +309,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         dealId: deal.id,
         organizationId: deal.organizationId,
         organizationName: deal.organization?.legalName || '',
+        projectId,
         revisionId: revision.id,
         version: revision.version,
         promptJsonHydrated: hydratedPromptJson,
@@ -304,7 +323,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const savedFiles: string[] = [];
     let identityUpdated = false;
     try {
-      const release = await getDealRelease(out.dealId, null);
+      const release = await getDealRelease(out.dealId, null, out.projectId);
       const orgSlug = buildOrgSlug(out.organizationName, out.organizationId || out.dealId);
       const projectRoot = release?.project_root || path.resolve('/home/server/projects/clientes', orgSlug, 'releases', 'v1');
       const clientRoot = resolveClientRootFromRelease(projectRoot, orgSlug);
@@ -358,6 +377,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           content: 'Falha parcial ao persistir arquivos de pré-prompt no filesystem.',
           metadata: {
             warning: fileWarning,
+            project_id: out.projectId,
           },
           createdBy: 'SYSTEM',
         },

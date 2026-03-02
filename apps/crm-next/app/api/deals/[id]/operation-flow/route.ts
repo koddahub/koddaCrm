@@ -117,7 +117,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     fallbackVsCode = buildVsCodeLinks(projectPath);
   }
 
-  const latestTemplate = deal.templateRevisions[0] || null;
+  let latestTemplate = deal.templateRevisions[0] || null;
   const latestPromptRevision = deal.promptRevisions[0] || null;
   let templateVsCode = latestTemplate ? buildVsCodeLinks(latestTemplate.projectPath) : fallbackVsCode;
   const stageTabs = operationStagesByDealType(deal.dealType).map((item) => ({
@@ -179,15 +179,29 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     operationUpdatedAt: row.operation_updated_at ? row.operation_updated_at.toISOString() : null,
     createdAt: row.created_at.toISOString(),
   }));
+  if (requestedProjectId && !normalizedProjects.some((item) => item.id === requestedProjectId)) {
+    return NextResponse.json({ error: 'Projeto inválido para esta organização.' }, { status: 403 });
+  }
 
   const selectedProject = normalizedProjects.find((item) => item.id === requestedProjectId)
     || normalizedProjects.find((item) => item.status === 'ACTIVE')
     || normalizedProjects[0]
     || null;
+  const selectedProjectId = selectedProject?.id || null;
+  const templateRevisionsByProject = deal.templateRevisions.filter((item) => (item.projectId || null) === selectedProjectId);
+  const approvalsByProject = deal.clientApprovals.filter((item) => (item.projectId || null) === selectedProjectId);
+  const publishChecksByProject = deal.publishChecks.filter((item) => (item.projectId || null) === selectedProjectId);
+  const activitiesByProject = deal.activities.filter((item) => {
+    const metadata = item.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+    const pid = String((metadata as Record<string, unknown>).project_id || '').trim();
+    return pid !== '' && pid === selectedProjectId;
+  });
+  latestTemplate = templateRevisionsByProject[0] || null;
   const resolvedActiveStageCode = selectedProject?.operationStage || activeStageCode;
 
   const templateCatalog = await listTemplateModels();
-  const siteReleases = await listDealSiteReleases(deal.id);
+  const siteReleases = await listDealSiteReleases(deal.id, selectedProjectId);
   const activeRelease = siteReleases[0] || null;
 
   let promptSource: 'filesystem' | 'database_fallback' = 'database_fallback';
@@ -304,9 +318,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         }
       : null);
 
-  const latestApproval = deal.clientApprovals[0] || null;
+  const latestApproval = approvalsByProject[0] || null;
   const approvalRevision = latestApproval
-    ? deal.templateRevisions.find((item) => item.id === latestApproval.templateRevisionId) || null
+    ? templateRevisionsByProject.find((item) => item.id === latestApproval.templateRevisionId) || null
     : null;
   const selectedFromApproval = approvalRevision ? parseReleaseVariantFromPath(approvalRevision.projectPath) : null;
   const latestRevisionSelection = latestTemplate ? parseReleaseVariantFromPath(latestTemplate.projectPath) : null;
@@ -357,9 +371,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   let publicationSummary = { requiredTotal: 0, requiredCompleted: 0, pendingTotal: 0, ready: false };
 
   if (deal.dealType === 'HOSPEDAGEM') {
-    await ensurePublicationSubsteps(deal.id);
-    publicationSubsteps = await listPublicationSubsteps(deal.id);
-    publicationSummary = await publicationSubstepsStatus(deal.id);
+    await ensurePublicationSubsteps(deal.id, selectedProjectId);
+    publicationSubsteps = await listPublicationSubsteps(deal.id, selectedProjectId);
+    publicationSummary = await publicationSubstepsStatus(deal.id, selectedProjectId);
   }
 
   const promptRequests = await prisma.$queryRaw<Array<{
@@ -375,6 +389,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     SELECT id::text, subject, request_items, message, due_at, status, created_at, updated_at
     FROM crm.deal_prompt_request
     WHERE deal_id = ${deal.id}::uuid
+      AND (
+        nullif(${selectedProjectId || ''}, '') IS NULL
+        OR project_id = nullif(${selectedProjectId || ''}, '')::uuid
+      )
     ORDER BY created_at DESC
     LIMIT 20
   `;
@@ -406,7 +424,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const fromMessage = String(latestPublicationRequest.message || '').match(/[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] || '';
     return fromMessage || null;
   })();
-  const publicationDecisionActivities = deal.activities.filter((item) => (
+  const publicationDecisionActivities = activitiesByProject.filter((item) => (
     item.activityType === 'CLIENT_PUBLICATION_DOMAIN_APPROVED'
     || item.activityType === 'CLIENT_PUBLICATION_DOMAIN_REJECTED'
   ));
@@ -487,14 +505,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     },
     template: {
       latest: latestTemplate,
-      revisions: deal.templateRevisions,
+      revisions: templateRevisionsByProject,
       vscode: templateVsCode,
       sshConfig: sshConfigReference(),
       catalog: templateCatalog,
     },
     approval: {
       latest: latestApproval,
-      history: deal.clientApprovals,
+      history: approvalsByProject,
     },
     releases: siteReleases.map((release) => ({
       id: release.id,
@@ -558,7 +576,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       },
     },
     publication: {
-      checks: deal.publishChecks,
+      checks: publishChecksByProject,
       requests: publicationRequests,
       domainApproval: publicationDomainApproval,
       substeps: publicationSubsteps.map((item) => ({
@@ -580,8 +598,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       summary: publicationSummary,
     },
     operationLogsSummary: {
-      totalActivities: deal.activities.length,
-      latestActivities: deal.activities.slice(0, 10),
+      totalActivities: activitiesByProject.length,
+      latestActivities: activitiesByProject.slice(0, 10),
       hint: 'Histórico completo disponível na aba Atividades.',
     },
   });

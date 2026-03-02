@@ -20,7 +20,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   await ensureSiteReleaseSchema();
 
   const body = await req.json().catch(() => ({}));
+  const projectId = String(body.projectId || body.project_id || '').trim();
   const variantInput = String(body.variantCode || '').trim();
+  if (!projectId) {
+    return NextResponse.json({ error: 'projectId é obrigatório.' }, { status: 422 });
+  }
   if (!variantInput) {
     return NextResponse.json({ error: 'variantCode é obrigatório (V1|V2|V3).' }, { status: 422 });
   }
@@ -53,9 +57,20 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (!deal) throw new Error('Deal não encontrado');
       if (deal.dealType !== 'HOSPEDAGEM') throw new Error('Template disponível somente para hospedagem');
       if (!deal.organizationId) throw new Error('Deal sem organização vinculada');
+      const ownedProject = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM client.projects
+        WHERE id = ${projectId}::uuid
+          AND organization_id = ${deal.organizationId}::uuid
+        LIMIT 1
+      `;
+      if (!ownedProject[0]?.id) {
+        throw new Error('Projeto inválido para este cliente');
+      }
 
       const releaseVariant = await resolveDealReleaseVariant({
         dealId: deal.id,
+        projectId,
         releaseVersion,
         variantCode,
       });
@@ -86,6 +101,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const revision = await tx.dealTemplateRevision.create({
         data: {
           dealId: deal.id,
+          projectId,
           version: nextVersion,
           projectPath,
           entryFile,
@@ -109,6 +125,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
             releaseVersion: releaseVariant.release.version,
             variantId: releaseVariant.variant.id,
             variantCode,
+            project_id: projectId,
             projectPath,
             entryFile,
             previewUrl,

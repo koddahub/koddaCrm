@@ -10,6 +10,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   await ensureSite24hOperationSchema();
 
   const body = await req.json().catch(() => ({}));
+  const projectId = String(body.projectId || body.project_id || '').trim();
   const domain = String(body.domain || '').trim();
   const subject = String(body.subject || '[KoddaHub] Aprovação de domínio/publicação').trim();
   const message = String(body.message || '').trim();
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   if (!message && requestItems.length === 0 && !domain) {
     return NextResponse.json({ error: 'Informe domínio, mensagem ou itens da solicitação.' }, { status: 422 });
+  }
+  if (!projectId) {
+    return NextResponse.json({ error: 'projectId é obrigatório.' }, { status: 422 });
   }
 
   const normalizedItems = [
@@ -53,6 +57,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (!deal) throw new Error('Deal não encontrado');
       if (deal.dealType !== 'HOSPEDAGEM') throw new Error('Fluxo de publicação disponível somente para hospedagem');
       if (deal.lifecycleStatus !== 'CLIENT') throw new Error('Fluxo de publicação disponível apenas para cliente fechado');
+      const ownedProject = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM client.projects
+        WHERE id = ${projectId}::uuid
+          AND organization_id = ${deal.organizationId}::uuid
+        LIMIT 1
+      `;
+      if (!ownedProject[0]?.id) throw new Error('Projeto inválido para este cliente.');
 
       const emailTo = deal.contactEmail || deal.organization?.billingEmail;
       let emailQueueId: string | null = null;
@@ -82,6 +94,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const requestRows = await tx.$queryRaw<Array<{ id: string }>>`
         INSERT INTO crm.deal_prompt_request(
           deal_id,
+          project_id,
           prompt_revision_id,
           subject,
           request_items,
@@ -95,6 +108,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         )
         VALUES(
           ${deal.id}::uuid,
+          ${projectId}::uuid,
           NULL,
           ${subject || '[KoddaHub] Aprovação de domínio/publicação'},
           ${JSON.stringify(normalizedItems)}::jsonb,
@@ -117,6 +131,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           metadata: {
             subject,
             domain,
+            project_id: projectId,
             dueAt: dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt.toISOString() : null,
             requestItems: normalizedItems,
             emailQueueId,

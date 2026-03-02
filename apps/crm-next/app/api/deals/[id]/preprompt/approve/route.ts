@@ -13,12 +13,13 @@ import {
 
 type CopyMode = 'if_empty_or_missing' | 'replace';
 
-async function latestPromptFromPortal(organizationId: string) {
+async function latestPromptFromPortal(organizationId: string, projectId: string) {
   const rows = await prisma.$queryRaw<Array<{ prompt_text: string | null; prompt_json: unknown }>>`
     SELECT ap.prompt_text, ap.prompt_json
     FROM client.ai_prompts ap
     JOIN client.project_briefs pb ON pb.id = ap.brief_id
     WHERE pb.organization_id = ${organizationId}::uuid
+      AND pb.project_id = ${projectId}::uuid
     ORDER BY ap.created_at DESC
     LIMIT 1
   `;
@@ -32,10 +33,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (denied) return denied;
 
   const body = await req.json().catch(() => ({}));
+  const projectId = String(body.projectId || body.project_id || '').trim();
   const promptTextInput = typeof body.promptText === 'string' ? body.promptText.trim() : '';
   const promptJsonInput = body.promptJson ?? null;
   const copyMode: CopyMode = body.copyMode === 'replace' ? 'replace' : 'if_empty_or_missing';
   const releaseVersion = normalizeReleaseVersion(body.releaseVersion);
+  if (!projectId) {
+    return NextResponse.json({ error: 'projectId é obrigatório.' }, { status: 422 });
+  }
 
   try {
     const deal = await prisma.deal.findUnique({
@@ -62,16 +67,27 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (!deal.organizationId) {
       return NextResponse.json({ error: 'Deal sem organização vinculada' }, { status: 422 });
     }
+    const ownedProject = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id::text
+      FROM client.projects
+      WHERE id = ${projectId}::uuid
+        AND organization_id = ${deal.organizationId}::uuid
+      LIMIT 1
+    `;
+    if (!ownedProject[0]?.id) {
+      return NextResponse.json({ error: 'Projeto inválido para este cliente' }, { status: 403 });
+    }
 
     const orgSlug = buildOrgSlug(deal.organization?.legalName, deal.organizationId);
     const prepared = await ensureReleaseVariantsPrepared({
       dealId: deal.id,
+      projectId,
       releaseVersion,
       copyMode,
       orgSlug,
     });
 
-    const release = await getDealRelease(deal.id, prepared.releaseVersion);
+    const release = await getDealRelease(deal.id, prepared.releaseVersion, projectId);
     if (!release) {
       return NextResponse.json({ error: 'Release não encontrada para aprovação de pré-prompt.' }, { status: 422 });
     }
@@ -110,7 +126,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     let promptJson: unknown = promptJsonInput ?? latestRevision?.promptJson ?? null;
 
     if (!promptText) {
-      const portalPrompt = await latestPromptFromPortal(deal.organizationId);
+      const portalPrompt = await latestPromptFromPortal(deal.organizationId, projectId);
       promptText = String(portalPrompt?.prompt_text || '');
       promptJson = portalPrompt?.prompt_json || null;
     }
@@ -163,6 +179,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
             templateAppliedAllVariants: prepared.applied,
             copyModeUsed: copyMode,
             backups: prepared.backups,
+            project_id: projectId,
           },
           createdBy: 'ADMIN',
         },

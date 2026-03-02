@@ -1,6 +1,4 @@
 import { Prisma } from '@prisma/client';
-import { lifecycleByStageCode, resolvePipelineAndStages } from '@/lib/deals';
-import { normalizeIntent, normalizePhone } from '@/lib/domain';
 import { prisma } from '@/lib/prisma';
 
 const PROJECT_TYPES = new Set(['hospedagem', 'ecommerce', 'landingpage', 'institucional']);
@@ -35,8 +33,8 @@ export type CreateProjectForOrganizationResult = {
   organizationId: string;
   projectId: string;
   subscriptionItemId: string;
-  leadId: string;
   dealId: string;
+  operationStateId: string;
   subscriptionId: string | null;
   domain: string;
   planCode: string;
@@ -94,12 +92,6 @@ function normalizeItemStatus(value: string | null | undefined, fallback: string)
   return fallback;
 }
 
-function stageCodeByProjectStatus(projectStatus: string): string {
-  if (projectStatus === 'ACTIVE') return 'pagamento_pendente';
-  if (projectStatus === 'CANCELED') return 'perdido';
-  return 'cadastro_iniciado';
-}
-
 function parsePriceOverride(value: number | null | undefined): Prisma.Decimal | null {
   if (value === null || value === undefined) return null;
   const parsed = Number(value);
@@ -139,8 +131,6 @@ export async function createProjectForOrganization(
   const source = String(input.source || 'CRM_PROJECT_FOR_ORGANIZATION').trim().toUpperCase();
   const priceOverride = parsePriceOverride(input.priceOverride);
   const metadata = input.metadata && typeof input.metadata === 'object' ? input.metadata : {};
-
-  const pipeline = await resolvePipelineAndStages('hospedagem');
 
   return prisma.$transaction(async (tx) => {
     const organization = await tx.organization.findUnique({
@@ -206,115 +196,70 @@ export async function createProjectForOrganization(
       throw new CreateProjectForOrganizationError('SUBSCRIPTION_ITEM_CREATE_FAILED', 'Não foi possível criar item de assinatura do projeto.', 500);
     }
 
-    const stageCode = stageCodeByProjectStatus(projectStatus);
-    const stage = pipeline.stages.find((row) => row.code === stageCode) || pipeline.stages[0];
-    const lifecycle = lifecycleByStageCode(stage.code);
-
-    const positionIndex = await tx.deal.count({
-      where: {
-        pipelineId: pipeline.id,
-        stageId: stage.id,
-        lifecycleStatus: { not: 'CLIENT' },
-      },
-    });
-
-    const contactName = domain || organization.legalName;
-    const contactPhone = normalizePhone(organization.whatsapp || '');
     const effectivePrice = Number((priceOverride ?? plan.monthlyPrice).toString());
-    const valueCents = Math.round(effectivePrice * 100);
-    const intent = normalizeIntent(`hospedagem_${plan.code}`);
-
-    const lead = await tx.lead.create({
-      data: {
-        source: 'manual',
-        sourceRef: source,
-        name: contactName,
-        email: organization.billingEmail,
-        phone: contactPhone || null,
-        interest: intent,
-        payload: {
-          organizationId,
-          domain,
-          projectType,
-          planCode: plan.code,
-          projectStatus,
-          itemStatus,
-          source,
-          ...metadata,
-        },
-        stage: 'NOVO',
-      },
-      select: { id: true },
-    });
-
-    const deal = await tx.deal.create({
-      data: {
-        pipelineId: pipeline.id,
-        stageId: stage.id,
-        leadId: lead.id,
+    const clientDeal = await tx.deal.findFirst({
+      where: {
         organizationId,
-        subscriptionId: subscription?.id || null,
-        title: `${contactName} - ${plan.name}`,
-        contactName,
-        contactEmail: organization.billingEmail,
-        contactPhone: contactPhone || null,
         dealType: 'HOSPEDAGEM',
-        category: 'RECORRENTE',
-        intent,
-        origin: source,
-        planCode: plan.code,
-        productCode: projectType,
-        valueCents,
-        positionIndex,
-        lifecycleStatus: lifecycle.lifecycleStatus,
-        isClosed: lifecycle.isClosed,
-        closedAt: lifecycle.closedAt,
-        metadata: {
+        lifecycleStatus: 'CLIENT',
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+      },
+    }) || await tx.deal.findFirst({
+      where: {
+        organizationId,
+        dealType: 'HOSPEDAGEM',
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+      },
+    });
+    if (!clientDeal) {
+      throw new CreateProjectForOrganizationError('DEAL_NOT_FOUND', 'Cliente sem deal base para operação no CRM.', 409);
+    }
+
+    const operationStateRows = await tx.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO crm.project_operation_state (
+        organization_id, project_id, deal_id, stage, metadata, created_at, updated_at
+      ) VALUES (
+        ${organizationId}::uuid,
+        ${project.id}::uuid,
+        ${clientDeal.id}::uuid,
+        'briefing_pendente',
+        ${JSON.stringify({
           source: 'crm_project_for_organization',
-          project_id: project.id,
-          project_domain: domain,
-          project_type: projectType,
-          project_status: projectStatus,
-          item_status: itemStatus,
-          ...metadata,
-        },
-      },
-      select: { id: true },
-    });
-
-    await tx.dealStageHistory.create({
-      data: {
-        dealId: deal.id,
-        fromStageId: null,
-        toStageId: stage.id,
-        changedBy: 'ADMIN',
-        reason: 'Projeto criado para organização existente',
-      },
-    });
-
-    await tx.dealActivity.create({
-      data: {
-        dealId: deal.id,
-        activityType: 'FLOW_UPDATE',
-        content: 'Projeto criado no CRM para organização existente.',
-        metadata: {
           project_id: project.id,
           project_domain: domain,
           project_type: projectType,
           plan_code: plan.code,
           item_status: itemStatus,
-          source,
-        },
-        createdBy: 'ADMIN',
-      },
-    });
+          request_source: source,
+          ...metadata,
+        })}::jsonb,
+        now(),
+        now()
+      )
+      ON CONFLICT (project_id)
+      DO UPDATE SET
+        deal_id = EXCLUDED.deal_id,
+        updated_at = now(),
+        metadata = coalesce(crm.project_operation_state.metadata, '{}'::jsonb) || EXCLUDED.metadata
+      RETURNING id::text
+    `;
+    const operationStateId = operationStateRows[0]?.id || '';
+    if (!operationStateId) {
+      throw new CreateProjectForOrganizationError('PROJECT_OPERATION_STATE_FAILED', 'Não foi possível inicializar operação do projeto.', 500);
+    }
 
     return {
       organizationId,
       projectId: project.id,
       subscriptionItemId: subscriptionItem.id,
-      leadId: lead.id,
-      dealId: deal.id,
+      dealId: clientDeal.id,
+      operationStateId,
       subscriptionId: subscription?.id || null,
       domain,
       planCode: plan.code,

@@ -4,6 +4,15 @@ import { ensureDealOperation, operationStagesByDealType } from '@/lib/deals';
 import { prisma } from '@/lib/prisma';
 import { ensurePublicationSubsteps } from '@/lib/site24h-operation';
 
+class OperationStageError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const denied = ensureApiAuth(req);
   if (denied) return denied;
@@ -31,22 +40,31 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           organizationId: true,
         },
       });
-      if (!deal) throw new Error('Deal não encontrado');
-      if (deal.lifecycleStatus !== 'CLIENT') throw new Error('Operação disponível apenas para cliente fechado');
-      if (!deal.organizationId) throw new Error('Deal sem organização vinculada');
+      if (!deal) throw new OperationStageError('Deal não encontrado', 404);
+      if (deal.lifecycleStatus !== 'CLIENT') throw new OperationStageError('Operação disponível apenas para cliente fechado', 409);
+      if (!deal.organizationId) throw new OperationStageError('Deal sem organização vinculada', 422);
 
       const allowed = new Set<string>(operationStagesByDealType(deal.dealType).map((item) => item.code));
-      if (!allowed.has(stageCode)) throw new Error('Etapa operacional inválida');
+      if (!allowed.has(stageCode)) throw new OperationStageError('Etapa operacional inválida', 422);
 
       const ownedProjectRows = await tx.$queryRaw<Array<{ id: string; domain: string | null }>>`
         SELECT id::text AS id, domain
         FROM client.projects
         WHERE id = ${projectId}::uuid
-          AND organization_id = ${deal.organizationId}::uuid
         LIMIT 1
       `;
       const ownedProject = ownedProjectRows[0] || null;
-      if (!ownedProject) throw new Error('Projeto não pertence ao cliente deste deal');
+      if (!ownedProject) throw new OperationStageError('Projeto não encontrado', 404);
+      const belongsRows = await tx.$queryRaw<Array<{ ok: number }>>`
+        SELECT 1 AS ok
+        FROM client.projects
+        WHERE id = ${projectId}::uuid
+          AND organization_id = ${deal.organizationId}::uuid
+        LIMIT 1
+      `;
+      if (!belongsRows[0]?.ok) {
+        throw new OperationStageError('Projeto não pertence ao cliente deste deal', 403);
+      }
 
       const operation = await ensureDealOperation(tx, { id: deal.id, dealType: deal.dealType }, stageCode);
       await tx.$executeRaw`
@@ -92,6 +110,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
     return NextResponse.json({ ok: true, ...output });
   } catch (error) {
+    if (error instanceof OperationStageError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     return NextResponse.json({ error: 'Falha ao alterar etapa operacional', details: String(error) }, { status: 500 });
   }
 }

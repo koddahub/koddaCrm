@@ -39,9 +39,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   await ensureSiteReleaseSchema();
 
   const body = await req.json().catch(() => ({}));
+  const projectId = String(body.projectId || body.project_id || '').trim();
   const templateRevisionId = body.templateRevisionId ? String(body.templateRevisionId) : null;
   const expiresHours = Math.max(1, Number(body.expiresHours || 72));
   const variantInput = String(body.variantCode || '').trim();
+  if (!projectId) {
+    return NextResponse.json({
+      error: 'projectId é obrigatório.',
+      error_code: 'PROJECT_REQUIRED',
+    }, { status: 422 });
+  }
   if (!variantInput) {
     return NextResponse.json({
       error: 'variantCode é obrigatório (V1|V2|V3).',
@@ -77,9 +84,20 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (deal.lifecycleStatus !== 'CLIENT') {
         throw new ApprovalSendError('DEAL_NOT_CLIENT', 'Deal precisa estar fechado para aprovação do cliente', 409);
       }
+      const ownedProject = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM client.projects
+        WHERE id = ${projectId}::uuid
+          AND organization_id = ${deal.organizationId}::uuid
+        LIMIT 1
+      `;
+      if (!ownedProject[0]?.id) {
+        throw new ApprovalSendError('PROJECT_FORBIDDEN', 'Projeto inválido para este cliente', 403);
+      }
 
       const releaseVariant = await resolveDealReleaseVariant({
         dealId: deal.id,
+        projectId,
         releaseVersion,
         variantCode,
       });
@@ -89,9 +107,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
       const revision = templateRevisionId
         ? await tx.dealTemplateRevision.findFirst({
-            where: { id: templateRevisionId, dealId: deal.id },
+            where: { id: templateRevisionId, dealId: deal.id, projectId },
           })
-        : deal.templateRevisions.find((item) => matchesReleaseVariant(item.projectPath, releaseVariant.release.version, variantCode));
+        : deal.templateRevisions.find((item) => item.projectId === projectId && matchesReleaseVariant(item.projectPath, releaseVariant.release.version, variantCode));
 
       if (!revision) {
         throw new ApprovalSendError('REVISION_NOT_FOUND', 'Nenhuma revisão de template disponível para a variante selecionada.');
@@ -102,7 +120,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       }
 
       await tx.dealClientApproval.updateMany({
-        where: { dealId: deal.id, status: 'PENDING' },
+        where: { dealId: deal.id, projectId, status: 'PENDING' },
         data: {
           status: 'EXPIRED',
           updatedAt: new Date(),
@@ -116,6 +134,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const approval = await tx.dealClientApproval.create({
         data: {
           dealId: deal.id,
+          projectId,
           templateRevisionId: revision.id,
           tokenHash,
           expiresAt,
@@ -159,6 +178,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
             releaseVersion: releaseVariant.release.version,
             variantId: releaseVariant.variant.id,
             variantCode,
+            project_id: projectId,
             expiresAt,
           },
           createdBy: 'ADMIN',
@@ -184,6 +204,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       templateRevisionId: result.templateRevisionId,
       releaseVersion: result.releaseVersion,
       variantCode: result.variantCode as 'V1' | 'V2' | 'V3',
+      projectId,
     });
 
     return NextResponse.json({
