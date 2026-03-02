@@ -78,6 +78,7 @@ export async function ensureSite24hOperationSchema() {
     CREATE TABLE IF NOT EXISTS crm.deal_operation_substep (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE CASCADE,
       stage_code VARCHAR(80) NOT NULL,
       substep_code VARCHAR(80) NOT NULL,
       substep_name VARCHAR(140) NOT NULL,
@@ -90,12 +91,24 @@ export async function ensureSite24hOperationSchema() {
       completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (deal_id, stage_code, substep_code)
+      UNIQUE (deal_id, project_id, stage_code, substep_code)
     )
   `);
   await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_operation_substep
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE CASCADE
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_operation_substep
+    DROP CONSTRAINT IF EXISTS deal_operation_substep_deal_id_stage_code_substep_code_key
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_deal_operation_substep_project_stage_code
+      ON crm.deal_operation_substep(deal_id, project_id, stage_code, substep_code)
+  `);
+  await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_order
-      ON crm.deal_operation_substep(deal_id, stage_code, substep_order)
+      ON crm.deal_operation_substep(deal_id, project_id, stage_code, substep_order)
   `);
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_status
@@ -124,6 +137,7 @@ export async function ensureSite24hOperationSchema() {
     CREATE TABLE IF NOT EXISTS crm.deal_prompt_request (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL,
       prompt_revision_id UUID REFERENCES crm.deal_prompt_revision(id) ON DELETE SET NULL,
       subject VARCHAR(220) NOT NULL,
       request_items JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -137,8 +151,12 @@ export async function ensureSite24hOperationSchema() {
     )
   `);
   await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_prompt_request
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL
+  `);
+  await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_prompt_request_deal
-      ON crm.deal_prompt_request(deal_id, created_at DESC)
+      ON crm.deal_prompt_request(deal_id, project_id, created_at DESC)
   `);
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_prompt_request_status
@@ -149,6 +167,7 @@ export async function ensureSite24hOperationSchema() {
     CREATE TABLE IF NOT EXISTS crm.deal_site_release (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL,
       version INT NOT NULL,
       status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
       project_root VARCHAR(500) NOT NULL,
@@ -158,12 +177,24 @@ export async function ensureSite24hOperationSchema() {
       created_by VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (deal_id, version)
+      UNIQUE (deal_id, project_id, version)
     )
   `);
   await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    DROP CONSTRAINT IF EXISTS deal_site_release_deal_id_version_key
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_deal_site_release_project_version
+      ON crm.deal_site_release(deal_id, project_id, version)
+  `);
+  await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_version
-      ON crm.deal_site_release(deal_id, version DESC)
+      ON crm.deal_site_release(deal_id, project_id, version DESC)
   `);
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_status
@@ -350,23 +381,27 @@ export async function getTemplateModelByCode(code?: string | null) {
   };
 }
 
-export async function ensurePublicationSubsteps(dealId: string) {
+export async function ensurePublicationSubsteps(dealId: string, projectId?: string | null) {
   await ensureSite24hOperationSchema();
+  const normalizedProjectId = String(projectId || '').trim();
   for (const sub of PUBLICATION_SUBSTEPS) {
     await prisma.$executeRaw`
       INSERT INTO crm.deal_operation_substep (
-        deal_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
+        deal_id, project_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
       )
       VALUES (
-        ${dealId}::uuid, 'publicacao', ${sub.code}, ${sub.name}, ${sub.order}, 'PENDING', ${sub.required}, now(), now()
+        ${dealId}::uuid,
+        CASE WHEN ${normalizedProjectId} <> '' THEN ${normalizedProjectId}::uuid ELSE NULL END,
+        'publicacao', ${sub.code}, ${sub.name}, ${sub.order}, 'PENDING', ${sub.required}, now(), now()
       )
-      ON CONFLICT (deal_id, stage_code, substep_code) DO NOTHING
+      ON CONFLICT (deal_id, project_id, stage_code, substep_code) DO NOTHING
     `;
   }
 }
 
-export async function listPublicationSubsteps(dealId: string) {
+export async function listPublicationSubsteps(dealId: string, projectId?: string | null) {
   await ensureSite24hOperationSchema();
+  const normalizedProjectId = String(projectId || '').trim();
   return prisma.$queryRaw<Array<{
     id: string;
     deal_id: string;
@@ -400,13 +435,18 @@ export async function listPublicationSubsteps(dealId: string) {
       updated_at
     FROM crm.deal_operation_substep
     WHERE deal_id = ${dealId}::uuid
+      AND (
+        ${normalizedProjectId} = ''
+        OR project_id = ${normalizedProjectId}::uuid
+      )
       AND stage_code = 'publicacao'
     ORDER BY substep_order ASC, created_at ASC
   `;
 }
 
-export async function publicationSubstepsStatus(dealId: string) {
+export async function publicationSubstepsStatus(dealId: string, projectId?: string | null) {
   await ensureSite24hOperationSchema();
+  const normalizedProjectId = String(projectId || '').trim();
   const rows = await prisma.$queryRaw<Array<{
     required_total: number;
     required_completed: number;
@@ -418,6 +458,10 @@ export async function publicationSubstepsStatus(dealId: string) {
       COUNT(*) FILTER (WHERE is_required = true AND status NOT IN ('COMPLETED', 'SKIPPED')) AS pending_total
     FROM crm.deal_operation_substep
     WHERE deal_id = ${dealId}::uuid
+      AND (
+        ${normalizedProjectId} = ''
+        OR project_id = ${normalizedProjectId}::uuid
+      )
       AND stage_code = 'publicacao'
   `;
 

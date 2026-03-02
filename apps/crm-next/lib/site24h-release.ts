@@ -57,6 +57,7 @@ export async function ensureSiteReleaseSchema() {
     CREATE TABLE IF NOT EXISTS crm.deal_site_release (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL,
       version INT NOT NULL,
       status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
       project_root VARCHAR(500) NOT NULL,
@@ -66,12 +67,24 @@ export async function ensureSiteReleaseSchema() {
       created_by VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (deal_id, version)
+      UNIQUE (deal_id, project_id, version)
     )
   `);
   await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    DROP CONSTRAINT IF EXISTS deal_site_release_deal_id_version_key
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_deal_site_release_project_version
+      ON crm.deal_site_release(deal_id, project_id, version)
+  `);
+  await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_version
-      ON crm.deal_site_release(deal_id, version DESC)
+      ON crm.deal_site_release(deal_id, project_id, version DESC)
   `);
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_status
@@ -118,6 +131,7 @@ export async function ensureSiteReleaseSchema() {
 export type DealSiteReleaseRow = {
   id: string;
   deal_id: string;
+  project_id: string | null;
   version: number;
   status: string;
   project_root: string;
@@ -142,13 +156,18 @@ export type DealSiteVariantRow = {
   updated_at: Date;
 };
 
-export async function listDealSiteReleases(dealId: string): Promise<Array<DealSiteReleaseRow & { variants: DealSiteVariantRow[] }>> {
+export async function listDealSiteReleases(
+  dealId: string,
+  projectId?: string | null,
+): Promise<Array<DealSiteReleaseRow & { variants: DealSiteVariantRow[] }>> {
   await ensureSiteReleaseSchema();
+  const normalizedProjectId = String(projectId || '').trim();
 
   const releaseRows = await prisma.$queryRaw<Array<DealSiteReleaseRow>>`
     SELECT
       id::text,
       deal_id::text,
+      project_id::text,
       version,
       status,
       project_root,
@@ -160,6 +179,10 @@ export async function listDealSiteReleases(dealId: string): Promise<Array<DealSi
       updated_at
     FROM crm.deal_site_release
     WHERE deal_id = ${dealId}::uuid
+      AND (
+        ${normalizedProjectId} = ''
+        OR project_id = ${normalizedProjectId}::uuid
+      )
     ORDER BY version DESC
   `;
 
@@ -182,6 +205,10 @@ export async function listDealSiteReleases(dealId: string): Promise<Array<DealSi
       SELECT id
       FROM crm.deal_site_release
       WHERE deal_id = ${dealId}::uuid
+        AND (
+          ${normalizedProjectId} = ''
+          OR project_id = ${normalizedProjectId}::uuid
+        )
     )
     ORDER BY created_at ASC
   `;
@@ -202,8 +229,12 @@ export async function listDealSiteReleases(dealId: string): Promise<Array<DealSi
   }));
 }
 
-export async function getDealRelease(dealId: string, releaseVersion?: number | null): Promise<(DealSiteReleaseRow & { variants: DealSiteVariantRow[] }) | null> {
-  const releases = await listDealSiteReleases(dealId);
+export async function getDealRelease(
+  dealId: string,
+  releaseVersion?: number | null,
+  projectId?: string | null,
+): Promise<(DealSiteReleaseRow & { variants: DealSiteVariantRow[] }) | null> {
+  const releases = await listDealSiteReleases(dealId, projectId);
   if (releases.length === 0) return null;
   if (!releaseVersion) return releases[0];
   return releases.find((item) => item.version === releaseVersion) || null;
@@ -211,11 +242,12 @@ export async function getDealRelease(dealId: string, releaseVersion?: number | n
 
 export async function resolveDealReleaseVariant(params: {
   dealId: string;
+  projectId?: string | null;
   releaseVersion?: number | null;
   variantCode?: SiteVariantCode | null;
 }): Promise<{ release: DealSiteReleaseRow & { variants: DealSiteVariantRow[] }; variant: DealSiteVariantRow } | null> {
   const variantCode = params.variantCode || 'V1';
-  const release = await getDealRelease(params.dealId, params.releaseVersion || null);
+  const release = await getDealRelease(params.dealId, params.releaseVersion || null, params.projectId || null);
   if (!release) return null;
   const variant = release.variants.find((item) => item.variant_code === variantCode) || release.variants.find((item) => item.variant_code === 'V1') || release.variants[0];
   if (!variant) return null;
@@ -269,6 +301,7 @@ function templateCodeForVariant(variantCode: SiteVariantCode) {
 
 export async function ensureReleaseVariantsPrepared(params: {
   dealId: string;
+  projectId?: string | null;
   releaseVersion?: number | null;
   copyMode: 'if_empty_or_missing' | 'replace';
   orgSlug: string;
@@ -277,6 +310,7 @@ export async function ensureReleaseVariantsPrepared(params: {
 
   const resolved = await resolveDealReleaseVariant({
     dealId: params.dealId,
+    projectId: params.projectId || null,
     releaseVersion: params.releaseVersion || null,
     variantCode: 'V1',
   });
@@ -340,7 +374,7 @@ export async function ensureReleaseVariantsPrepared(params: {
     releaseLabel: `v${release.version}`,
     applied,
     backups,
-    variants: (await getDealRelease(params.dealId, release.version))?.variants || release.variants,
+    variants: (await getDealRelease(params.dealId, release.version, params.projectId || null))?.variants || release.variants,
   };
 }
 
@@ -367,11 +401,13 @@ export async function markApprovalSelection(params: {
   templateRevisionId: string;
   releaseVersion: number | null;
   variantCode: SiteVariantCode | null;
+  projectId?: string | null;
 }) {
   const metadata = {
     templateRevisionId: params.templateRevisionId,
     releaseVersion: params.releaseVersion,
     variantCode: params.variantCode,
+    projectId: params.projectId || null,
   };
   await prisma.dealActivity.create({
     data: {

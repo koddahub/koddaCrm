@@ -128,6 +128,9 @@ model Project {
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   subscriptionItem SubscriptionItem?
   operationState ProjectOperationState?
+  templateRevisions DealTemplateRevision[]
+  approvals DealClientApproval[]
+  publishChecks DealPublishCheck[]
 
   @@index([organizationId, status, createdAt])
   @@map("projects")
@@ -413,6 +416,7 @@ model DealPromptRevision {
 model DealTemplateRevision {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   dealId        String   @map("deal_id") @db.Uuid
+  projectId     String?  @map("project_id") @db.Uuid
   version       Int
   projectPath   String   @map("project_path") @db.VarChar(500)
   entryFile     String   @map("entry_file") @db.VarChar(255)
@@ -424,10 +428,12 @@ model DealTemplateRevision {
   updatedAt     DateTime @default(now()) @map("updated_at")
 
   deal          Deal                 @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  project       Project?             @relation(fields: [projectId], references: [id], onDelete: SetNull)
   approvals     DealClientApproval[]
   publishChecks DealPublishCheck[]
 
-  @@unique([dealId, version])
+  @@unique([dealId, projectId, version])
+  @@index([dealId, projectId, createdAt])
   @@index([dealId, createdAt])
   @@map("deal_template_revision")
   @@schema("crm")
@@ -436,6 +442,7 @@ model DealTemplateRevision {
 model DealClientApproval {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   dealId             String   @map("deal_id") @db.Uuid
+  projectId          String?  @map("project_id") @db.Uuid
   templateRevisionId String   @map("template_revision_id") @db.Uuid
   tokenHash          String   @map("token_hash") @db.VarChar(128)
   expiresAt          DateTime @map("expires_at")
@@ -446,9 +453,11 @@ model DealClientApproval {
   updatedAt          DateTime @default(now()) @map("updated_at")
 
   deal              Deal                @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  project           Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
   templateRevision  DealTemplateRevision @relation(fields: [templateRevisionId], references: [id], onDelete: Cascade)
 
   @@index([tokenHash])
+  @@index([dealId, projectId, createdAt])
   @@index([dealId, createdAt])
   @@map("deal_client_approval")
   @@schema("crm")
@@ -457,6 +466,7 @@ model DealClientApproval {
 model DealPublishCheck {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   dealId             String   @map("deal_id") @db.Uuid
+  projectId          String?  @map("project_id") @db.Uuid
   templateRevisionId String   @map("template_revision_id") @db.Uuid
   targetDomain       String?  @map("target_domain") @db.VarChar(255)
   expectedHash       String?  @map("expected_hash") @db.VarChar(128)
@@ -466,8 +476,10 @@ model DealPublishCheck {
   checkedAt          DateTime @default(now()) @map("checked_at")
 
   deal              Deal                @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  project           Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
   templateRevision  DealTemplateRevision @relation(fields: [templateRevisionId], references: [id], onDelete: Cascade)
 
+  @@index([dealId, projectId, checkedAt])
   @@index([dealId, checkedAt])
   @@index([templateRevisionId, checkedAt])
   @@map("deal_publish_check")
