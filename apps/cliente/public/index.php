@@ -5847,200 +5847,65 @@ function syncProjectDealByOrganization(
   ?float $effectivePrice = null,
   string $reason = 'portal_project_sync'
 ): ?string {
-  $pipeline = resolveHospedagemPipelineMeta();
-  if (!$pipeline) {
-    return null;
-  }
   $projectId = trim((string)($project['id'] ?? ''));
   if ($projectId === '') {
     return null;
   }
 
-  $derivation = deriveProjectDealStageAndLifecycle((string)($project['status'] ?? 'PENDING'));
-  $stage = $pipeline['stages'][$derivation['stage_code']] ?? null;
-  if (!$stage) {
-    return null;
-  }
-
-  $org = db()->one("
-    SELECT
-      o.id::text AS organization_id,
-      o.legal_name,
-      o.billing_email,
-      o.whatsapp,
-      s.id::text AS subscription_row_id
-    FROM client.organizations o
-    LEFT JOIN LATERAL (
-      SELECT s1.*
-      FROM client.subscriptions s1
-      WHERE s1.organization_id = o.id
-      ORDER BY s1.created_at DESC
-      LIMIT 1
-    ) s ON true
-    WHERE o.id = CAST(:oid AS uuid)
+  $domain = trim((string)($project['domain'] ?? ''));
+  $safePlanCode = $planCode !== null ? strtolower(trim($planCode)) : null;
+  $projectType = strtolower(trim((string)($project['project_type'] ?? 'hospedagem')));
+  $deal = db()->one("
+    SELECT id::text AS id, metadata
+    FROM crm.deal
+    WHERE organization_id = CAST(:oid AS uuid)
+      AND deal_type = 'HOSPEDAGEM'
+    ORDER BY
+      CASE WHEN lifecycle_status = 'CLIENT' THEN 0 ELSE 1 END,
+      updated_at DESC
     LIMIT 1
   ", [':oid' => $organizationId]);
-  if (!$org) {
+  if (!$deal || empty($deal['id'])) {
     return null;
   }
 
-  $domain = trim((string)($project['domain'] ?? ''));
-  $title = $domain !== '' ? $domain : ('Projeto ' . substr($projectId, 0, 8));
-  $safePlanCode = $planCode !== null ? strtolower(trim($planCode)) : null;
-  $valueCents = $effectivePrice !== null ? (int)round($effectivePrice * 100) : null;
-  $closedAt = !empty($derivation['closed']) ? date('Y-m-d H:i:s') : null;
-  $projectType = strtolower(trim((string)($project['project_type'] ?? 'hospedagem')));
-
-  $existing = db()->one("
-    SELECT id::text AS id, stage_id::text AS stage_id
-    FROM crm.deal
-    WHERE pipeline_id = CAST(:pid AS uuid)
-      AND deal_type = 'HOSPEDAGEM'
-      AND organization_id = CAST(:oid AS uuid)
-      AND coalesce(metadata->>'project_id', '') = :project_id
-    ORDER BY updated_at DESC
-    LIMIT 1
-  ", [
-    ':pid' => $pipeline['id'],
-    ':oid' => $organizationId,
-    ':project_id' => $projectId,
-  ]);
-
-  $meta = [
+  $projectMeta = [
     'source' => 'client_portal_project',
     'project_id' => $projectId,
     'project_domain' => $domain !== '' ? $domain : null,
     'project_type' => $projectType,
+    'project_status' => strtoupper((string)($project['status'] ?? 'PENDING')),
+    'plan_code' => $safePlanCode,
+    'effective_price' => $effectivePrice,
     'sync_reason' => $reason,
     'synced_at' => gmdate(DATE_ATOM),
   ];
-
-  if ($existing) {
-    db()->exec("
-      UPDATE crm.deal
-      SET
-        stage_id = CAST(:stage_id AS uuid),
-        subscription_id = CASE WHEN :subscription_id <> '' THEN CAST(:subscription_id AS uuid) ELSE subscription_id END,
-        title = :title,
-        contact_name = :contact_name,
-        contact_email = :contact_email,
-        contact_phone = :contact_phone,
-        plan_code = :plan_code,
-        value_cents = :value_cents,
-        lifecycle_status = :lifecycle_status,
-        is_closed = :is_closed,
-        closed_at = :closed_at,
-        metadata = coalesce(metadata, '{}'::jsonb) || CAST(:metadata AS jsonb),
-        updated_at = now()
-      WHERE id = CAST(:id AS uuid)
-    ", [
-      ':id' => (string)$existing['id'],
-      ':stage_id' => (string)$stage['id'],
-      ':subscription_id' => (string)($org['subscription_row_id'] ?? ''),
-      ':title' => $title,
-      ':contact_name' => $title,
-      ':contact_email' => $org['billing_email'] ?? null,
-      ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
-      ':plan_code' => $safePlanCode,
-      ':value_cents' => $valueCents,
-      ':lifecycle_status' => $derivation['lifecycle'],
-      ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
-      ':closed_at' => $closedAt,
-      ':metadata' => safeJson($meta),
-    ]);
-
-    if ((string)$existing['stage_id'] !== (string)$stage['id']) {
-      db()->exec("
-        INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
-        VALUES(CAST(:deal_id AS uuid), CAST(:from_stage_id AS uuid), CAST(:to_stage_id AS uuid), 'CLIENT_PORTAL', :reason, now())
-      ", [
-        ':deal_id' => (string)$existing['id'],
-        ':from_stage_id' => (string)$existing['stage_id'],
-        ':to_stage_id' => (string)$stage['id'],
-        ':reason' => 'Sincronização de projeto pela área do cliente',
-      ]);
-    }
-
-    db()->exec("
-      INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
-      VALUES(CAST(:deal_id AS uuid), 'FLOW_UPDATE', :content, CAST(:metadata AS jsonb), 'CLIENT_PORTAL')
-    ", [
-      ':deal_id' => (string)$existing['id'],
-      ':content' => 'Projeto sincronizado pela área do cliente.',
-      ':metadata' => safeJson($meta),
-    ]);
-    return (string)$existing['id'];
-  }
-
-  $position = db()->one("
-    SELECT COUNT(*)::int AS qty
-    FROM crm.deal
-    WHERE pipeline_id = CAST(:pid AS uuid)
-      AND stage_id = CAST(:sid AS uuid)
-      AND lifecycle_status <> 'CLIENT'
-  ", [
-    ':pid' => $pipeline['id'],
-    ':sid' => $stage['id'],
-  ]);
-  $positionIndex = (int)($position['qty'] ?? 0);
-
-  $created = db()->one("
-    INSERT INTO crm.deal(
-      pipeline_id, stage_id, organization_id, subscription_id, title, contact_name, contact_email, contact_phone,
-      deal_type, category, intent, origin, plan_code, product_code, value_cents, position_index,
-      lifecycle_status, is_closed, closed_at, metadata, created_at, updated_at
-    )
-    VALUES(
-      CAST(:pipeline_id AS uuid), CAST(:stage_id AS uuid), CAST(:organization_id AS uuid),
-      CASE WHEN :subscription_id <> '' THEN CAST(:subscription_id AS uuid) ELSE NULL END,
-      :title, :contact_name, :contact_email, :contact_phone,
-      'HOSPEDAGEM', 'RECORRENTE', :intent, 'CLIENT_PORTAL_PROJECT',
-      :plan_code, :product_code, :value_cents, :position_index,
-      :lifecycle_status, :is_closed, :closed_at, CAST(:metadata AS jsonb), now(), now()
-    )
-    RETURNING id::text AS id
-  ", [
-    ':pipeline_id' => $pipeline['id'],
-    ':stage_id' => (string)$stage['id'],
-    ':organization_id' => $organizationId,
-    ':subscription_id' => (string)($org['subscription_row_id'] ?? ''),
-    ':title' => $title,
-    ':contact_name' => $title,
-    ':contact_email' => $org['billing_email'] ?? null,
-    ':contact_phone' => normalizeDigits((string)($org['whatsapp'] ?? '')),
-    ':intent' => $safePlanCode ? ('hospedagem_' . $safePlanCode) : 'hospedagem_basico',
-    ':plan_code' => $safePlanCode,
-    ':product_code' => $projectType,
-    ':value_cents' => $valueCents,
-    ':position_index' => $positionIndex,
-    ':lifecycle_status' => $derivation['lifecycle'],
-    ':is_closed' => !empty($derivation['closed']) ? 'true' : 'false',
-    ':closed_at' => $closedAt,
-    ':metadata' => safeJson($meta),
-  ]);
-  if (!$created || empty($created['id'])) {
-    return null;
-  }
-
   db()->exec("
-    INSERT INTO crm.deal_stage_history(deal_id, from_stage_id, to_stage_id, changed_by, reason, created_at)
-    VALUES(CAST(:deal_id AS uuid), NULL, CAST(:to_stage_id AS uuid), 'CLIENT_PORTAL', :reason, now())
+    UPDATE crm.deal
+    SET
+      plan_code = coalesce(:plan_code, plan_code),
+      value_cents = CASE WHEN :value_cents IS NULL THEN value_cents ELSE :value_cents END,
+      metadata = coalesce(metadata, '{}'::jsonb)
+        || jsonb_build_object('last_project_sync', CAST(:project_meta AS jsonb)),
+      updated_at = now()
+    WHERE id = CAST(:id AS uuid)
   ", [
-    ':deal_id' => (string)$created['id'],
-    ':to_stage_id' => (string)$stage['id'],
-    ':reason' => 'Deal de projeto criado pela área do cliente',
+    ':id' => (string)$deal['id'],
+    ':plan_code' => $safePlanCode,
+    ':value_cents' => $effectivePrice !== null ? (int)round($effectivePrice * 100) : null,
+    ':project_meta' => safeJson($projectMeta),
   ]);
 
   db()->exec("
     INSERT INTO crm.deal_activity(deal_id, activity_type, content, metadata, created_by)
     VALUES(CAST(:deal_id AS uuid), 'FLOW_UPDATE', :content, CAST(:metadata AS jsonb), 'CLIENT_PORTAL')
   ", [
-    ':deal_id' => (string)$created['id'],
-    ':content' => 'Deal de projeto criado pela área do cliente.',
-    ':metadata' => safeJson($meta),
+    ':deal_id' => (string)$deal['id'],
+    ':content' => 'Projeto sincronizado pela área do cliente (sem criação de novo deal).',
+    ':metadata' => safeJson($projectMeta),
   ]);
 
-  return (string)$created['id'];
+  return (string)$deal['id'];
 }
 
 function parseReleaseVariantFromProjectPath(?string $projectPath): array {

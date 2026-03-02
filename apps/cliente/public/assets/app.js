@@ -1217,6 +1217,10 @@
         });
       });
       window.addEventListener('hashchange', () => loadSection(getHashSection()));
+      const initialHash = (window.location.hash || '#dashboard').replace('#', '').trim();
+      if (!validSections.has(initialHash)) {
+        window.location.hash = 'dashboard';
+      }
       loadSection(getHashSection());
     };
     const initDashboardTheme = () => {
@@ -1617,19 +1621,8 @@
       if (projectCreateSubmitting) return;
       closePortalModal(projectCreateModal);
     };
-    const reloadDashboardWithCurrentSection = (delayMs = 0) => {
-      const reload = () => {
-        if (!window.location.hash) {
-          window.location.reload();
-          return;
-        }
-        window.location.href = `/portal/dashboard${window.location.hash}`;
-      };
-      if (delayMs > 0) {
-        window.setTimeout(reload, delayMs);
-        return;
-      }
-      reload();
+    const redirectToDashboardRoot = () => {
+      window.location.assign('/portal/dashboard#dashboard');
     };
     const submitProjectCreate = async () => {
       if (!projectCreateForm || projectCreateSubmitting) return;
@@ -1730,7 +1723,7 @@
         const successMsg = currentProjectSelection ? 'Projeto ativo atualizado.' : 'Visão geral consolidada ativada.';
         setPortalNotice(successMsg, 'ok');
         showToast('success', 'Projeto ativo', successMsg);
-        reloadDashboardWithCurrentSection(160);
+        window.setTimeout(() => redirectToDashboardRoot(), 120);
       } catch (err) {
         if (projectContextSelect) projectContextSelect.value = currentProjectSelection;
         const message = err?.message || 'Falha ao trocar o projeto ativo.';

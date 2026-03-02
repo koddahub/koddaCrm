@@ -70,6 +70,16 @@ final class ClientProjectBillingService
                 LIMIT 1
              ) d ON true
              WHERE p.organization_id = CAST(:oid AS uuid)
+               AND NOT (
+                 upper(coalesce(p.status, 'PENDING')) = 'PENDING'
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM client.project_prorata_payment_sessions s
+                   WHERE s.project_id = p.id
+                     AND s.organization_id = p.organization_id
+                     AND upper(coalesce(s.status, '')) IN ('PENDING', 'CONFIRMED')
+                 )
+               )
              ORDER BY p.created_at ASC",
             [':oid' => $organizationId]
         );
