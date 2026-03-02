@@ -1177,7 +1177,16 @@
       notice.classList.add(type);
     };
 
-    const validSections = new Set(['dashboard', 'chamados', 'pagamentos', 'operacao', 'planos', 'perfil']);
+    const projectViewMode = String(document.body?.dataset?.projectViewMode || '').toUpperCase() === 'PROJECT' ? 'PROJECT' : 'GLOBAL';
+    const sectionsByMode = {
+      GLOBAL: new Set(['dashboard', 'chamados', 'pagamentos', 'perfil']),
+      PROJECT: new Set(['dashboard', 'operacao', 'chamados', 'planos', 'pagamentos', 'perfil']),
+    };
+    const validSections = sectionsByMode[projectViewMode];
+    const navVisibleInMode = (itemScope) => {
+      const scope = String(itemScope || 'ALL').toUpperCase();
+      return scope === 'ALL' || scope === projectViewMode;
+    };
     const getHashSection = () => {
       const value = (window.location.hash || '#dashboard').replace('#', '').trim();
       return validSections.has(value) ? value : 'dashboard';
@@ -1188,10 +1197,21 @@
       $$('[data-nav-section]').forEach((item) => item.classList.toggle('active', item.dataset.navSection === target));
     };
     const initNavigation = () => {
+      $$('[data-nav-scope]').forEach((item) => {
+        if (!navVisibleInMode(item.dataset.navScope || 'ALL')) {
+          item.classList.add('d-none');
+        }
+      });
       $$('[data-nav-section]').forEach((item) => {
         item.addEventListener('click', (e) => {
+          if (!navVisibleInMode(item.dataset.navScope || 'ALL')) return;
           e.preventDefault();
           const section = item.dataset.navSection || 'dashboard';
+          if (!validSections.has(section)) {
+            window.location.hash = 'dashboard';
+            loadSection('dashboard');
+            return;
+          }
           window.location.hash = section;
           loadSection(section);
         });
@@ -1246,7 +1266,6 @@
     const projectCreateForm = $('#projectCreateForm');
     const projectCreateType = $('#projectCreateType');
     const projectCreatePlanCode = $('#projectCreatePlanCode');
-    const projectCreateTag = $('#projectCreateTag');
     const projectCreateNotice = $('#projectCreateNotice');
     const projectCreateSubmitBtn = $('#projectCreateSubmitBtn');
     const projectCreateCancelBtn = $('#projectCreateCancelBtn');
@@ -1502,6 +1521,64 @@
     const setProjectCreateNotice = (type, message) => {
       setInlineAlert(projectCreateNotice, type, message);
     };
+    const abortPendingProject = async (projectId) => {
+      const pid = String(projectId || '').trim();
+      if (!pid) return;
+      try {
+        await apiFetch(`/api/projects/${encodeURIComponent(pid)}/abort`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'USER_ABORTED_FLOW' }),
+        });
+      } catch (_) {}
+    };
+    const startProjectProrataPayment = async (projectId, planCode) => {
+      const pid = String(projectId || '').trim();
+      if (!pid) throw new Error('Projeto inválido para iniciar cobrança.');
+      const prepareRes = await apiFetch(`/api/billing/items/${encodeURIComponent(pid)}/prorata/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_code: planCode || null }),
+      });
+      const prepareData = await parseApiJson(prepareRes);
+      if (!prepareRes.ok || !prepareData?.ok) {
+        throw new Error(prepareData?.error || 'Não foi possível calcular o pró-rata do projeto.');
+      }
+      const amount = Number(prepareData?.pricing?.prorata_amount || 0);
+      const approveMsg = amount > 0
+        ? `Para ativar este novo projeto, confirme a cobrança pró-rata de ${formatMoney(amount)} até o próximo vencimento.`
+        : 'Não há cobrança imediata para este projeto. Deseja finalizar a ativação agora?';
+      if (!window.confirm(approveMsg)) {
+        await abortPendingProject(pid);
+        throw new Error('Solicitação cancelada. O projeto pendente foi removido.');
+      }
+      const confirmRes = await apiFetch(`/api/billing/items/${encodeURIComponent(pid)}/prorata/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': `project-prorata-confirm-${generateRequestId()}`,
+        },
+        body: JSON.stringify({
+          plan_code: planCode || null,
+          payment_method: 'PIX',
+        }),
+      });
+      const confirmData = await parseApiJson(confirmRes);
+      if (!confirmRes.ok || !confirmData?.ok) {
+        await abortPendingProject(pid);
+        throw new Error(confirmData?.error || 'Não foi possível confirmar a cobrança pró-rata.');
+      }
+      const paymentUrl = String(confirmData?.result?.payment?.invoice_url || '').trim();
+      const pixPayload = String(confirmData?.result?.payment?.pix_payload || '').trim();
+      if (paymentUrl) {
+        window.open(paymentUrl, '_blank', 'noopener,noreferrer');
+      } else if (pixPayload) {
+        navigator.clipboard.writeText(pixPayload).catch(() => {});
+      }
+      return {
+        pendingActivation: !!confirmData?.result?.activation_pending,
+      };
+    };
     const setProjectCreateSubmitting = (loading) => {
       projectCreateSubmitting = !!loading;
       setButtonLoading(projectCreateSubmitBtn, loading);
@@ -1528,7 +1605,6 @@
         projectCreateForm.reset();
       }
       projectCreatePlanCode?.classList.remove('is-invalid');
-      projectCreateTag?.classList.remove('is-invalid');
       setProjectCreateNotice('', '');
     };
     const openProjectCreateModal = () => {
@@ -1559,9 +1635,7 @@
       if (!projectCreateForm || projectCreateSubmitting) return;
       const projectType = String(projectCreateType?.value || 'hospedagem').trim().toLowerCase();
       const planCode = String(projectCreatePlanCode?.value || '').trim().toLowerCase();
-      const projectTag = String(projectCreateTag?.value || '').trim().toUpperCase();
       projectCreatePlanCode?.classList.remove('is-invalid');
-      projectCreateTag?.classList.remove('is-invalid');
       setProjectCreateNotice('', '');
       if (!planCode) {
         projectCreatePlanCode?.classList.add('is-invalid');
@@ -1582,7 +1656,6 @@
           body: JSON.stringify({
             project_type: projectType,
             plan_code: planCode,
-            project_tag: projectTag || null,
           }),
         });
         if (response.redirected || String(response.url || '').includes('/login')) {
@@ -1595,12 +1668,11 @@
         if (!response.ok || !data?.ok) {
           const details = data?.details && typeof data.details === 'object' ? data.details : {};
           if (details?.plan_code) projectCreatePlanCode?.classList.add('is-invalid');
-          if (details?.project_tag) projectCreateTag?.classList.add('is-invalid');
           throw new Error(data?.error || 'Não foi possível criar o projeto agora.');
         }
 
         const resultProject = data?.result?.project && typeof data.result.project === 'object' ? data.result.project : null;
-        const createdLabel = String(resultProject?.domain || resultProject?.project_tag || resultProject?.label || projectTag || '');
+        const createdLabel = String(resultProject?.domain || resultProject?.project_tag || resultProject?.label || '');
         const successMsg = data?.idempotent
           ? `Solicitação já registrada para ${createdLabel || 'este projeto'}.`
           : `Projeto ${createdLabel || 'novo'} solicitado com sucesso.`;
@@ -1612,10 +1684,12 @@
           projectId: createdProjectId,
           planCode,
         };
+        await startProjectProrataPayment(createdProjectId, planCode);
         if (briefProjectIdInput) briefProjectIdInput.value = createdProjectId;
         if (briefSourceInput) briefSourceInput.value = 'project_create';
         if (briefPlanCodeInput) briefPlanCodeInput.value = planCode;
         closePortalModal(projectCreateModal);
+        setPortalNotice('Cobrança iniciada com sucesso. Agora finalize o briefing para concluir o projeto.', 'ok');
         openModal();
       } catch (err) {
         const message = err?.message || 'Falha ao criar projeto.';
@@ -1668,11 +1742,6 @@
       }
     });
 
-    projectCreateTag?.addEventListener('input', () => {
-      if (!projectCreateTag) return;
-      projectCreateTag.classList.remove('is-invalid');
-      projectCreateTag.value = projectCreateTag.value.toUpperCase();
-    });
     projectCreatePlanCode?.addEventListener('change', () => projectCreatePlanCode.classList.remove('is-invalid'));
     projectCreateForm?.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -2542,6 +2611,54 @@
       }
     };
 
+    const executeProjectItemPlanChange = async () => {
+      if (!planForm || !planCodeSelect || planSubmitInFlight) return;
+      const projectId = String(document.body?.dataset?.currentProjectId || '').trim();
+      if (!projectId) {
+        setInlineAlert(planInlineNotice, 'warning', 'Selecione um projeto ativo para trocar plano.');
+        return;
+      }
+      const selectedPlanCode = String(planCodeSelect.value || '').trim().toLowerCase();
+      if (!selectedPlanCode || selectedPlanCode === planCurrentCode) {
+        setInlineAlert(planInlineNotice, 'warning', 'Selecione um plano diferente do atual para continuar.');
+        return;
+      }
+
+      planSubmitInFlight = true;
+      setButtonLoading(planSubmitBtn, true);
+      try {
+        const response = await apiFetch(`/api/billing/items/${encodeURIComponent(projectId)}/change-plan`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': `project-item-plan-${generateRequestId()}`,
+          },
+          body: JSON.stringify({
+            plan_code: selectedPlanCode,
+            justificativa: String(planReason?.value || '').trim() || null,
+          }),
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok || !data?.ok) {
+          throw new Error(data?.error || 'Não foi possível trocar o plano do projeto.');
+        }
+        const successMsg = 'Plano do projeto atualizado com sucesso.';
+        setInlineAlert(planInlineNotice, 'success', successMsg);
+        setPortalNotice(successMsg, 'ok');
+        showToast('success', 'Planos', successMsg);
+        await loadBillingSnapshot(true);
+        window.setTimeout(() => window.location.reload(), 450);
+      } catch (err) {
+        const message = err?.message || 'Falha ao trocar plano do projeto.';
+        setInlineAlert(planInlineNotice, 'danger', message);
+        setPortalNotice(message, 'err');
+        showToast('danger', 'Planos', message);
+      } finally {
+        planSubmitInFlight = false;
+        setButtonLoading(planSubmitBtn, false);
+      }
+    };
+
     const executePlanChange = async () => {
       if (!planForm || !planCodeSelect || planSubmitInFlight) return;
       setInlineAlert(planInlineNotice, '', '');
@@ -2859,6 +2976,10 @@
 
     planForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (projectViewMode === 'PROJECT') {
+        await executeProjectItemPlanChange();
+        return;
+      }
       setInlineAlert(planInlineNotice, '', '');
       setInlineAlert(planChangeConfirmNotice, '', '');
       const selectedCode = String(planCodeSelect?.value || '').toLowerCase();
@@ -3805,55 +3926,7 @@
       }
       setBriefNotice('Briefing enviado com sucesso.', 'ok');
       if (briefSource === 'project_create' && briefProjectId) {
-        try {
-          const prepareRes = await apiFetch(`/api/billing/items/${encodeURIComponent(briefProjectId)}/prorata/prepare`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ plan_code: briefPlanCode || null }),
-          });
-          const prepareData = await prepareRes.json();
-          if (!prepareRes.ok || !prepareData?.ok) {
-            throw new Error(prepareData?.error || 'Não foi possível calcular o pró-rata do projeto.');
-          }
-          const amount = Number(prepareData?.pricing?.prorata_amount || 0);
-          const approveMsg = amount > 0
-            ? `Para ativar este novo projeto agora, confirme a cobrança pró-rata de ${formatMoney(amount)} até o próximo vencimento.`
-            : 'Não há cobrança imediata para este projeto. Deseja finalizar a ativação agora?';
-          const approved = window.confirm(approveMsg);
-          if (!approved) {
-            setPortalNotice('Projeto criado com briefing enviado. Aguardando confirmação da cobrança para ativação.', 'ok');
-            return;
-          }
-          const confirmRes = await apiFetch(`/api/billing/items/${encodeURIComponent(briefProjectId)}/prorata/confirm`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Idempotency-Key': `project-prorata-confirm-${generateRequestId()}`,
-            },
-            body: JSON.stringify({
-              plan_code: briefPlanCode || null,
-              payment_method: 'PIX',
-            }),
-          });
-          const confirmData = await confirmRes.json();
-          if (!confirmRes.ok || !confirmData?.ok) {
-            throw new Error(confirmData?.error || 'Não foi possível confirmar a cobrança pró-rata.');
-          }
-          const paymentUrl = String(confirmData?.result?.payment?.invoice_url || '').trim();
-          const pixPayload = String(confirmData?.result?.payment?.pix_payload || '').trim();
-          if (paymentUrl) {
-            window.open(paymentUrl, '_blank', 'noopener,noreferrer');
-          } else if (pixPayload) {
-            navigator.clipboard.writeText(pixPayload).catch(() => {});
-          }
-          setPortalNotice('Projeto criado. Cobrança pró-rata iniciada com sucesso.', 'ok');
-          showToast('success', 'Novo projeto', 'Briefing enviado e cobrança pró-rata iniciada.');
-        } catch (err) {
-          const msg = err?.message || 'Falha ao iniciar cobrança pró-rata.';
-          setBriefNotice(msg, 'err');
-          setPortalNotice(msg, 'err');
-          return;
-        }
+        setPortalNotice('Briefing enviado. Acompanhe o pagamento para ativação completa do projeto.', 'ok');
       } else {
         setPortalNotice('Briefing concluído com sucesso.', 'ok');
       }

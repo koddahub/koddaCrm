@@ -2254,6 +2254,20 @@ function renderDashboard(?string $notice = null): string {
     }
   }
   $projectViewMode = $currentProject ? 'PROJECT' : 'GLOBAL';
+  $currentProjectHasBriefing = false;
+  if ($orgId && $currentProject) {
+    $currentProjectHasBriefing = db()->one("
+      SELECT id
+      FROM client.project_briefs
+      WHERE organization_id = CAST(:oid AS uuid)
+        AND project_id = CAST(:pid AS uuid)
+      LIMIT 1
+    ", [
+      ':oid' => $orgId,
+      ':pid' => (string)($currentProject['id'] ?? ''),
+    ]) !== null;
+  }
+  $briefingRequired = $projectViewMode === 'PROJECT' ? !$currentProjectHasBriefing : !$hasBriefing;
   $projectDomainForView = $currentProject ? trim((string)($currentProject['domain'] ?? '')) : trim((string)($org['domain'] ?? ''));
   $siteOnline = $projectViewMode === 'PROJECT'
     ? (strtoupper((string)($currentProject['status'] ?? '')) === 'ACTIVE' && strtoupper((string)($sub['status'] ?? '')) === 'ACTIVE')
@@ -2285,6 +2299,9 @@ function renderDashboard(?string $notice = null): string {
     }
   }
   $currentPlanCode = strtolower((string)($sub['plan_code'] ?? 'basic'));
+  if ($currentProject) {
+    $currentPlanCode = strtolower((string)($currentProject['plan_code'] ?? $currentPlanCode));
+  }
   $subscriptionStatus = strtoupper((string)($sub['status'] ?? 'N/D'));
   $subscriptionStatusBadgeClass = match($subscriptionStatus) {
     'ACTIVE' => 'text-bg-success',
@@ -2749,7 +2766,7 @@ function renderDashboard(?string $notice = null): string {
   data-theme="dark"
   data-current-project-id="<?= h((string)($currentProjectId ?? '')) ?>"
   data-project-view-mode="<?= h($projectViewMode) ?>"
-  data-open-briefing="<?= $hasBriefing ? '0' : '1' ?>"
+  data-open-briefing="<?= $briefingRequired ? '1' : '0' ?>"
   data-csrf-token="<?= h(csrfToken()) ?>"
   data-feature-plan-change-webhook-confirmed="<?= $featurePlanChangeWebhookConfirmed ? '1' : '0' ?>"
   data-feature-billing-pix-session-flow="<?= $featureBillingPixSessionFlow ? '1' : '0' ?>"
@@ -2789,12 +2806,12 @@ function renderDashboard(?string $notice = null): string {
         </button>
       </div>
       <nav class="client-sidebar-nav">
-        <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i> Dashboard</a>
-        <a data-nav-section="operacao" href="/portal/dashboard#operacao"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i> Operação</a>
-        <a data-nav-section="chamados" href="/portal/dashboard#chamados"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i> Chamados</a>
-        <a data-nav-section="planos" href="/portal/dashboard#planos"><i class="bi bi-box-seam-fill" aria-hidden="true"></i> Planos</a>
-        <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i> Pagamento</a>
-        <a data-nav-section="perfil" href="/portal/dashboard#perfil"><i class="bi bi-person-badge-fill" aria-hidden="true"></i> Perfil</a>
+        <a class="active" data-nav-section="dashboard" data-nav-scope="ALL" href="/portal/dashboard#dashboard"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i> Dashboard</a>
+        <a data-nav-section="operacao" data-nav-scope="PROJECT" href="/portal/dashboard#operacao"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i> Operação</a>
+        <a data-nav-section="chamados" data-nav-scope="ALL" href="/portal/dashboard#chamados"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i> Chamados</a>
+        <a data-nav-section="planos" data-nav-scope="PROJECT" href="/portal/dashboard#planos"><i class="bi bi-box-seam-fill" aria-hidden="true"></i> Planos</a>
+        <a data-nav-section="pagamentos" data-nav-scope="ALL" href="/portal/dashboard#pagamentos"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i> Pagamento</a>
+        <a data-nav-section="perfil" data-nav-scope="ALL" href="/portal/dashboard#perfil"><i class="bi bi-person-badge-fill" aria-hidden="true"></i> Perfil</a>
       </nav>
       <div class="client-sidebar-support">
         <strong>Suporte 24/7</strong>
@@ -2827,11 +2844,11 @@ function renderDashboard(?string $notice = null): string {
         <div id="portalNotice" class="alert <?= $notice ? 'ok' : 'hidden' ?>" role="status" aria-live="polite"><?= $notice ? h($notice) : '' ?></div>
         <div class="toast-container position-fixed top-0 end-0 p-3 portal-toast-container" id="portalToastContainer" aria-live="polite" aria-atomic="true"></div>
 
-        <?php if (!$hasBriefing): ?>
+        <?php if ($briefingRequired): ?>
           <section class="briefing-banner">
             <div class="briefing-banner-copy">
               <strong><i class="bi bi-rocket-takeoff-fill" aria-hidden="true"></i> Comece seu projeto agora!</strong>
-              <span>Preencha o briefing do seu primeiro site e garanta publicação em 24 horas.</span>
+              <span><?= h($projectViewMode === 'PROJECT' ? 'Esse projeto ainda precisa de briefing para avançar na produção.' : 'Preencha o briefing do seu primeiro site e garanta publicação em 24 horas.') ?></span>
             </div>
             <button type="button" class="btn btn-briefing-banner sidebar-open-briefing">Preencher Briefing</button>
           </section>
@@ -3214,11 +3231,14 @@ function renderDashboard(?string $notice = null): string {
                 <h3 class="mb-1">Planos Disponíveis</h3>
                 <p class="note mb-0">Upgrade aplica imediatamente com cobrança proporcional da diferença. Downgrade fica agendado para o próximo vencimento.</p>
               </div>
-              <span class="badge text-bg-info align-self-start">Plano atual: <?= h((string)($sub['plan_name'] ?? 'N/D')) ?></span>
+              <span class="badge text-bg-info align-self-start">
+                Plano atual:
+                <?= h($currentProject ? ((string)($currentProject['plan_name'] ?? $currentProject['plan_code'] ?? 'N/D')) : 'Selecione um projeto') ?>
+              </span>
             </div>
             <div id="planInlineNotice" class="alert d-none mb-3" role="alert"></div>
             <div class="alert alert-secondary py-2 mb-3">
-              Mensalidade atual: <strong>R$ <?= h(number_format((float)($sub['effective_monthly_price'] ?? $sub['monthly_price'] ?? 0), 2, ',', '.')) ?></strong>
+              Mensalidade atual do projeto: <strong>R$ <?= h(number_format((float)($currentProject ? ($currentProject['effective_price'] ?? 0) : 0), 2, ',', '.')) ?></strong>
               <?php if (!empty($sub['next_due_date'])): ?>
                 | Próximo vencimento: <strong><?= h(date('d/m/Y', strtotime((string)$sub['next_due_date']))) ?></strong>
               <?php endif; ?>
@@ -3292,7 +3312,7 @@ function renderDashboard(?string $notice = null): string {
                 <div class="form-text" id="planJustificationCounter">0 / 500</div>
               </div>
               <div class="col-12 d-grid d-sm-flex justify-content-sm-end">
-                <button class="btn btn-accent px-4" id="planSubmitBtn" type="submit" <?= empty($sub['asaas_subscription_id']) ? 'disabled title="Finalize a contratação para habilitar troca de plano"' : '' ?>>
+                <button class="btn btn-accent px-4" id="planSubmitBtn" type="submit" <?= empty($sub['asaas_subscription_id']) ? 'disabled title="Finalize a contratação para habilitar troca de plano"' : '' ?> <?= $currentProject ? '' : 'disabled title="Selecione um projeto ativo para trocar plano."' ?>>
                   <span class="btn-label">Solicitar troca</span>
                   <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
                 </button>
@@ -3313,6 +3333,11 @@ function renderDashboard(?string $notice = null): string {
             <?php if (!$operationDeal): ?>
               <p class="note">Ainda não existe uma operação ativa para este cliente. Assim que o pagamento e o fechamento forem confirmados, as etapas aparecem aqui automaticamente.</p>
             <?php else: ?>
+              <?php if ($currentProject && !$currentProjectHasBriefing): ?>
+                <div class="alert alert-warning">
+                  Estamos aguardando o preenchimento completo do briefing para iniciar a produção deste projeto.
+                </div>
+              <?php endif; ?>
               <div class="row g-3 mb-3">
                 <div class="col-12 col-sm-6 col-lg-3">
                   <article class="card shadow-sm h-100 op-kpi-card">
@@ -4029,11 +4054,6 @@ function renderDashboard(?string $notice = null): string {
                   <small class="text-body-secondary d-block mt-1">Ative um plano no cadastro interno para liberar novas solicitações.</small>
                 <?php endif; ?>
               </div>
-              <div class="col-12">
-                <label class="form-label" for="projectCreateTag">Identificador (opcional)</label>
-                <input class="form-control" id="projectCreateTag" name="project_tag" placeholder="PRJ-AB12">
-                <small class="text-body-secondary d-block mt-1">Sem domínio? Deixe em branco e geramos automaticamente uma tag `PRJ-XXXX`.</small>
-              </div>
             </form>
             <div class="alert d-none mt-3" id="projectCreateNotice" role="alert"></div>
             <div class="operation-actions mt-3">
@@ -4115,12 +4135,12 @@ function renderDashboard(?string $notice = null): string {
   </div>
 
   <nav class="mobile-bottom-nav" aria-label="Navegação mobile">
-    <a class="active" data-nav-section="dashboard" href="/portal/dashboard#dashboard"><span class="icon"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i></span><span class="label">Dashboard</span></a>
-    <a data-nav-section="operacao" href="/portal/dashboard#operacao"><span class="icon"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i></span><span class="label">Operação</span></a>
-    <a data-nav-section="chamados" href="/portal/dashboard#chamados"><span class="icon"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i></span><span class="label">Chamados</span></a>
-    <a data-nav-section="planos" href="/portal/dashboard#planos"><span class="icon"><i class="bi bi-box-seam-fill" aria-hidden="true"></i></span><span class="label">Planos</span></a>
-    <a data-nav-section="pagamentos" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Pagamento</span></a>
-    <a data-nav-section="perfil" href="/portal/dashboard#perfil"><span class="icon"><i class="bi bi-person-badge-fill" aria-hidden="true"></i></span><span class="label">Perfil</span></a>
+    <a class="active" data-nav-section="dashboard" data-nav-scope="ALL" href="/portal/dashboard#dashboard"><span class="icon"><i class="bi bi-bar-chart-line-fill" aria-hidden="true"></i></span><span class="label">Dashboard</span></a>
+    <a data-nav-section="operacao" data-nav-scope="PROJECT" href="/portal/dashboard#operacao"><span class="icon"><i class="bi bi-diagram-3-fill" aria-hidden="true"></i></span><span class="label">Operação</span></a>
+    <a data-nav-section="chamados" data-nav-scope="ALL" href="/portal/dashboard#chamados"><span class="icon"><i class="bi bi-ticket-detailed-fill" aria-hidden="true"></i></span><span class="label">Chamados</span></a>
+    <a data-nav-section="planos" data-nav-scope="PROJECT" href="/portal/dashboard#planos"><span class="icon"><i class="bi bi-box-seam-fill" aria-hidden="true"></i></span><span class="label">Planos</span></a>
+    <a data-nav-section="pagamentos" data-nav-scope="ALL" href="/portal/dashboard#pagamentos"><span class="icon"><i class="bi bi-credit-card-2-front-fill" aria-hidden="true"></i></span><span class="label">Pagamento</span></a>
+    <a data-nav-section="perfil" data-nav-scope="ALL" href="/portal/dashboard#perfil"><span class="icon"><i class="bi bi-person-badge-fill" aria-hidden="true"></i></span><span class="label">Perfil</span></a>
   </nav>
 
   <div id="briefingModal" class="portal-modal hidden" aria-hidden="true">
@@ -7903,12 +7923,10 @@ $router->post('/api/projects', function(Request $request) {
   }
 
   $domain = normalizeDomainInput((string)$request->input('domain', ''));
-  $projectTag = normalizeProjectTagInput((string)$request->input('project_tag', ''));
+  $projectTagInput = normalizeProjectTagInput((string)$request->input('project_tag', ''));
+  $projectTag = $projectTagInput;
   $projectType = trim((string)$request->input('project_type', 'hospedagem'));
   $planCode = strtolower(trim((string)$request->input('plan_code', '')));
-  if ($domain === '' && $projectTag === '') {
-    $projectTag = generateProjectTag($orgId);
-  }
   if ($domain !== '' && !isValidDomainName($domain)) {
     $domain = '';
   }
@@ -7928,7 +7946,7 @@ $router->post('/api/projects', function(Request $request) {
 
   $idempotencyKey = readIdempotencyKey($request);
   $actionSeed = $idempotencyKey !== '' ? $idempotencyKey : $requestId;
-  $projectIdentifier = $domain !== '' ? $domain : $projectTag;
+  $projectIdentifier = $domain !== '' ? $domain : ($projectTagInput !== '' ? $projectTagInput : 'AUTO');
   $actionId = toUuidFromScalar('PROJECT_CREATE:' . $orgId . ':' . $projectIdentifier . ':' . $actionSeed);
   if ($idempotencyKey !== '') {
     $existingConfirmed = loadConfirmedActionPayload($actionId);
@@ -7971,34 +7989,18 @@ $router->post('/api/projects', function(Request $request) {
       'project_status' => 'PENDING',
       'item_status' => 'PENDING',
     ]);
-    $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
-      'request_id' => $requestId,
-      'user_id' => $userId,
-      'action_seed' => 'project-create:' . $actionSeed,
-      'reason' => 'project_created',
-      'source' => 'PORTAL_API',
-    ]);
-    $dealId = syncProjectDealByOrganization(
-      $orgId,
-      $project,
-      isset($project['plan_code']) ? (string)$project['plan_code'] : $planCode,
-      isset($project['effective_price']) ? (float)$project['effective_price'] : null,
-      'portal_project_created'
-    );
     $summary = projectBillingService()->billingSummaryByOrganization($orgId);
 
     $resultPayload = [
       'project' => $project,
-      'deal_id' => $dealId,
       'billing_summary' => $summary,
-      'recalc' => $recalc,
     ];
     financialAuditNotifier()->recordActionConfirmed([
       'action_id' => $actionId,
       'after_state' => [
         'project_id' => (string)($project['id'] ?? ''),
-        'deal_id' => $dealId,
-        'consolidated_value' => (float)($recalc['total'] ?? 0),
+        'project_status' => (string)($project['status'] ?? 'PENDING'),
+        'consolidated_value' => (float)($summary['total_monthly'] ?? 0),
       ],
       'payload' => $resultPayload,
     ], false);
@@ -8009,7 +8011,6 @@ $router->post('/api/projects', function(Request $request) {
       'user_id' => $userId,
       'domain' => $domain,
       'project_tag' => $projectTag,
-      'deal_id' => $dealId,
       'action_id' => $actionId,
     ], $userId, 'CLIENTE');
 
@@ -8114,6 +8115,95 @@ $router->post('/api/projects/{project_id}/briefing', function(Request $request) 
     'brief_id' => (string)($brief['id'] ?? ''),
     'created_at' => $brief['created_at'] ?? null,
   ], 201);
+});
+
+$router->post('/api/projects/{project_id}/abort', function(Request $request) {
+  requireClientAuth();
+  requireCsrf($request);
+  ensureClientProjectTables();
+  ensureSubscriptionRecurringTables();
+
+  $requestId = requestCorrelationId($request);
+  $orgId = trim((string)($_SESSION['client_user']['organization_id'] ?? ''));
+  $userId = trim((string)($_SESSION['client_user']['id'] ?? ''));
+  $projectId = trim((string)($request->query['project_id'] ?? ''));
+  if ($orgId === '' || $projectId === '') {
+    Response::json(['error' => 'Dados obrigatórios ausentes.', 'request_id' => $requestId], 422);
+    return;
+  }
+
+  $project = loadProjectOwnedByOrganization($projectId, $orgId);
+  if (!$project) {
+    Response::json(['error' => 'Projeto não pertence à organização autenticada.', 'request_id' => $requestId], 403);
+    return;
+  }
+
+  $projectStatus = strtoupper((string)($project['status'] ?? 'PENDING'));
+  if ($projectStatus === 'ACTIVE') {
+    Response::json(['error' => 'Projeto já ativo e não pode ser cancelado por este fluxo.', 'request_id' => $requestId], 409);
+    return;
+  }
+
+  $pendingSession = db()->one("
+    SELECT id::text AS id, payment_id, status
+    FROM client.project_prorata_payment_sessions
+    WHERE project_id = CAST(:pid AS uuid)
+      AND organization_id = CAST(:oid AS uuid)
+    ORDER BY created_at DESC
+    LIMIT 1
+  ", [':pid' => $projectId, ':oid' => $orgId]);
+  if ($pendingSession && strtoupper((string)($pendingSession['status'] ?? '')) === 'CONFIRMED') {
+    Response::json(['error' => 'Cobrança já confirmada para este projeto.', 'request_id' => $requestId], 409);
+    return;
+  }
+
+  try {
+    if ($pendingSession && trim((string)($pendingSession['payment_id'] ?? '')) !== '') {
+      $asaas = new AsaasClient();
+      $asaas->cancelPayment(trim((string)$pendingSession['payment_id']));
+      markProjectProrataSessionCanceled((string)$pendingSession['id'], [
+        'reason' => 'USER_ABORTED_PROJECT_FLOW',
+        'request_id' => $requestId,
+      ]);
+    }
+  } catch (Throwable) {
+    // Se não for possível cancelar no provedor, ainda removemos o registro local pendente.
+    if ($pendingSession && !empty($pendingSession['id'])) {
+      markProjectProrataSessionCanceled((string)$pendingSession['id'], [
+        'reason' => 'USER_ABORTED_PROJECT_FLOW_LOCAL_ONLY',
+        'request_id' => $requestId,
+      ]);
+    }
+  }
+
+  db()->exec("
+    DELETE FROM client.project_briefs
+    WHERE organization_id = CAST(:oid AS uuid)
+      AND project_id = CAST(:pid AS uuid)
+  ", [':oid' => $orgId, ':pid' => $projectId]);
+  db()->exec("
+    DELETE FROM client.subscription_items
+    WHERE organization_id = CAST(:oid AS uuid)
+      AND project_id = CAST(:pid AS uuid)
+  ", [':oid' => $orgId, ':pid' => $projectId]);
+  db()->exec("
+    DELETE FROM client.projects
+    WHERE organization_id = CAST(:oid AS uuid)
+      AND id = CAST(:pid AS uuid)
+      AND upper(coalesce(status, 'PENDING')) <> 'ACTIVE'
+  ", [':oid' => $orgId, ':pid' => $projectId]);
+
+  logPortalAudit('PROJECT_ABORTED', 'PROJECT', $projectId, [
+    'request_id' => $requestId,
+    'organization_id' => $orgId,
+    'user_id' => $userId,
+  ], $userId, 'CLIENTE');
+
+  Response::json([
+    'ok' => true,
+    'request_id' => $requestId,
+    'project_id' => $projectId,
+  ]);
 });
 
 $router->get('/api/billing/summary', function(Request $request) {
@@ -8710,7 +8800,9 @@ $router->post('/api/billing/items/{project_id}/prorata/confirm', function(Reques
       if ($paymentId !== '') {
         $pixQrResult = asaasGetPixQrCodeResilient($asaas, $paymentId, 12);
       }
-      if (($paymentData['status'] ?? '') === 'RECEIVED' || ($paymentData['status'] ?? '') === 'CONFIRMED') {
+      $paymentStatusNormalized = strtoupper((string)($paymentData['status'] ?? 'PENDING'));
+      $isConfirmedNow = in_array($paymentStatusNormalized, ['RECEIVED', 'CONFIRMED'], true);
+      if ($isConfirmedNow) {
         if ($prorataSessionId) {
           markProjectProrataSessionConfirmed($prorataSessionId, [
             'confirmed_by' => 'ASAAS_SYNC',
@@ -8727,29 +8819,36 @@ $router->post('/api/billing/items/{project_id}/prorata/confirm', function(Reques
         ", [':pid' => $projectId, ':oid' => $orgId]);
       }
 
-      $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
-        'request_id' => $requestId,
-        'user_id' => $userId,
-        'action_seed' => 'project-prorata-confirm:' . $actionSeed,
-        'reason' => 'project_prorata_confirmed',
-        'source' => 'PORTAL_API',
-      ]);
+      $recalc = null;
+      $dealId = null;
+      if ($isConfirmedNow) {
+        $recalc = projectBillingService()->recalcConsolidatedSubscriptionValue($orgId, [
+          'request_id' => $requestId,
+          'user_id' => $userId,
+          'action_seed' => 'project-prorata-confirm:' . $actionSeed,
+          'reason' => 'project_prorata_confirmed',
+          'source' => 'PORTAL_API',
+        ]);
+      }
       $summary = projectBillingService()->billingSummaryByOrganization($orgId);
-      $updatedProject = loadProjectOwnedByOrganization($projectId, $orgId) ?? $project;
-      $dealId = syncProjectDealByOrganization(
-        $orgId,
-        $updatedProject,
-        $targetPlanCode,
-        $targetValue,
-        'portal_project_prorata_confirmed'
-      );
+      if ($isConfirmedNow) {
+        $updatedProject = loadProjectOwnedByOrganization($projectId, $orgId) ?? $project;
+        $dealId = syncProjectDealByOrganization(
+          $orgId,
+          $updatedProject,
+          $targetPlanCode,
+          $targetValue,
+          'portal_project_prorata_confirmed'
+        );
+      }
 
       $resultPayload = [
         'project_id' => $projectId,
         'prorata_amount' => $prorataAmount,
+        'activation_pending' => !$isConfirmedNow,
         'payment' => [
           'id' => (string)($paymentData['id'] ?? ''),
-          'status' => (string)($paymentData['status'] ?? 'PENDING'),
+          'status' => $paymentStatusNormalized,
           'invoice_url' => $paymentData['invoiceUrl'] ?? null,
           'pix_qrcode' => isset($pixQrResult['data']['encodedImage']) ? (string)$pixQrResult['data']['encodedImage'] : null,
           'pix_payload' => isset($pixQrResult['data']['payload']) ? (string)$pixQrResult['data']['payload'] : null,
@@ -8764,6 +8863,8 @@ $router->post('/api/billing/items/{project_id}/prorata/confirm', function(Reques
           'project_id' => $projectId,
           'target_plan_code' => $targetPlanCode,
           'prorata_amount' => $prorataAmount,
+          'payment_status' => $paymentStatusNormalized,
+          'activation_pending' => !$isConfirmedNow,
         ],
         'payload' => $resultPayload,
       ], false);
