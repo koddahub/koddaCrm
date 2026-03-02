@@ -62,6 +62,7 @@ model Organization {
   subscriptions  Subscription[]
   projects       Project[]
   subscriptionItems SubscriptionItem[]
+  projectOperationStates ProjectOperationState[]
   signupSessions SignupSession[]
   proposals      ProposalAvulsa[]
   cards          PipelineCard[]
@@ -126,10 +127,31 @@ model Project {
 
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   subscriptionItem SubscriptionItem?
+  operationState ProjectOperationState?
 
   @@index([organizationId, status, createdAt])
   @@map("projects")
   @@schema("client")
+}
+
+model ProjectOperationState {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  projectId      String   @unique @map("project_id") @db.Uuid
+  dealId         String?  @map("deal_id") @db.Uuid
+  stage          String   @default("briefing_pendente") @db.VarChar(80)
+  ownerUserId    String?  @map("owner_user_id") @db.Uuid
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, updatedAt])
+  @@map("project_operation_state")
+  @@schema("crm")
 }
 
 model SubscriptionItem {
@@ -359,6 +381,7 @@ model Deal {
   publishChecks     DealPublishCheck[]
   financialEntries  FinancialEntry[]
   collections       CollectionAction[]
+  projectOperationStates ProjectOperationState[]
 
   @@index([pipelineId, stageId, positionIndex])
   @@index([lifecycleStatus, isClosed])
