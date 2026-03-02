@@ -60,6 +60,8 @@ model Organization {
   updatedAt      DateTime       @default(now()) @map("updated_at")
 
   subscriptions  Subscription[]
+  projects       Project[]
+  subscriptionItems SubscriptionItem[]
   signupSessions SignupSession[]
   proposals      ProposalAvulsa[]
   cards          PipelineCard[]
@@ -81,6 +83,7 @@ model Plan {
   createdAt    DateTime       @default(now()) @map("created_at")
 
   subscriptions Subscription[]
+  subscriptionItems SubscriptionItem[]
 
   @@map("plans")
   @@schema("client")
@@ -94,6 +97,11 @@ model Subscription {
   asaasSubscriptionId String?       @map("asaas_subscription_id") @db.VarChar(80)
   status              String        @default("PENDING") @db.VarChar(40)
   paymentMethod       String        @map("payment_method") @db.VarChar(20)
+  priceOverride       Decimal?      @map("price_override") @db.Decimal(10, 2)
+  consolidatedValue   Decimal?      @map("consolidated_value") @db.Decimal(10, 2)
+  lastRecalcAt        DateTime?     @map("last_recalc_at")
+  billingProfileUpdatedAt DateTime? @map("billing_profile_updated_at")
+  lastAsaasEventAt    DateTime?     @map("last_asaas_event_at")
   nextDueDate         DateTime?     @map("next_due_date") @db.Date
   graceUntil          DateTime?     @map("grace_until") @db.Date
   createdAt           DateTime      @default(now()) @map("created_at")
@@ -104,6 +112,42 @@ model Subscription {
   payments     Payment[]
 
   @@map("subscriptions")
+  @@schema("client")
+}
+
+model Project {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  domain         String?  @db.VarChar(190)
+  projectType    String   @map("project_type") @db.VarChar(40)
+  status         String   @default("PENDING") @db.VarChar(30)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionItem SubscriptionItem?
+
+  @@index([organizationId, status, createdAt])
+  @@map("projects")
+  @@schema("client")
+}
+
+model SubscriptionItem {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  projectId      String   @unique @map("project_id") @db.Uuid
+  planId         String   @map("plan_id") @db.Uuid
+  status         String   @default("PENDING") @db.VarChar(30)
+  priceOverride  Decimal? @map("price_override") @db.Decimal(10, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@index([organizationId, status, createdAt])
+  @@map("subscription_items")
   @@schema("client")
 }
 
