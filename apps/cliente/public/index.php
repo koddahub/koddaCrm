@@ -5884,7 +5884,7 @@ function syncProjectDealByOrganization(
     UPDATE crm.deal
     SET
       plan_code = coalesce(:plan_code, plan_code),
-      value_cents = CASE WHEN :value_cents IS NULL THEN value_cents ELSE :value_cents END,
+      value_cents = coalesce(CAST(:value_cents AS integer), value_cents),
       metadata = coalesce(metadata, '{}'::jsonb)
         || jsonb_build_object('last_project_sync', CAST(:project_meta AS jsonb)),
       updated_at = now()
