@@ -1244,15 +1244,19 @@
     const openProjectCreateBtnDashboard = $('#openProjectCreateBtnDashboard');
     const projectCreateModal = $('#projectCreateModal');
     const projectCreateForm = $('#projectCreateForm');
-    const projectCreateDomain = $('#projectCreateDomain');
     const projectCreateType = $('#projectCreateType');
     const projectCreatePlanCode = $('#projectCreatePlanCode');
+    const projectCreateTag = $('#projectCreateTag');
     const projectCreateNotice = $('#projectCreateNotice');
     const projectCreateSubmitBtn = $('#projectCreateSubmitBtn');
     const projectCreateCancelBtn = $('#projectCreateCancelBtn');
     const projectCreateCloseBtn = $('#projectCreateCloseBtn');
+    const briefProjectIdInput = $('#briefProjectId');
+    const briefSourceInput = $('#briefSource');
+    const briefPlanCodeInput = $('#briefPlanCode');
     let projectContextSyncInFlight = false;
     let projectCreateSubmitting = false;
+    let projectCreateFlowPayload = null;
     let currentProjectSelection = String(projectContextSelect?.value || document.body?.dataset?.currentProjectId || '').trim();
 
     const ticketForm = $('#ticketForm');
@@ -1523,15 +1527,15 @@
       if (projectCreateForm) {
         projectCreateForm.reset();
       }
-      projectCreateDomain?.classList.remove('is-invalid');
       projectCreatePlanCode?.classList.remove('is-invalid');
+      projectCreateTag?.classList.remove('is-invalid');
       setProjectCreateNotice('', '');
     };
     const openProjectCreateModal = () => {
       if (!projectCreateModal) return;
       resetProjectCreateModalState();
       openPortalModal(projectCreateModal);
-      projectCreateDomain?.focus();
+      projectCreatePlanCode?.focus();
     };
     const closeProjectCreateModal = () => {
       if (projectCreateSubmitting) return;
@@ -1553,21 +1557,12 @@
     };
     const submitProjectCreate = async () => {
       if (!projectCreateForm || projectCreateSubmitting) return;
-      const domain = sanitizeDomainInput(projectCreateDomain?.value || '');
       const projectType = String(projectCreateType?.value || 'hospedagem').trim().toLowerCase();
       const planCode = String(projectCreatePlanCode?.value || '').trim().toLowerCase();
-      if (projectCreateDomain) {
-        projectCreateDomain.value = domain;
-        projectCreateDomain.classList.remove('is-invalid');
-      }
+      const projectTag = String(projectCreateTag?.value || '').trim().toUpperCase();
       projectCreatePlanCode?.classList.remove('is-invalid');
+      projectCreateTag?.classList.remove('is-invalid');
       setProjectCreateNotice('', '');
-      if (!domain || !isDomainValid(domain)) {
-        projectCreateDomain?.classList.add('is-invalid');
-        setProjectCreateNotice('danger', 'Informe um domínio válido no formato exemplo.com.br.');
-        projectCreateDomain?.focus();
-        return;
-      }
       if (!planCode) {
         projectCreatePlanCode?.classList.add('is-invalid');
         setProjectCreateNotice('danger', 'Selecione um plano para o novo projeto.');
@@ -1576,7 +1571,6 @@
       }
 
       const idempotencyKey = `project-create-${generateRequestId()}`;
-      let shouldReload = false;
       setProjectCreateSubmitting(true);
       try {
         const response = await apiFetch('/api/projects', {
@@ -1586,9 +1580,9 @@
             'Idempotency-Key': idempotencyKey,
           },
           body: JSON.stringify({
-            domain,
             project_type: projectType,
             plan_code: planCode,
+            project_tag: projectTag || null,
           }),
         });
         if (response.redirected || String(response.url || '').includes('/login')) {
@@ -1600,20 +1594,29 @@
         }
         if (!response.ok || !data?.ok) {
           const details = data?.details && typeof data.details === 'object' ? data.details : {};
-          if (details?.domain) projectCreateDomain?.classList.add('is-invalid');
           if (details?.plan_code) projectCreatePlanCode?.classList.add('is-invalid');
+          if (details?.project_tag) projectCreateTag?.classList.add('is-invalid');
           throw new Error(data?.error || 'Não foi possível criar o projeto agora.');
         }
 
         const resultProject = data?.result?.project && typeof data.result.project === 'object' ? data.result.project : null;
-        const createdDomain = String(resultProject?.domain || domain);
+        const createdLabel = String(resultProject?.domain || resultProject?.project_tag || resultProject?.label || projectTag || '');
         const successMsg = data?.idempotent
-          ? `Solicitação já registrada para ${createdDomain}.`
-          : `Projeto ${createdDomain} solicitado com sucesso.`;
+          ? `Solicitação já registrada para ${createdLabel || 'este projeto'}.`
+          : `Projeto ${createdLabel || 'novo'} solicitado com sucesso.`;
         setProjectCreateNotice('success', successMsg);
         setPortalNotice(successMsg, 'ok');
         showToast('success', 'Projeto solicitado', successMsg);
-        shouldReload = true;
+        const createdProjectId = String(resultProject?.id || '');
+        projectCreateFlowPayload = {
+          projectId: createdProjectId,
+          planCode,
+        };
+        if (briefProjectIdInput) briefProjectIdInput.value = createdProjectId;
+        if (briefSourceInput) briefSourceInput.value = 'project_create';
+        if (briefPlanCodeInput) briefPlanCodeInput.value = planCode;
+        closePortalModal(projectCreateModal);
+        openModal();
       } catch (err) {
         const message = err?.message || 'Falha ao criar projeto.';
         setProjectCreateNotice('danger', message);
@@ -1621,10 +1624,6 @@
         showToast('danger', 'Novo projeto', message);
       } finally {
         setProjectCreateSubmitting(false);
-        if (shouldReload) {
-          closePortalModal(projectCreateModal);
-          reloadDashboardWithCurrentSection(260);
-        }
       }
     };
 
@@ -1669,11 +1668,11 @@
       }
     });
 
-    projectCreateDomain?.addEventListener('blur', () => {
-      if (!projectCreateDomain) return;
-      projectCreateDomain.value = sanitizeDomainInput(projectCreateDomain.value);
+    projectCreateTag?.addEventListener('input', () => {
+      if (!projectCreateTag) return;
+      projectCreateTag.classList.remove('is-invalid');
+      projectCreateTag.value = projectCreateTag.value.toUpperCase();
     });
-    projectCreateDomain?.addEventListener('input', () => projectCreateDomain.classList.remove('is-invalid'));
     projectCreatePlanCode?.addEventListener('change', () => projectCreatePlanCode.classList.remove('is-invalid'));
     projectCreateForm?.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -3559,6 +3558,12 @@
       });
     };
     const openModal = () => {
+      if (briefProjectIdInput && !String(briefProjectIdInput.value || '').trim()) {
+        briefProjectIdInput.value = String(projectContextSelect?.value || document.body?.dataset?.currentProjectId || '').trim();
+      }
+      if (briefSourceInput && !String(briefSourceInput.value || '').trim()) {
+        briefSourceInput.value = 'dashboard';
+      }
       modal?.classList.remove('hidden');
       if (modal) modal.setAttribute('aria-hidden', 'false');
       document.body.classList.add('briefing-open');
@@ -3569,6 +3574,7 @@
       if (modal) modal.setAttribute('aria-hidden', 'true');
       document.body.classList.remove('briefing-open');
       clearBriefNotice();
+      projectCreateFlowPayload = null;
     };
     $$('[data-modal-close]').forEach((el) => el.addEventListener('click', closeModal));
     $('.sidebar-open-briefing')?.addEventListener('click', openModal);
@@ -3771,12 +3777,16 @@
       e.preventDefault();
       if (!validateBriefStep(briefStep)) return;
       const fd = new FormData(briefForm);
+      const briefProjectId = String(fd.get('project_id') || '').trim();
+      const briefSource = String(fd.get('brief_source') || 'dashboard').trim().toLowerCase();
+      const briefPlanCode = String(fd.get('brief_plan_code') || '').trim().toLowerCase();
       const integrations = collectCheckedValues('integrationsNeeded');
       const pages = collectCheckedValues('pagesNeeded');
       fd.set('integrations', integrations.join(', '));
       fd.set('services', [fd.get('services') || '', pages.length ? `Páginas: ${pages.join(', ')}` : ''].filter(Boolean).join('\n'));
       fd.set('extra_requirements', [fd.get('extra_requirements') || '', fd.get('secondary_goals') || '', fd.get('has_differentiation') || ''].filter(Boolean).join('\n'));
-      const r = await apiFetch('/api/onboarding/site-brief', { method: 'POST', body: fd });
+      const briefEndpoint = briefProjectId ? `/api/projects/${encodeURIComponent(briefProjectId)}/briefing` : '/api/onboarding/site-brief';
+      const r = await apiFetch(briefEndpoint, { method: 'POST', body: fd });
       const d = await r.json();
       const out = $('#briefPromptResult');
       if (!r.ok) {
@@ -3794,8 +3804,64 @@
         out.textContent = 'Briefing enviado com sucesso! Nossa equipe vai analisar e responder em até 24h.';
       }
       setBriefNotice('Briefing enviado com sucesso.', 'ok');
-      setPortalNotice('Briefing concluído com sucesso.', 'ok');
+      if (briefSource === 'project_create' && briefProjectId) {
+        try {
+          const prepareRes = await apiFetch(`/api/billing/items/${encodeURIComponent(briefProjectId)}/prorata/prepare`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan_code: briefPlanCode || null }),
+          });
+          const prepareData = await prepareRes.json();
+          if (!prepareRes.ok || !prepareData?.ok) {
+            throw new Error(prepareData?.error || 'Não foi possível calcular o pró-rata do projeto.');
+          }
+          const amount = Number(prepareData?.pricing?.prorata_amount || 0);
+          const approveMsg = amount > 0
+            ? `Para ativar este novo projeto agora, confirme a cobrança pró-rata de ${formatMoney(amount)} até o próximo vencimento.`
+            : 'Não há cobrança imediata para este projeto. Deseja finalizar a ativação agora?';
+          const approved = window.confirm(approveMsg);
+          if (!approved) {
+            setPortalNotice('Projeto criado com briefing enviado. Aguardando confirmação da cobrança para ativação.', 'ok');
+            return;
+          }
+          const confirmRes = await apiFetch(`/api/billing/items/${encodeURIComponent(briefProjectId)}/prorata/confirm`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Idempotency-Key': `project-prorata-confirm-${generateRequestId()}`,
+            },
+            body: JSON.stringify({
+              plan_code: briefPlanCode || null,
+              payment_method: 'PIX',
+            }),
+          });
+          const confirmData = await confirmRes.json();
+          if (!confirmRes.ok || !confirmData?.ok) {
+            throw new Error(confirmData?.error || 'Não foi possível confirmar a cobrança pró-rata.');
+          }
+          const paymentUrl = String(confirmData?.result?.payment?.invoice_url || '').trim();
+          const pixPayload = String(confirmData?.result?.payment?.pix_payload || '').trim();
+          if (paymentUrl) {
+            window.open(paymentUrl, '_blank', 'noopener,noreferrer');
+          } else if (pixPayload) {
+            navigator.clipboard.writeText(pixPayload).catch(() => {});
+          }
+          setPortalNotice('Projeto criado. Cobrança pró-rata iniciada com sucesso.', 'ok');
+          showToast('success', 'Novo projeto', 'Briefing enviado e cobrança pró-rata iniciada.');
+        } catch (err) {
+          const msg = err?.message || 'Falha ao iniciar cobrança pró-rata.';
+          setBriefNotice(msg, 'err');
+          setPortalNotice(msg, 'err');
+          return;
+        }
+      } else {
+        setPortalNotice('Briefing concluído com sucesso.', 'ok');
+      }
       localStorage.removeItem(draftKey);
+      projectCreateFlowPayload = null;
+      if (briefProjectIdInput) briefProjectIdInput.value = String(projectContextSelect?.value || '').trim();
+      if (briefSourceInput) briefSourceInput.value = 'dashboard';
+      if (briefPlanCodeInput) briefPlanCodeInput.value = '';
       setTimeout(() => location.reload(), 1000);
     });
 

@@ -2777,7 +2777,7 @@ function renderDashboard(?string $notice = null): string {
               $projectOptionId = (string)($projectOption['id'] ?? '');
               $projectOptionStatus = strtoupper((string)($projectOption['status'] ?? 'PENDING'));
               $projectOptionDomain = trim((string)($projectOption['domain'] ?? ''));
-              $projectOptionLabel = $projectOptionDomain !== '' ? $projectOptionDomain : ('Projeto ' . substr($projectOptionId, 0, 8));
+              $projectOptionLabel = projectDisplayLabel($projectOptionDomain);
             ?>
             <option value="<?= h($projectOptionId) ?>" <?= ($currentProjectId !== null && $currentProjectId === $projectOptionId) ? 'selected' : '' ?>>
               <?= h($projectOptionLabel) ?> (<?= h($projectOptionStatus) ?>)
@@ -2900,7 +2900,7 @@ function renderDashboard(?string $notice = null): string {
                     <?php
                       $projectIdCell = (string)($projectRow['id'] ?? '');
                       $projectDomainCell = trim((string)($projectRow['domain'] ?? ''));
-                      $projectLabelCell = $projectDomainCell !== '' ? $projectDomainCell : ('Projeto ' . substr($projectIdCell, 0, 8));
+                      $projectLabelCell = projectDisplayLabel($projectDomainCell);
                       $projectStatusCell = strtoupper((string)($projectRow['status'] ?? 'PENDING'));
                       $itemStatusCell = strtoupper((string)($projectRow['subscription_item_status'] ?? 'PENDING'));
                       $projectBadgeClass = match ($projectStatusCell) {
@@ -4001,12 +4001,8 @@ function renderDashboard(?string $notice = null): string {
                 <i class="bi bi-x-lg" aria-hidden="true"></i>
               </button>
             </header>
-            <p class="note mb-2">Solicite um novo projeto dentro da sua organização. Isso cria item de assinatura interno por projeto e registro no CRM.</p>
+            <p class="note mb-2">Selecione o plano e o tipo. Em seguida você preencherá o briefing e aprovará a cobrança pró-rata até o próximo vencimento.</p>
             <form id="projectCreateForm" class="row g-3">
-              <div class="col-12">
-                <label class="form-label" for="projectCreateDomain">Domínio *</label>
-                <input class="form-control" id="projectCreateDomain" name="domain" required placeholder="exemplo.com.br">
-              </div>
               <div class="col-12 col-md-6">
                 <label class="form-label" for="projectCreateType">Tipo de projeto *</label>
                 <select class="form-select" id="projectCreateType" name="project_type" required>
@@ -4033,12 +4029,17 @@ function renderDashboard(?string $notice = null): string {
                   <small class="text-body-secondary d-block mt-1">Ative um plano no cadastro interno para liberar novas solicitações.</small>
                 <?php endif; ?>
               </div>
+              <div class="col-12">
+                <label class="form-label" for="projectCreateTag">Identificador (opcional)</label>
+                <input class="form-control" id="projectCreateTag" name="project_tag" placeholder="PRJ-AB12">
+                <small class="text-body-secondary d-block mt-1">Sem domínio? Deixe em branco e geramos automaticamente uma tag `PRJ-XXXX`.</small>
+              </div>
             </form>
             <div class="alert d-none mt-3" id="projectCreateNotice" role="alert"></div>
             <div class="operation-actions mt-3">
               <button type="button" class="btn btn-ghost" id="projectCreateCancelBtn">Cancelar</button>
               <button type="button" class="btn btn-primary" id="projectCreateSubmitBtn" <?= $projectCreatePlansAvailable ? '' : 'disabled' ?>>
-                <span class="btn-label">Solicitar projeto</span>
+                <span class="btn-label">Continuar para briefing</span>
                 <span class="spinner-border spinner-border-sm ms-2 d-none" role="status" aria-hidden="true"></span>
               </button>
             </div>
@@ -4146,6 +4147,9 @@ function renderDashboard(?string $notice = null): string {
       <p id="briefProgressHint" class="note brief-hint">Tempo médio: 5-8 minutos</p>
       <div id="briefInlineNotice" class="alert hidden" aria-live="polite"></div>
       <form id="briefModalForm" enctype="multipart/form-data">
+        <input type="hidden" name="project_id" id="briefProjectId" value="<?= h((string)($currentProjectId ?? '')) ?>">
+        <input type="hidden" name="brief_source" id="briefSource" value="dashboard">
+        <input type="hidden" name="brief_plan_code" id="briefPlanCode" value="">
         <div class="brief-step" data-brief-step="0">
           <section class="brief-welcome">
             <h4><i class="bi bi-stars" aria-hidden="true"></i> Que bom ter você aqui!</h4>
