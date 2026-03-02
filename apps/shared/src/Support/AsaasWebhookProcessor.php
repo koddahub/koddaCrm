@@ -224,6 +224,71 @@ final class AsaasWebhookProcessor
                 // tabela opcional em rollout incremental
             }
 
+            try {
+                $session = $this->db->one(
+                    "SELECT
+                       id::text AS id,
+                       organization_id::text AS organization_id,
+                       project_id::text AS project_id,
+                       status
+                     FROM client.project_prorata_payment_sessions
+                     WHERE payment_id = :payment_id
+                     LIMIT 1",
+                    [':payment_id' => $paymentIdSafe]
+                );
+                if ($session) {
+                    $this->db->exec(
+                        "UPDATE client.project_prorata_payment_sessions
+                         SET
+                           status = CASE WHEN status = 'PENDING' THEN 'CONFIRMED' ELSE status END,
+                           confirmed_at = CASE WHEN status = 'PENDING' THEN now() ELSE confirmed_at END,
+                           updated_at = now(),
+                           metadata = CASE
+                             WHEN metadata IS NULL THEN CAST(:meta AS jsonb)
+                             ELSE metadata || CAST(:meta AS jsonb)
+                           END
+                         WHERE id = CAST(:id AS uuid)",
+                        [
+                            ':id' => (string)$session['id'],
+                            ':meta' => json_encode([
+                                'confirmed_by' => 'ASAAS_WEBHOOK',
+                                'event_type' => $eventType,
+                                'event_id' => $eventId,
+                            ], JSON_UNESCAPED_UNICODE),
+                        ]
+                    );
+                    $this->db->exec(
+                        "UPDATE client.subscription_items
+                         SET status='ACTIVE', updated_at=now()
+                         WHERE project_id = CAST(:project_id AS uuid)
+                           AND organization_id = CAST(:org_id AS uuid)",
+                        [
+                            ':project_id' => (string)$session['project_id'],
+                            ':org_id' => (string)$session['organization_id'],
+                        ]
+                    );
+                    $this->db->exec(
+                        "UPDATE client.projects
+                         SET status='ACTIVE', updated_at=now()
+                         WHERE id = CAST(:project_id AS uuid)
+                           AND organization_id = CAST(:org_id AS uuid)",
+                        [
+                            ':project_id' => (string)$session['project_id'],
+                            ':org_id' => (string)$session['organization_id'],
+                        ]
+                    );
+
+                    $projectBilling = new ClientProjectBillingService($this->db, $this->asaas, $this->audit);
+                    $projectBilling->recalcConsolidatedSubscriptionValue((string)$session['organization_id'], [
+                        'request_id' => $requestId,
+                        'reason' => 'project_prorata_webhook_confirmed',
+                        'source' => 'ASAAS_WEBHOOK',
+                    ]);
+                }
+            } catch (Throwable) {
+                // tabelas opcionais durante rollout
+            }
+
             $pendingRetry = $this->db->one(
                 "SELECT action_id::text AS action_id
                  FROM audit.financial_actions
