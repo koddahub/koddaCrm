@@ -1,13 +1,18 @@
 # Dependências
 node_modules/
-npm-debug.log
-yarn-error.log
+**/node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 # Build outputs
 dist/
 build/
-.next/
 out/
+.next/
+**/.next/
+coverage/
+*.tsbuildinfo
 
 # Arquivos grandes e temporários
 *.log
@@ -17,7 +22,8 @@ out/
 
 # Arquivos locais
 .env
-.env.example
+.env.local
+.env.*.local
 storage/postgres/
 
 # Código SQL/migrations locais
