@@ -31,6 +31,12 @@ function normalizeBoolean(value: unknown, fallback = true) {
   return Boolean(value);
 }
 
+function normalizeEmail(value: unknown) {
+  const email = String(value || '').trim().toLowerCase();
+  if (!email) return '';
+  return /^[^\s@]+@[^\s@]+$/.test(email) ? email : '';
+}
+
 function requireUuid(id: string, field: string) {
   const value = String(id || '').trim();
   if (!value) throw new Error(`${field} é obrigatório`);
@@ -119,6 +125,23 @@ export async function ensureSaasInfra() {
   `);
 
   await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS saas.email_account (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      product_id UUID NOT NULL REFERENCES saas.product(id) ON DELETE CASCADE,
+      site_id UUID REFERENCES saas.site(id) ON DELETE SET NULL,
+      email_label VARCHAR(160) NOT NULL,
+      from_name VARCHAR(190) NOT NULL,
+      from_email VARCHAR(190) NOT NULL,
+      reply_to VARCHAR(190),
+      provider VARCHAR(60) NOT NULL DEFAULT 'smtp',
+      is_default BOOLEAN NOT NULL DEFAULT false,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_saas_template_scope_key_version
       ON saas.email_template (product_id, COALESCE(site_id, '${ZERO_UUID}'::uuid), template_key, version)
   `);
@@ -160,6 +183,22 @@ export async function ensureSaasInfra() {
     CREATE INDEX IF NOT EXISTS idx_saas_email_log_event_created
       ON saas.email_log(event_key, created_at DESC)
   `);
+  await prisma.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_saas_email_account_scope_label
+      ON saas.email_account (product_id, COALESCE(site_id, '${ZERO_UUID}'::uuid), email_label)
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS idx_saas_email_account_product
+      ON saas.email_account(product_id)
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS idx_saas_email_account_site
+      ON saas.email_account(site_id)
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS idx_saas_email_account_active
+      ON saas.email_account(is_active, updated_at DESC)
+  `);
 
   await seedSaasDefaults();
 
@@ -168,10 +207,11 @@ export async function ensureSaasInfra() {
 
 async function seedSaasDefaults() {
   const products = [
-    { name: 'Praja', slug: 'praja', category: 'saas', status: 'active', description: 'Produto SaaS de agendamento.' },
-    { name: 'Astros', slug: 'astros', category: 'saas', status: 'active', description: 'Produto SaaS Astros.' },
-    { name: 'KoddaHub', slug: 'koddahub', category: 'site', status: 'active', description: 'Site institucional KoddaHub.' },
-    { name: 'Tempero da Ursa', slug: 'tempero-da-ursa', category: 'site', status: 'active', description: 'Site Tempero da Ursa.' },
+    { name: 'Astros', slug: 'astros', category: 'blog', status: 'active', description: 'Produto de conteúdo Astros.' },
+    { name: 'KoddaHub', slug: 'koddahub', category: 'site_institucional', status: 'active', description: 'Site institucional KoddaHub.' },
+    { name: 'Praja', slug: 'praja', category: 'agendamento', status: 'active', description: 'Sistema de agendamento Praja.' },
+    { name: 'Leads', slug: 'leads', category: 'leads', status: 'active', description: 'Produto de gestão de leads.' },
+    { name: 'Tempero da Ursa', slug: 'tempero-da-ursa', category: 'case', status: 'active', description: 'Case Tempero da Ursa.' },
   ] as const;
 
   for (const product of products) {
@@ -189,9 +229,11 @@ async function seedSaasDefaults() {
   }
 
   const sites = [
-    { name: 'Praja', domain: 'praja.koddahub.com.br', slug: 'praja' },
     { name: 'Astros', domain: 'astros.koddahub.com.br', slug: 'astros' },
     { name: 'KoddaHub', domain: 'koddahub.com.br', slug: 'koddahub' },
+    { name: 'Praja', domain: 'prajakoddahub.com', slug: 'praja' },
+    { name: 'Praja', domain: 'praja.koddahub.com.br', slug: 'praja' },
+    { name: 'Leads', domain: 'leads.koddahub.com.br', slug: 'leads' },
     { name: 'Tempero da Ursa', domain: 'temperodaursa.com.br', slug: 'tempero-da-ursa' },
   ] as const;
 
@@ -263,82 +305,82 @@ async function seedSaasDefaults() {
     },
   ] as const;
 
-  const praja = await prisma.$queryRaw<Array<{ product_id: string; site_id: string }>>`
+  const prajaSites = await prisma.$queryRaw<Array<{ product_id: string; site_id: string }>>`
     SELECT p.id::text AS product_id, s.id::text AS site_id
     FROM saas.product p
     JOIN saas.site s ON s.product_id = p.id
     WHERE p.slug = 'praja'
-      AND s.domain = 'praja.koddahub.com.br'
-    LIMIT 1
+      AND s.domain IN ('prajakoddahub.com', 'praja.koddahub.com.br')
   `;
 
-  const prajaProductId = praja[0]?.product_id;
-  const prajaSiteId = praja[0]?.site_id;
-  if (!prajaProductId || !prajaSiteId) return;
-
-  for (const template of templateDefaults) {
-    const existing = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id::text
-      FROM saas.email_template
-      WHERE product_id = ${prajaProductId}::uuid
-        AND site_id = ${prajaSiteId}::uuid
-        AND template_key = ${template.templateKey}
-        AND version = 1
-      LIMIT 1
-    `;
-
-    if (existing[0]?.id) {
-      await prisma.$executeRaw`
-        UPDATE saas.email_template
-        SET subject = ${template.subject}, html = ${template.html}, text = ${template.text}, is_active = true, updated_at = now()
-        WHERE id = ${existing[0].id}::uuid
-      `;
-    } else {
-      await prisma.$executeRaw`
-        INSERT INTO saas.email_template (product_id, site_id, template_key, subject, html, text, is_active, version, created_at, updated_at)
-        VALUES (${prajaProductId}::uuid, ${prajaSiteId}::uuid, ${template.templateKey}, ${template.subject}, ${template.html}, ${template.text}, true, 1, now(), now())
-      `;
-    }
-  }
+  const prajaProductId = prajaSites[0]?.product_id;
+  if (!prajaProductId || prajaSites.length === 0) return;
 
   const bindings = [
     { eventKey: 'user.created', templateKey: 'welcome' },
     { eventKey: 'auth.password_reset_requested', templateKey: 'reset_password' },
   ] as const;
 
-  for (const binding of bindings) {
-    const templateRows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id::text
-      FROM saas.email_template
-      WHERE product_id = ${prajaProductId}::uuid
-        AND site_id = ${prajaSiteId}::uuid
-        AND template_key = ${binding.templateKey}
-        AND version = 1
-      LIMIT 1
-    `;
-    const templateId = templateRows[0]?.id;
-    if (!templateId) continue;
-
-    const existingBinding = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id::text
-      FROM saas.event_binding
-      WHERE product_id = ${prajaProductId}::uuid
-        AND site_id = ${prajaSiteId}::uuid
-        AND event_key = ${binding.eventKey}
-      LIMIT 1
-    `;
-
-    if (existingBinding[0]?.id) {
-      await prisma.$executeRaw`
-        UPDATE saas.event_binding
-        SET template_id = ${templateId}::uuid, enabled = true, updated_at = now()
-        WHERE id = ${existingBinding[0].id}::uuid
+  for (const prajaSite of prajaSites) {
+    for (const template of templateDefaults) {
+      const existing = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM saas.email_template
+        WHERE product_id = ${prajaProductId}::uuid
+          AND site_id = ${prajaSite.site_id}::uuid
+          AND template_key = ${template.templateKey}
+          AND version = 1
+        LIMIT 1
       `;
-    } else {
-      await prisma.$executeRaw`
-        INSERT INTO saas.event_binding (product_id, site_id, event_key, template_id, enabled, created_at, updated_at)
-        VALUES (${prajaProductId}::uuid, ${prajaSiteId}::uuid, ${binding.eventKey}, ${templateId}::uuid, true, now(), now())
+
+      if (existing[0]?.id) {
+        await prisma.$executeRaw`
+          UPDATE saas.email_template
+          SET subject = ${template.subject}, html = ${template.html}, text = ${template.text}, is_active = true, updated_at = now()
+          WHERE id = ${existing[0].id}::uuid
+        `;
+      } else {
+        await prisma.$executeRaw`
+          INSERT INTO saas.email_template (product_id, site_id, template_key, subject, html, text, is_active, version, created_at, updated_at)
+          VALUES (${prajaProductId}::uuid, ${prajaSite.site_id}::uuid, ${template.templateKey}, ${template.subject}, ${template.html}, ${template.text}, true, 1, now(), now())
+        `;
+      }
+    }
+
+    for (const binding of bindings) {
+      const templateRows = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM saas.email_template
+        WHERE product_id = ${prajaProductId}::uuid
+          AND site_id = ${prajaSite.site_id}::uuid
+          AND template_key = ${binding.templateKey}
+          AND version = 1
+        LIMIT 1
       `;
+      const templateId = templateRows[0]?.id;
+      if (!templateId) continue;
+
+      const existingBinding = await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text
+        FROM saas.event_binding
+        WHERE product_id = ${prajaProductId}::uuid
+          AND site_id = ${prajaSite.site_id}::uuid
+          AND event_key = ${binding.eventKey}
+        LIMIT 1
+      `;
+
+      if (existingBinding[0]?.id) {
+        await prisma.$executeRaw`
+          UPDATE saas.event_binding
+          SET template_id = ${templateId}::uuid, enabled = true, updated_at = now()
+          WHERE id = ${existingBinding[0].id}::uuid
+        `;
+      } else {
+        await prisma.$executeRaw`
+          INSERT INTO saas.event_binding (product_id, site_id, event_key, template_id, enabled, created_at, updated_at)
+          VALUES (${prajaProductId}::uuid, ${prajaSite.site_id}::uuid, ${binding.eventKey}, ${templateId}::uuid, true, now(), now())
+        `;
+      }
     }
   }
 }
@@ -882,6 +924,190 @@ export async function upsertSaasEventBinding(input: {
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
     INSERT INTO saas.event_binding (product_id, site_id, event_key, template_id, enabled, created_at, updated_at)
     VALUES (${productId}::uuid, CASE WHEN ${siteId} <> '' THEN ${siteId}::uuid ELSE NULL END, ${eventKey}, ${templateId}::uuid, ${enabled}, now(), now())
+    RETURNING id::text
+  `;
+
+  return rows[0]?.id || null;
+}
+
+export async function listSaasEmailAccounts() {
+  await ensureSaasInfra();
+
+  const rows = await prisma.$queryRaw<Array<{
+    id: string;
+    product_id: string;
+    product_name: string;
+    product_slug: string;
+    site_id: string | null;
+    site_domain: string | null;
+    email_label: string;
+    from_name: string;
+    from_email: string;
+    reply_to: string | null;
+    provider: string;
+    is_default: boolean;
+    is_active: boolean;
+    created_at: Date;
+    updated_at: Date;
+  }>>`
+    SELECT
+      a.id::text,
+      a.product_id::text,
+      p.name AS product_name,
+      p.slug AS product_slug,
+      a.site_id::text,
+      s.domain AS site_domain,
+      a.email_label,
+      a.from_name,
+      a.from_email,
+      a.reply_to,
+      a.provider,
+      a.is_default,
+      a.is_active,
+      a.created_at,
+      a.updated_at
+    FROM saas.email_account a
+    JOIN saas.product p ON p.id = a.product_id
+    LEFT JOIN saas.site s ON s.id = a.site_id
+    ORDER BY a.updated_at DESC, a.created_at DESC
+  `;
+
+  return rows.map((row) => ({
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    productSlug: row.product_slug,
+    siteId: row.site_id,
+    siteDomain: row.site_domain,
+    emailLabel: row.email_label,
+    fromName: row.from_name,
+    fromEmail: row.from_email,
+    replyTo: row.reply_to,
+    provider: row.provider,
+    isDefault: row.is_default,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function upsertSaasEmailAccount(input: {
+  id?: string;
+  productId?: string;
+  productSlug?: string;
+  siteId?: string;
+  siteDomain?: string;
+  emailLabel: string;
+  fromName: string;
+  fromEmail: string;
+  replyTo?: string;
+  provider?: string;
+  isDefault?: boolean;
+  isActive?: boolean;
+}) {
+  await ensureSaasInfra();
+
+  const emailLabel = normalizeText(input.emailLabel);
+  const fromName = normalizeText(input.fromName);
+  const fromEmail = normalizeEmail(input.fromEmail);
+  const replyTo = normalizeEmail(input.replyTo || '');
+  const provider = normalizeText(input.provider, 'smtp').toLowerCase();
+  const isDefault = normalizeBoolean(input.isDefault, false);
+  const isActive = normalizeBoolean(input.isActive, true);
+
+  if (!emailLabel) throw new Error('emailLabel é obrigatório');
+  if (!fromName) throw new Error('fromName é obrigatório');
+  if (!fromEmail) throw new Error('fromEmail inválido');
+
+  let productId = normalizeText(input.productId, '');
+  const productSlug = normalizeSlug(input.productSlug || '');
+  let siteId = normalizeText(input.siteId, '');
+  const siteDomain = normalizeDomain(input.siteDomain || '');
+
+  if (!siteId && siteDomain) {
+    const siteRows = await prisma.$queryRaw<Array<{ id: string; product_id: string }>>`
+      SELECT id::text, product_id::text
+      FROM saas.site
+      WHERE domain = ${siteDomain}
+      LIMIT 1
+    `;
+    siteId = siteRows[0]?.id || '';
+    if (!productId) productId = siteRows[0]?.product_id || '';
+  }
+
+  if (!productId && productSlug) {
+    const productRows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id::text
+      FROM saas.product
+      WHERE slug = ${productSlug}
+      LIMIT 1
+    `;
+    productId = productRows[0]?.id || '';
+  }
+
+  if (!productId) throw new Error('productId ou productSlug é obrigatório');
+
+  if (isDefault) {
+    await prisma.$executeRaw`
+      UPDATE saas.email_account
+      SET is_default = false, updated_at = now()
+      WHERE product_id = ${productId}::uuid
+        AND (
+          (${siteId} = '' AND site_id IS NULL)
+          OR (${siteId} <> '' AND site_id = ${siteId}::uuid)
+        )
+    `;
+  }
+
+  if (input.id) {
+    const id = requireUuid(input.id, 'id');
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      UPDATE saas.email_account
+      SET
+        product_id = ${productId}::uuid,
+        site_id = CASE WHEN ${siteId} <> '' THEN ${siteId}::uuid ELSE NULL END,
+        email_label = ${emailLabel},
+        from_name = ${fromName},
+        from_email = ${fromEmail},
+        reply_to = ${replyTo || null},
+        provider = ${provider},
+        is_default = ${isDefault},
+        is_active = ${isActive},
+        updated_at = now()
+      WHERE id = ${id}::uuid
+      RETURNING id::text
+    `;
+    if (!rows[0]?.id) throw new Error('Conta de e-mail não encontrada para atualização');
+    return rows[0].id;
+  }
+
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    INSERT INTO saas.email_account (
+      product_id,
+      site_id,
+      email_label,
+      from_name,
+      from_email,
+      reply_to,
+      provider,
+      is_default,
+      is_active,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      ${productId}::uuid,
+      CASE WHEN ${siteId} <> '' THEN ${siteId}::uuid ELSE NULL END,
+      ${emailLabel},
+      ${fromName},
+      ${fromEmail},
+      ${replyTo || null},
+      ${provider},
+      ${isDefault},
+      ${isActive},
+      now(),
+      now()
+    )
     RETURNING id::text
   `;
 

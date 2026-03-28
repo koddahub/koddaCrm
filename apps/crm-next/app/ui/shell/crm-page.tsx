@@ -247,7 +247,7 @@ type SocialInstagramLogItem = {
   } | null;
 };
 
-type SaasTabKey = 'produtos' | 'sites' | 'templates' | 'eventos';
+type SaasTabKey = 'produtos' | 'sites' | 'emails' | 'templates' | 'eventos';
 
 type SaasProductItem = {
   id: string;
@@ -309,6 +309,24 @@ type SaasEventItem = {
   updatedAt: string;
 };
 
+type SaasEmailAccountItem = {
+  id: string;
+  productId: string;
+  productName: string;
+  productSlug: string;
+  siteId: string | null;
+  siteDomain: string | null;
+  emailLabel: string;
+  fromName: string;
+  fromEmail: string;
+  replyTo: string | null;
+  provider: string;
+  isDefault: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type CrmPageProps = {
   section: SectionKey;
   dealId?: string;
@@ -338,7 +356,7 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'pipeline_hospedagem', label: 'Pipeline Hospedagem', icon: 'bi-diagram-3-fill', href: '/pipeline/hospedagem' },
   { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
   { key: 'clientes', label: 'Clientes', icon: 'bi-people-fill', href: '/clientes' },
-  { key: 'saas', label: 'SaaS', icon: 'bi-boxes', href: '/saas' },
+  { key: 'saas', label: 'Painel de Controle', icon: 'bi-boxes', href: '/painel-de-controle' },
   { key: 'social_accounts', label: 'Social · Contas', icon: 'bi-instagram', href: '/social/contas' },
   { key: 'social_posts', label: 'Social · Posts', icon: 'bi-images', href: '/social/posts' },
   { key: 'social_logs', label: 'Social · Logs', icon: 'bi-journal-code', href: '/social/logs' },
@@ -383,7 +401,7 @@ function sectionTitle(section: SectionKey) {
     case 'clientes':
       return 'Clientes';
     case 'saas':
-      return 'SaaS';
+      return 'Painel de Controle';
     case 'social_accounts':
       return 'Social · Contas Instagram';
     case 'social_posts':
@@ -500,11 +518,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     mediaUrl: '',
     caption: '',
   });
-  const [saasTab, setSaasTab] = useState<SaasTabKey>('produtos');
+  const [saasTab, setSaasTab] = useState<SaasTabKey>('emails');
   const [saasLoading, setSaasLoading] = useState(section === 'saas');
   const [saasSaving, setSaasSaving] = useState(false);
   const [saasProducts, setSaasProducts] = useState<SaasProductItem[]>([]);
   const [saasSites, setSaasSites] = useState<SaasSiteItem[]>([]);
+  const [saasEmailAccounts, setSaasEmailAccounts] = useState<SaasEmailAccountItem[]>([]);
   const [saasTemplates, setSaasTemplates] = useState<SaasTemplateItem[]>([]);
   const [saasEvents, setSaasEvents] = useState<SaasEventItem[]>([]);
   const [saasProductForm, setSaasProductForm] = useState({
@@ -537,6 +556,17 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     eventKey: 'user.created',
     templateId: '',
     enabled: true,
+  });
+  const [saasEmailForm, setSaasEmailForm] = useState({
+    productId: '',
+    siteId: '',
+    emailLabel: '',
+    fromName: '',
+    fromEmail: '',
+    replyTo: '',
+    provider: 'smtp',
+    isDefault: false,
+    isActive: true,
   });
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
@@ -891,43 +921,50 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   async function loadSaas() {
     setSaasLoading(true);
     try {
-      const [productsRes, sitesRes, templatesRes, eventsRes] = await Promise.all([
-        fetch('/api/saas/products'),
-        fetch('/api/saas/sites'),
-        fetch('/api/saas/templates'),
-        fetch('/api/saas/events'),
+      const [productsRes, sitesRes, emailAccountsRes, templatesRes, eventsRes] = await Promise.all([
+        fetch('/api/control-panel/products'),
+        fetch('/api/control-panel/sites'),
+        fetch('/api/control-panel/email-accounts'),
+        fetch('/api/control-panel/templates'),
+        fetch('/api/control-panel/events'),
       ]);
 
-      const [productsData, sitesData, templatesData, eventsData] = await Promise.all([
+      const [productsData, sitesData, emailAccountsData, templatesData, eventsData] = await Promise.all([
         productsRes.json().catch(() => ({})),
         sitesRes.json().catch(() => ({})),
+        emailAccountsRes.json().catch(() => ({})),
         templatesRes.json().catch(() => ({})),
         eventsRes.json().catch(() => ({})),
       ]);
 
       if (!productsRes.ok) {
-        setNotice(productsData.error || 'Falha ao carregar produtos SaaS');
+        setNotice(productsData.error || 'Falha ao carregar produtos do Painel de Controle');
         return;
       }
       if (!sitesRes.ok) {
-        setNotice(sitesData.error || 'Falha ao carregar sites SaaS');
+        setNotice(sitesData.error || 'Falha ao carregar sites do Painel de Controle');
+        return;
+      }
+      if (!emailAccountsRes.ok) {
+        setNotice(emailAccountsData.error || 'Falha ao carregar e-mails do Painel de Controle');
         return;
       }
       if (!templatesRes.ok) {
-        setNotice(templatesData.error || 'Falha ao carregar templates SaaS');
+        setNotice(templatesData.error || 'Falha ao carregar templates do Painel de Controle');
         return;
       }
       if (!eventsRes.ok) {
-        setNotice(eventsData.error || 'Falha ao carregar eventos SaaS');
+        setNotice(eventsData.error || 'Falha ao carregar eventos do Painel de Controle');
         return;
       }
 
       setSaasProducts(productsData.items || []);
       setSaasSites(sitesData.items || []);
+      setSaasEmailAccounts(emailAccountsData.items || []);
       setSaasTemplates(templatesData.items || []);
       setSaasEvents(eventsData.items || []);
     } catch (error) {
-      setNotice(`Falha ao carregar módulo SaaS: ${String(error)}`);
+      setNotice(`Falha ao carregar Painel de Controle: ${String(error)}`);
     } finally {
       setSaasLoading(false);
     }
@@ -940,11 +977,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     const payload = {
       name: saasProductForm.name,
       slug: saasProductForm.slug,
-      category: 'saas',
+      category: 'produto',
       status: saasProductForm.isActive ? 'active' : 'inactive',
     };
 
-    const res = await fetch('/api/saas/products', {
+    const res = await fetch('/api/control-panel/products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -953,11 +990,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
     setSaasSaving(false);
     if (!res.ok) {
-      setNotice(data.error || 'Falha ao salvar produto SaaS');
+      setNotice(data.error || 'Falha ao salvar produto');
       return;
     }
 
-    setNotice('Produto SaaS salvo com sucesso.');
+    setNotice('Produto salvo com sucesso.');
     setSaasProductForm({
       name: '',
       slug: '',
@@ -970,7 +1007,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     event.preventDefault();
     setSaasSaving(true);
 
-    const res = await fetch('/api/saas/sites', {
+    const res = await fetch('/api/control-panel/sites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(saasSiteForm),
@@ -979,11 +1016,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
     setSaasSaving(false);
     if (!res.ok) {
-      setNotice(data.error || 'Falha ao salvar site SaaS');
+      setNotice(data.error || 'Falha ao salvar site');
       return;
     }
 
-    setNotice('Site SaaS salvo com sucesso.');
+    setNotice('Site salvo com sucesso.');
     setSaasSiteForm((prev) => ({
       ...prev,
       name: '',
@@ -998,7 +1035,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     event.preventDefault();
     setSaasSaving(true);
 
-    const res = await fetch('/api/saas/templates', {
+    const res = await fetch('/api/control-panel/templates', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(saasTemplateForm),
@@ -1007,11 +1044,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
     setSaasSaving(false);
     if (!res.ok) {
-      setNotice(data.error || 'Falha ao salvar template SaaS');
+      setNotice(data.error || 'Falha ao salvar template');
       return;
     }
 
-    setNotice('Template SaaS salvo com sucesso.');
+    setNotice('Template salvo com sucesso.');
     setSaasTemplateForm((prev) => ({
       ...prev,
       subject: '',
@@ -1025,7 +1062,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     event.preventDefault();
     setSaasSaving(true);
 
-    const res = await fetch('/api/saas/events', {
+    const res = await fetch('/api/control-panel/events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(saasEventForm),
@@ -1034,11 +1071,55 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
     setSaasSaving(false);
     if (!res.ok) {
-      setNotice(data.error || 'Falha ao salvar evento SaaS');
+      setNotice(data.error || 'Falha ao salvar evento');
       return;
     }
 
-    setNotice('Evento SaaS salvo com sucesso.');
+    setNotice('Evento salvo com sucesso.');
+    await loadSaas();
+  }
+
+  async function submitSaasEmailAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaasSaving(true);
+
+    const payload = {
+      productId: saasEmailForm.productId,
+      siteId: saasEmailForm.siteId || null,
+      emailLabel: saasEmailForm.emailLabel,
+      fromName: saasEmailForm.fromName,
+      fromEmail: saasEmailForm.fromEmail,
+      replyTo: saasEmailForm.replyTo || null,
+      provider: saasEmailForm.provider,
+      isDefault: saasEmailForm.isDefault,
+      isActive: saasEmailForm.isActive,
+    };
+
+    const res = await fetch('/api/control-panel/email-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    setSaasSaving(false);
+
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar configuração de e-mail');
+      return;
+    }
+
+    setNotice('Configuração de e-mail salva com sucesso.');
+    setSaasEmailForm((prev) => ({
+      ...prev,
+      siteId: '',
+      emailLabel: '',
+      fromName: '',
+      fromEmail: '',
+      replyTo: '',
+      provider: 'smtp',
+      isDefault: false,
+      isActive: true,
+    }));
     await loadSaas();
   }
 
@@ -1147,6 +1228,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   useEffect(() => {
     if (saasProducts.length === 0) return;
     const firstProductId = saasProducts[0].id;
+    if (!saasEmailForm.productId) {
+      setSaasEmailForm((prev) => ({ ...prev, productId: firstProductId }));
+    }
     if (!saasSiteForm.productId) {
       setSaasSiteForm((prev) => ({ ...prev, productId: firstProductId }));
     }
@@ -1156,7 +1240,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     if (!saasEventForm.productId) {
       setSaasEventForm((prev) => ({ ...prev, productId: firstProductId }));
     }
-  }, [saasProducts, saasSiteForm.productId, saasTemplateForm.productId, saasEventForm.productId]);
+  }, [saasProducts, saasEmailForm.productId, saasSiteForm.productId, saasTemplateForm.productId, saasEventForm.productId]);
 
   useEffect(() => {
     if (saasSites.length === 0) return;
@@ -1544,7 +1628,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     section === 'dashboard'
       ? 'Visão rápida da saúde comercial, financeira e operacional.'
       : section === 'saas'
-        ? 'Módulo administrativo para produtos, sites, templates e eventos automáticos.'
+        ? 'Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.'
         : section === 'social_accounts' || section === 'social_posts' || section === 'social_logs'
           ? 'Instagram via Meta Graph API: conexão OAuth, publicação de imagem e trilha de auditoria.'
         : 'KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.';
@@ -2020,20 +2104,21 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
             <div className="saas-hero">
               <div>
                 <span className="saas-hero-kicker">Painel administrativo</span>
-                <h3>Módulo SaaS</h3>
-                <p>Centralize produtos, sites, templates e eventos automáticos em uma visão operacional única.</p>
+                <h3>Painel de Controle</h3>
+                <p>Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.</p>
               </div>
-              <span className="saas-hero-chip">{saasProducts.length} produtos</span>
+              <span className="saas-hero-chip">{saasProducts.length} produtos • {saasEmailAccounts.length} e-mails</span>
             </div>
 
-            <div className="saas-tabbar" role="tablist" aria-label="Subseções SaaS">
+            <div className="saas-tabbar" role="tablist" aria-label="Subseções do Painel de Controle">
               <button type="button" role="tab" aria-selected={saasTab === 'produtos'} className={saasTab === 'produtos' ? 'active' : ''} onClick={() => setSaasTab('produtos')}>Produtos</button>
               <button type="button" role="tab" aria-selected={saasTab === 'sites'} className={saasTab === 'sites' ? 'active' : ''} onClick={() => setSaasTab('sites')}>Sites</button>
+              <button type="button" role="tab" aria-selected={saasTab === 'emails'} className={saasTab === 'emails' ? 'active' : ''} onClick={() => setSaasTab('emails')}>E-mails</button>
               <button type="button" role="tab" aria-selected={saasTab === 'templates'} className={saasTab === 'templates' ? 'active' : ''} onClick={() => setSaasTab('templates')}>Templates</button>
               <button type="button" role="tab" aria-selected={saasTab === 'eventos'} className={saasTab === 'eventos' ? 'active' : ''} onClick={() => setSaasTab('eventos')}>Eventos</button>
             </div>
 
-            {saasLoading ? <p className="saas-loading">Carregando módulo SaaS...</p> : null}
+            {saasLoading ? <p className="saas-loading">Carregando Painel de Controle...</p> : null}
 
             {!saasLoading && saasTab === 'produtos' ? (
               <div className="saas-grid-two">
@@ -2113,7 +2198,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                 <article className="saas-box">
                   <h4>Sites</h4>
                   <p className="saas-ready-text">Aba pronta para gestão de domínios e instâncias operacionais.</p>
-                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Sites pronta para próxima etapa de cadastro.')}>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Sites pronta para próxima etapa do Painel de Controle.')}>
                     Configurar sites
                   </button>
                 </article>
@@ -2124,12 +2209,170 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               </div>
             ) : null}
 
+            {!saasLoading && saasTab === 'emails' ? (
+              <div className="saas-grid-two">
+                <article className="saas-box">
+                  <h4>Novo e-mail transacional</h4>
+                  <form className="stack-form" onSubmit={submitSaasEmailAccount}>
+                    <label>Produto</label>
+                    <select
+                      className="saas-input"
+                      value={saasEmailForm.productId}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
+                      required
+                    >
+                      <option value="">Selecione um produto</option>
+                      {saasProducts.map((product) => (
+                        <option key={product.id} value={product.id}>
+                          {product.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <label>Site/Domínio (opcional)</label>
+                    <select
+                      className="saas-input"
+                      value={saasEmailForm.siteId}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, siteId: e.target.value }))}
+                    >
+                      <option value="">Sem site específico</option>
+                      {saasSites
+                        .filter((site) => !saasEmailForm.productId || site.productId === saasEmailForm.productId)
+                        .map((site) => (
+                          <option key={site.id} value={site.id}>
+                            {site.domain}
+                          </option>
+                        ))}
+                    </select>
+
+                    <label>Nome interno</label>
+                    <input
+                      className="saas-input"
+                      value={saasEmailForm.emailLabel}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, emailLabel: e.target.value }))}
+                      placeholder="Ex: Praja Transacional"
+                      required
+                    />
+
+                    <label>Nome do remetente</label>
+                    <input
+                      className="saas-input"
+                      value={saasEmailForm.fromName}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromName: e.target.value }))}
+                      placeholder="Ex: Praja"
+                      required
+                    />
+
+                    <label>E-mail remetente</label>
+                    <input
+                      className="saas-input"
+                      type="email"
+                      value={saasEmailForm.fromEmail}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromEmail: e.target.value }))}
+                      placeholder="Ex: noreply@prajakoddahub.com"
+                      required
+                    />
+
+                    <label>Responder para</label>
+                    <input
+                      className="saas-input"
+                      type="email"
+                      value={saasEmailForm.replyTo}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, replyTo: e.target.value }))}
+                      placeholder="Opcional"
+                    />
+
+                    <label>Provider</label>
+                    <select
+                      className="saas-input"
+                      value={saasEmailForm.provider}
+                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, provider: e.target.value }))}
+                      required
+                    >
+                      <option value="resend">resend</option>
+                      <option value="smtp">smtp</option>
+                      <option value="ses">ses</option>
+                      <option value="custom">custom</option>
+                    </select>
+
+                    <label className="saas-check-row">
+                      <input
+                        type="checkbox"
+                        checked={saasEmailForm.isDefault}
+                        onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, isDefault: e.target.checked }))}
+                      />
+                      <span>Padrão do produto</span>
+                    </label>
+
+                    <label className="saas-check-row">
+                      <input
+                        type="checkbox"
+                        checked={saasEmailForm.isActive}
+                        onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                      />
+                      <span>Ativo</span>
+                    </label>
+
+                    <button type="submit" className="primary-btn saas-primary-btn" disabled={saasSaving}>
+                      {saasSaving ? 'Salvando...' : 'Cadastrar e-mail'}
+                    </button>
+                  </form>
+                </article>
+
+                <article className="saas-box">
+                  <h4>E-mails cadastrados</h4>
+                  <div className="table-wrap">
+                    <table className="saas-table">
+                      <thead>
+                        <tr>
+                          <th>Produto</th>
+                          <th>Site</th>
+                          <th>Nome interno</th>
+                          <th>Remetente</th>
+                          <th>Provider</th>
+                          <th>Padrão</th>
+                          <th>Status</th>
+                          <th>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {saasEmailAccounts.length === 0 ? (
+                          <tr>
+                            <td colSpan={8}>
+                              <div className="saas-empty-inline">Nenhuma configuração de e-mail cadastrada ainda.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          saasEmailAccounts.map((item) => (
+                            <tr key={item.id}>
+                              <td>{item.productName}</td>
+                              <td>{item.siteDomain || '-'}</td>
+                              <td>{item.emailLabel}</td>
+                              <td>{item.fromName} &lt;{item.fromEmail}&gt;</td>
+                              <td>{item.provider}</td>
+                              <td>{item.isDefault ? 'Sim' : 'Não'}</td>
+                              <td>
+                                <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                  {item.isActive ? 'Ativo' : 'Inativo'}
+                                </span>
+                              </td>
+                              <td>-</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              </div>
+            ) : null}
+
             {!saasLoading && saasTab === 'templates' ? (
               <div className="saas-ready-grid">
                 <article className="saas-box">
                   <h4>Templates</h4>
                   <p className="saas-ready-text">Aba pronta para centralização dos modelos de e-mail por produto e site.</p>
-                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Templates pronta para próxima etapa de cadastro.')}>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Templates pronta para próxima etapa do Painel de Controle.')}>
                     Configurar templates
                   </button>
                 </article>
@@ -2145,7 +2388,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                 <article className="saas-box">
                   <h4>Eventos</h4>
                   <p className="saas-ready-text">Aba pronta para vincular eventos automáticos aos templates cadastrados.</p>
-                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Eventos pronta para próxima etapa de configuração.')}>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Eventos pronta para próxima etapa do Painel de Controle.')}>
                     Configurar eventos
                   </button>
                 </article>
