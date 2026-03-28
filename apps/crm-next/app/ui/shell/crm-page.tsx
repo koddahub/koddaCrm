@@ -180,6 +180,25 @@ type CrmPageProps = {
   dealId?: string;
 };
 
+type KpiSeverity = 'normal' | 'attention' | 'critical' | 'success';
+
+type DashboardMetric = {
+  label: string;
+  value: string;
+  severity?: KpiSeverity;
+  emphasis?: boolean;
+  hint?: string;
+  icon?: string;
+};
+
+type DashboardBlock = {
+  id: 'prospeccao' | 'financeiro' | 'operacao';
+  title: string;
+  subtitle: string;
+  icon: string;
+  metrics: DashboardMetric[];
+};
+
 const MENU_ITEMS: MenuItem[] = [
   { key: 'dashboard', label: 'Dashboard', icon: 'bi-speedometer2', href: '/dashboard' },
   { key: 'pipeline_hospedagem', label: 'Pipeline Hospedagem', icon: 'bi-diagram-3-fill', href: '/pipeline/hospedagem' },
@@ -205,6 +224,16 @@ function dateOnly(value?: string | null) {
   return new Date(value).toLocaleDateString('pt-BR');
 }
 
+function shortDateTime(value?: string | null) {
+  if (!value) return 'sem atualização';
+  return new Date(value).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function sectionTitle(section: SectionKey) {
   switch (section) {
     case 'dashboard':
@@ -228,6 +257,50 @@ function sectionTitle(section: SectionKey) {
   }
 }
 
+function DashboardMetricCard({ metric }: { metric: DashboardMetric }) {
+  const severity = metric.severity || 'normal';
+
+  return (
+    <article className={`crm-v2-kpi-card is-${severity}${metric.emphasis ? ' is-emphasis' : ''}`} role="listitem">
+      <p className="metric-label">
+        {metric.icon ? <i className={`bi ${metric.icon}`} aria-hidden="true" /> : null}
+        <span>{metric.label}</span>
+      </p>
+      <strong className="metric-value">{metric.value}</strong>
+      <div className="metric-footer">
+        {metric.hint ? <small className="metric-hint">{metric.hint}</small> : <span />}
+        {severity !== 'normal' ? (
+          <span className={`metric-chip is-${severity}`}>
+            {severity === 'critical' ? 'Crítico' : severity === 'attention' ? 'Atenção' : 'Saudável'}
+          </span>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function DashboardBlockCard({ block }: { block: DashboardBlock }) {
+  return (
+    <article className="crm-v2-kpi-block">
+      <header className="crm-v2-kpi-block-head">
+        <div>
+          <h3>
+            <i className={`bi ${block.icon}`} aria-hidden="true" />
+            <span>{block.title}</span>
+          </h3>
+          <p>{block.subtitle}</p>
+        </div>
+        <span className="crm-v2-kpi-count">{block.metrics.length} KPIs</span>
+      </header>
+      <div className="crm-v2-kpi-grid" role="list" aria-label={`Indicadores de ${block.title}`}>
+        {block.metrics.map((metric) => (
+          <DashboardMetricCard key={`${block.id}-${metric.label}`} metric={metric} />
+        ))}
+      </div>
+    </article>
+  );
+}
+
 export function CrmPage({ section, dealId }: CrmPageProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -236,6 +309,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [loading, setLoading] = useState(false);
 
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(section === 'dashboard');
+  const [dashboardError, setDashboardError] = useState('');
+  const [dashboardUpdatedAt, setDashboardUpdatedAt] = useState<string | null>(null);
   const [pipelineData, setPipelineData] = useState<PipelineTableData | null>(null);
   const [clientesAtivos, setClientesAtivos] = useState<ClienteItem[]>([]);
   const [clientesAtrasados, setClientesAtrasados] = useState<ClienteItem[]>([]);
@@ -313,6 +389,114 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     return null;
   }, [section]);
 
+  const dashboardBlocks = useMemo<DashboardBlock[]>(() => {
+    if (!dashboardData) return [];
+
+    const abandonos = dashboardData.prospeccao.abandonos2h;
+    const perdidos = dashboardData.prospeccao.perdidos;
+    const inadimplencia = dashboardData.financeiro.inadimplenciaAberta;
+    const atrasados = dashboardData.operacao.clientesAtrasados;
+    const inativos = dashboardData.operacao.clientesInativos;
+    const fantasma = dashboardData.operacao.clientesFantasma;
+    const slaRisco = dashboardData.operacao.slaRisco;
+
+    const severityByCount = (value: number, attentionThreshold = 1, criticalThreshold = 5): KpiSeverity => {
+      if (value >= criticalThreshold) return 'critical';
+      if (value >= attentionThreshold) return 'attention';
+      return 'normal';
+    };
+
+    return [
+      {
+        id: 'prospeccao',
+        title: 'Prospecção',
+        subtitle: 'Entrada, ganho e risco de conversão no funil comercial.',
+        icon: 'bi-graph-up-arrow',
+        metrics: [
+          { label: 'Leads 24h', value: String(dashboardData.prospeccao.leads24h), emphasis: true, severity: 'success', icon: 'bi-lightning-charge' },
+          { label: 'Leads 7d', value: String(dashboardData.prospeccao.leads7d), severity: 'normal', icon: 'bi-calendar-week' },
+          {
+            label: 'Abandonos +2h',
+            value: String(abandonos),
+            severity: severityByCount(abandonos, 1, 3),
+            hint: abandonos > 0 ? 'Necessita recuperação ativa' : 'Dentro do esperado',
+            icon: 'bi-exclamation-triangle',
+          },
+          { label: 'Ganhos hospedagem', value: String(dashboardData.prospeccao.ganhosHospedagem), severity: 'success', icon: 'bi-check2-circle' },
+          { label: 'Ganhos avulsos', value: String(dashboardData.prospeccao.ganhosAvulsos), severity: 'success', icon: 'bi-check2-circle' },
+          {
+            label: 'Perdidos',
+            value: String(perdidos),
+            severity: severityByCount(perdidos, 1, 4),
+            hint: perdidos > 0 ? 'Revisar motivo de perda' : 'Sem perdas no período',
+            icon: 'bi-x-circle',
+          },
+        ],
+      },
+      {
+        id: 'financeiro',
+        title: 'Financeiro',
+        subtitle: 'Resultado de receita recorrente e saúde de recebíveis.',
+        icon: 'bi-cash-coin',
+        metrics: [
+          { label: 'MRR', value: currency(dashboardData.financeiro.mrr), emphasis: true, severity: 'success', icon: 'bi-bar-chart-line' },
+          { label: 'Recebido no mês', value: currency(dashboardData.financeiro.recebidosMes), severity: 'success', icon: 'bi-wallet2' },
+          {
+            label: 'Inadimplência',
+            value: currency(inadimplencia),
+            severity: inadimplencia > 0 ? (inadimplencia >= 1_000_000 ? 'critical' : 'attention') : 'normal',
+            hint: inadimplencia > 0 ? 'Priorizar cobrança' : 'Sem pendências relevantes',
+            icon: 'bi-exclamation-diamond',
+          },
+          {
+            label: 'Resultado DRE',
+            value: currency(dashboardData.financeiro.dreResultadoMes),
+            severity: dashboardData.financeiro.dreResultadoMes > 0 ? 'success' : 'attention',
+            hint: dashboardData.financeiro.dreResultadoMes > 0 ? 'Resultado positivo' : 'Acompanhar margem',
+            icon: 'bi-activity',
+          },
+        ],
+      },
+      {
+        id: 'operacao',
+        title: 'Operação',
+        subtitle: 'Estabilidade da carteira ativa e alertas de suporte/SLA.',
+        icon: 'bi-diagram-3',
+        metrics: [
+          { label: 'Clientes ativos', value: String(dashboardData.operacao.clientesAtivos), emphasis: true, severity: 'success', icon: 'bi-people' },
+          { label: 'Clientes atrasados', value: String(atrasados), severity: severityByCount(atrasados, 1, 6), icon: 'bi-clock-history' },
+          { label: 'Clientes inativos', value: String(inativos), severity: severityByCount(inativos, 1, 4), icon: 'bi-person-dash' },
+          { label: 'Lista fantasma', value: String(fantasma), severity: severityByCount(fantasma, 1, 3), icon: 'bi-archive' },
+          { label: 'Operações em curso', value: String(dashboardData.operacao.operacoesEmCurso), severity: 'normal', icon: 'bi-kanban' },
+          { label: 'SLA em risco', value: String(slaRisco), severity: severityByCount(slaRisco, 1, 2), icon: 'bi-alarm' },
+          { label: 'Tickets abertos', value: String(dashboardData.operacao.ticketsAbertos), severity: severityByCount(dashboardData.operacao.ticketsAbertos, 1, 8), icon: 'bi-ticket-detailed' },
+        ],
+      },
+    ];
+  }, [dashboardData]);
+
+  const dashboardCriticalCount = useMemo(
+    () =>
+      dashboardBlocks.reduce(
+        (acc, block) => acc + block.metrics.filter((metric) => metric.severity === 'critical').length,
+        0,
+      ),
+    [dashboardBlocks],
+  );
+
+  function resetTransientOverlays() {
+    setShowLeadModal(false);
+    setShowEditModal(false);
+    setShowDeleteModal(false);
+    setShowGhostModal(false);
+    setShowPurgeModal(false);
+    setDeleteTarget(null);
+    setGhostTarget(null);
+    setRestoreTarget(null);
+    setPurgeTarget(null);
+    setPurgeConfirm('');
+  }
+
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
     window.location.href = '/login';
@@ -332,9 +516,28 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }
 
   async function loadDashboard() {
-    const res = await fetch('/api/dashboard/kpis');
-    const data = await res.json();
-    if (res.ok) setDashboardData(data);
+    setDashboardLoading(true);
+    setDashboardError('');
+
+    try {
+      const res = await fetch('/api/dashboard/kpis');
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setDashboardData(null);
+        setDashboardError(data.error || 'Não foi possível carregar os indicadores do dashboard.');
+        return;
+      }
+
+      setDashboardData(data);
+      setDashboardUpdatedAt(new Date().toISOString());
+    } catch (error) {
+      console.error('[crm-dashboard] erro ao carregar KPIs', error);
+      setDashboardData(null);
+      setDashboardError('Falha de conexão ao carregar KPIs. Tente novamente.');
+    } finally {
+      setDashboardLoading(false);
+    }
   }
 
   async function loadPipeline(type: 'hospedagem' | 'avulsos') {
@@ -430,6 +633,16 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   useEffect(() => {
     reloadSection();
   }, [section, pipelineType]);
+
+  useEffect(() => {
+    resetTransientOverlays();
+  }, [pathname]);
+
+  useEffect(() => {
+    const onPageShow = () => resetTransientOverlays();
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, []);
 
   useEffect(() => {
     if (section === 'clientes') {
@@ -699,6 +912,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }
 
   const activeMenu = MENU_ITEMS.find((item) => pathname.startsWith(item.href))?.key || (section === 'deal' ? 'clientes' : section);
+  const topbarDescription =
+    section === 'dashboard'
+      ? 'Visão rápida da saúde comercial, financeira e operacional.'
+      : 'KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.';
+  const currentHour = new Date().getHours();
+  const periodLabel = currentHour < 12 ? 'Manhã' : currentHour < 18 ? 'Tarde' : 'Noite';
 
   return (
     <div className="crm-v2-layout">
@@ -713,7 +932,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
         <nav className="crm-v2-menu">
           {MENU_ITEMS.map((item) => (
-            <Link key={item.key} href={item.href} className={activeMenu === item.key ? 'active' : ''}>
+            <Link
+              key={item.key}
+              href={item.href}
+              className={activeMenu === item.key ? 'active' : ''}
+              aria-current={activeMenu === item.key ? 'page' : undefined}
+            >
               <i className={`bi ${item.icon}`} aria-hidden="true" />
               <span>{item.label}</span>
             </Link>
@@ -721,7 +945,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         </nav>
 
         <div className="crm-v2-sidebar-footer">
-          <button type="button" onClick={runReconcile} className="secondary-btn">
+          <button type="button" onClick={runReconcile} className="secondary-btn" disabled={loading}>
             <i className="bi bi-arrow-repeat" aria-hidden="true" /> Reconciliar
           </button>
           <button type="button" onClick={logout} className="danger-btn">
@@ -732,10 +956,17 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
       <main className="crm-v2-main">
         <header className="crm-v2-topbar">
-          <div>
+          <div className="crm-v2-topbar-main">
             <h1>{sectionTitle(section)}</h1>
-            <p>KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.</p>
+            <p>{topbarDescription}</p>
           </div>
+          {section === 'dashboard' ? (
+            <div className="crm-v2-topbar-meta" aria-live="polite">
+              <span className="crm-v2-chip">{periodLabel}</span>
+              <span className="crm-v2-chip">Críticos: {dashboardCriticalCount}</span>
+              <span className="crm-v2-chip is-muted">Atualizado: {shortDateTime(dashboardUpdatedAt)}</span>
+            </div>
+          ) : null}
         </header>
 
         {notice ? <div className="crm-v2-notice">{notice}</div> : null}
@@ -743,42 +974,58 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         {section === 'deal' && dealId ? <DealDetail dealId={dealId} setNotice={setNotice} /> : null}
 
         {section === 'dashboard' ? (
-          <div className="crm-v2-dashboard-grid">
-            <article className="crm-v2-panel">
-              <h3>Prospecção</h3>
-              <div className="metric-grid">
-                <div><span>Leads 24h</span><strong>{dashboardData?.prospeccao.leads24h ?? 0}</strong></div>
-                <div><span>Leads 7d</span><strong>{dashboardData?.prospeccao.leads7d ?? 0}</strong></div>
-                <div><span>Abandonos +2h</span><strong>{dashboardData?.prospeccao.abandonos2h ?? 0}</strong></div>
-                <div><span>Ganhos hospedagem</span><strong>{dashboardData?.prospeccao.ganhosHospedagem ?? 0}</strong></div>
-                <div><span>Ganhos avulsos</span><strong>{dashboardData?.prospeccao.ganhosAvulsos ?? 0}</strong></div>
-                <div><span>Perdidos</span><strong>{dashboardData?.prospeccao.perdidos ?? 0}</strong></div>
+          <section className="crm-v2-dashboard-shell" aria-live="polite">
+            {dashboardLoading ? (
+              <div className="crm-v2-dashboard-grid">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <article key={`skeleton-${index}`} className="crm-v2-kpi-block is-loading" aria-hidden="true">
+                    <header className="crm-v2-kpi-block-head">
+                      <div>
+                        <h3>
+                          <i className="bi bi-activity" aria-hidden="true" />
+                          <span>Carregando...</span>
+                        </h3>
+                        <p>Atualizando indicadores</p>
+                      </div>
+                    </header>
+                    <div className="crm-v2-kpi-grid">
+                      {Array.from({ length: 6 }).map((__, metricIndex) => (
+                        <div key={`skeleton-metric-${metricIndex}`} className="crm-v2-kpi-card-skeleton" />
+                      ))}
+                    </div>
+                  </article>
+                ))}
               </div>
-            </article>
+            ) : null}
 
-            <article className="crm-v2-panel">
-              <h3>Financeiro</h3>
-              <div className="metric-grid">
-                <div><span>MRR</span><strong>{currency(dashboardData?.financeiro.mrr ?? 0)}</strong></div>
-                <div><span>Recebido no mês</span><strong>{currency(dashboardData?.financeiro.recebidosMes ?? 0)}</strong></div>
-                <div><span>Inadimplência</span><strong>{currency(dashboardData?.financeiro.inadimplenciaAberta ?? 0)}</strong></div>
-                <div><span>Resultado DRE</span><strong>{currency(dashboardData?.financeiro.dreResultadoMes ?? 0)}</strong></div>
-              </div>
-            </article>
+            {!dashboardLoading && dashboardError ? (
+              <article className="crm-v2-dashboard-state is-error" role="alert">
+                <h3>Não foi possível carregar o dashboard</h3>
+                <p>{dashboardError}</p>
+                <button type="button" className="secondary-btn" onClick={() => void loadDashboard()}>
+                  Tentar novamente
+                </button>
+              </article>
+            ) : null}
 
-            <article className="crm-v2-panel">
-              <h3>Operação</h3>
-              <div className="metric-grid">
-                <div><span>Clientes ativos</span><strong>{dashboardData?.operacao.clientesAtivos ?? 0}</strong></div>
-                <div><span>Clientes atrasados</span><strong>{dashboardData?.operacao.clientesAtrasados ?? 0}</strong></div>
-                <div><span>Clientes inativos</span><strong>{dashboardData?.operacao.clientesInativos ?? 0}</strong></div>
-                <div><span>Lista fantasma</span><strong>{dashboardData?.operacao.clientesFantasma ?? 0}</strong></div>
-                <div><span>Operações em curso</span><strong>{dashboardData?.operacao.operacoesEmCurso ?? 0}</strong></div>
-                <div><span>SLA em risco</span><strong>{dashboardData?.operacao.slaRisco ?? 0}</strong></div>
-                <div><span>Tickets abertos</span><strong>{dashboardData?.operacao.ticketsAbertos ?? 0}</strong></div>
+            {!dashboardLoading && !dashboardError && dashboardBlocks.length === 0 ? (
+              <article className="crm-v2-dashboard-state">
+                <h3>Nenhum KPI disponível</h3>
+                <p>Não há dados para exibir neste momento. Tente novamente em instantes.</p>
+                <button type="button" className="secondary-btn" onClick={() => void loadDashboard()}>
+                  Atualizar indicadores
+                </button>
+              </article>
+            ) : null}
+
+            {!dashboardLoading && !dashboardError && dashboardBlocks.length > 0 ? (
+              <div className="crm-v2-dashboard-grid">
+                {dashboardBlocks.map((block) => (
+                  <DashboardBlockCard key={block.id} block={block} />
+                ))}
               </div>
-            </article>
-          </div>
+            ) : null}
+          </section>
         ) : null}
 
         {pipelineType ? (

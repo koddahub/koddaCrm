@@ -12,8 +12,21 @@ export function middleware(req: NextRequest) {
   const isPreviewProxy = pathname.startsWith('/preview-proxy/');
 
   if (
+    pathname === '/' ||
     pathname.startsWith('/api/') ||
     pathname.startsWith('/login') ||
+    pathname.startsWith('/para-voce') ||
+    pathname.startsWith('/seguranca') ||
+    pathname.startsWith('/ajuda') ||
+    pathname.startsWith('/faq') ||
+    pathname.startsWith('/contato') ||
+    pathname.startsWith('/status') ||
+    pathname.startsWith('/politica-privacidade') ||
+    pathname.startsWith('/politica-cookies') ||
+    pathname.startsWith('/lgpd') ||
+    pathname.startsWith('/termo-uso') ||
+    pathname === '/robots.txt' ||
+    pathname === '/sitemap.xml' ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
     isPreviewLanding ||

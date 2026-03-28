@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { Footer } from '@/components/layout/Footer';
+import { UiOverlayReset } from './ui/shell/ui-overlay-reset';
 import './globals.css';
 import './styles/crm-cliente.css';
 import './styles/crm-cliente-tablet.css';
@@ -28,7 +30,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <UiOverlayReset />
+        <div id="topo-site" className="d-flex flex-column min-vh-100">
+          <div className="flex-grow-1">{children}</div>
+          <Footer />
+        </div>
+      </body>
     </html>
   );
 }
