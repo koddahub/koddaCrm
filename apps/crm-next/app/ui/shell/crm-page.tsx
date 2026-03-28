@@ -365,7 +365,25 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'config', label: 'Configurações', icon: 'bi-sliders2', href: '/config' },
 ];
 
+const SIDEBAR_COLLAPSE_STORAGE_KEY = 'crm_v2_sidebar_collapsed';
 const SAAS_EMAILS_PER_PAGE = 8;
+const SAAS_TEMPLATES_PER_PAGE = 6;
+
+function normalizeTemplateKey(value: string) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function displayTemplateName(templateKey: string) {
+  const cleaned = String(templateKey || '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  if (!cleaned) return 'Template sem nome';
+  return cleaned.replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
 function currency(cents: number | null | undefined) {
   if (cents === null || cents === undefined) return 'R$ 0,00';
@@ -544,12 +562,19 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     isActive: true,
   });
   const [saasTemplateForm, setSaasTemplateForm] = useState({
+    id: '',
+    templateName: 'Boas-vindas',
     productId: '',
     siteId: '',
     templateKey: 'welcome',
+    templateCategory: 'transacional',
     subject: '',
+    description: '',
     html: '',
     text: '',
+    availableVariables: '',
+    notes: '',
+    version: 1,
     isActive: true,
   });
   const [saasEventForm, setSaasEventForm] = useState({
@@ -571,6 +596,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     isActive: true,
   });
   const [saasEmailPage, setSaasEmailPage] = useState(1);
+  const [saasTemplatePage, setSaasTemplatePage] = useState(1);
+  const [saasTemplatePreviewOpen, setSaasTemplatePreviewOpen] = useState(false);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarDrawerOpen, setIsSidebarDrawerOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -1054,11 +1085,61 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setNotice('Template salvo com sucesso.');
     setSaasTemplateForm((prev) => ({
       ...prev,
+      id: '',
+      templateName: displayTemplateName(prev.templateKey),
+      templateCategory: 'transacional',
       subject: '',
+      description: '',
       html: '',
       text: '',
+      availableVariables: '',
+      notes: '',
+      version: 1,
+      isActive: true,
     }));
+    setSaasTemplatePreviewOpen(false);
+    setSaasTemplatePage(1);
     await loadSaas();
+  }
+
+  function resetSaasTemplateEditor() {
+    setSaasTemplateForm((prev) => ({
+      ...prev,
+      id: '',
+      templateName: displayTemplateName(prev.templateKey),
+      templateCategory: 'transacional',
+      subject: '',
+      description: '',
+      html: '',
+      text: '',
+      availableVariables: '',
+      notes: '',
+      version: 1,
+      isActive: true,
+    }));
+    setSaasTemplatePreviewOpen(false);
+  }
+
+  function startSaasTemplateEdit(item: SaasTemplateItem) {
+    setSaasTemplateForm((prev) => ({
+      ...prev,
+      id: item.id,
+      templateName: displayTemplateName(item.templateKey),
+      productId: item.productId || prev.productId,
+      siteId: item.siteId || '',
+      templateCategory: item.templateKey.includes('reset') ? 'seguranca' : 'transacional',
+      templateKey: item.templateKey,
+      subject: item.subject,
+      description: '',
+      html: item.html || '',
+      text: item.text || '',
+      availableVariables: '',
+      notes: '',
+      version: item.version || 1,
+      isActive: item.isActive,
+    }));
+    setSaasTemplatePreviewOpen(false);
+    setSaasTab('templates');
   }
 
   async function submitSaasEvent(event: React.FormEvent<HTMLFormElement>) {
@@ -1176,7 +1257,31 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, []);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 980px)');
+    const updateViewport = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewport();
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateViewport);
+      return () => mediaQuery.removeEventListener('change', updateViewport);
+    }
+
+    mediaQuery.addListener(updateViewport);
+    return () => mediaQuery.removeListener(updateViewport);
+  }, []);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY);
+    setIsSidebarCollapsed(stored === '1');
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, isSidebarCollapsed ? '1' : '0');
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
     resetTransientOverlays();
+    setIsSidebarDrawerOpen(false);
   }, [pathname]);
 
   useEffect(() => {
@@ -1184,6 +1289,24 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     window.addEventListener('pageshow', onPageShow);
     return () => window.removeEventListener('pageshow', onPageShow);
   }, []);
+
+  useEffect(() => {
+    if (!isSidebarDrawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsSidebarDrawerOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isSidebarDrawerOpen]);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setIsSidebarDrawerOpen(false);
+    }
+  }, [isMobileViewport]);
 
   useEffect(() => {
     if (section !== 'social_accounts') return;
@@ -1269,10 +1392,21 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, [saasTab]);
 
   useEffect(() => {
+    if (saasTab !== 'templates') return;
+    setSaasTemplatePage(1);
+  }, [saasTab]);
+
+  useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(saasEmailAccounts.length / SAAS_EMAILS_PER_PAGE));
     if (saasEmailPage <= totalPages) return;
     setSaasEmailPage(totalPages);
   }, [saasEmailAccounts.length, saasEmailPage]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(saasTemplates.length / SAAS_TEMPLATES_PER_PAGE));
+    if (saasTemplatePage <= totalPages) return;
+    setSaasTemplatePage(totalPages);
+  }, [saasTemplates.length, saasTemplatePage]);
 
   useEffect(() => {
     if (socialAccounts.length === 0) return;
@@ -1670,6 +1804,17 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const saasEmailRangeStart = saasEmailAccounts.length === 0 ? 0 : (saasEmailPage - 1) * SAAS_EMAILS_PER_PAGE + 1;
   const saasEmailRangeEnd =
     saasEmailAccounts.length === 0 ? 0 : Math.min(saasEmailRangeStart + saasEmailVisibleItems.length - 1, saasEmailAccounts.length);
+  const saasTemplateTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(saasTemplates.length / SAAS_TEMPLATES_PER_PAGE)),
+    [saasTemplates.length],
+  );
+  const saasTemplateVisibleItems = useMemo(() => {
+    const start = (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE;
+    return saasTemplates.slice(start, start + SAAS_TEMPLATES_PER_PAGE);
+  }, [saasTemplatePage, saasTemplates]);
+  const saasTemplateRangeStart = saasTemplates.length === 0 ? 0 : (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE + 1;
+  const saasTemplateRangeEnd =
+    saasTemplates.length === 0 ? 0 : Math.min(saasTemplateRangeStart + saasTemplateVisibleItems.length - 1, saasTemplates.length);
 
   function resolveClientStatus(item: ClienteItem): ClienteStatus {
     if (item.ghostedAt) return 'FANTASMA';
@@ -1683,46 +1828,102 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     return 'inativo';
   }
 
-  return (
-    <div className="crm-v2-layout">
-      <aside className="crm-v2-sidebar">
-        <Link className="crm-v2-brand" href="/dashboard" aria-label="KoddaCRM">
-          <img src="/koddahub-logo-v2.png" alt="KoddaHub" />
-          <span>
-            <span className="kodda">Kodda</span>
-            <span className="hub">Hub</span>
-          </span>
-        </Link>
+  function toggleSidebar() {
+    if (isMobileViewport) {
+      setIsSidebarDrawerOpen((prev) => !prev);
+      return;
+    }
+    setIsSidebarCollapsed((prev) => !prev);
+  }
 
-        <nav className="crm-v2-menu">
+  return (
+    <div className={`crm-v2-layout${isSidebarCollapsed ? ' is-sidebar-collapsed' : ''}${isSidebarDrawerOpen ? ' is-sidebar-open' : ''}`}>
+      <aside id="crm-v2-sidebar" className={`crm-v2-sidebar${isSidebarCollapsed ? ' is-collapsed' : ''}`}>
+        <div className="crm-v2-sidebar-head">
+          <Link className="crm-v2-brand" href="/dashboard" aria-label="KoddaCRM">
+            <img src="/koddahub-logo-v2.png" alt="KoddaHub" />
+            <span className="crm-v2-brand-text">
+              <span className="kodda">Kodda</span>
+              <span className="hub">Hub</span>
+            </span>
+          </Link>
+          <button
+            type="button"
+            className="crm-v2-sidebar-toggle is-inline"
+            onClick={toggleSidebar}
+            aria-label={
+              isMobileViewport
+                ? isSidebarDrawerOpen
+                  ? 'Fechar menu lateral'
+                  : 'Abrir menu lateral'
+                : isSidebarCollapsed
+                  ? 'Expandir menu lateral'
+                  : 'Recolher menu lateral'
+            }
+            aria-expanded={isMobileViewport ? isSidebarDrawerOpen : !isSidebarCollapsed}
+            aria-controls="crm-v2-sidebar"
+          >
+            <i className={`bi ${isMobileViewport ? (isSidebarDrawerOpen ? 'bi-x-lg' : 'bi-list') : isSidebarCollapsed ? 'bi-layout-sidebar-inset' : 'bi-layout-sidebar'}`} aria-hidden="true" />
+          </button>
+        </div>
+
+        <nav className="crm-v2-menu" aria-label="Navegação principal CRM">
           {MENU_ITEMS.map((item) => (
             <Link
               key={item.key}
               href={item.href}
               className={activeMenu === item.key ? 'active' : ''}
               aria-current={activeMenu === item.key ? 'page' : undefined}
+              title={isSidebarCollapsed ? item.label : undefined}
             >
               <i className={`bi ${item.icon}`} aria-hidden="true" />
-              <span>{item.label}</span>
+              <span className="crm-v2-menu-label">{item.label}</span>
             </Link>
           ))}
         </nav>
 
         <div className="crm-v2-sidebar-footer">
           <button type="button" onClick={runReconcile} className="secondary-btn" disabled={loading}>
-            <i className="bi bi-arrow-repeat" aria-hidden="true" /> Reconciliar
+            <i className="bi bi-arrow-repeat" aria-hidden="true" /> <span className="crm-v2-sidebar-btn-label">Reconciliar</span>
           </button>
           <button type="button" onClick={logout} className="danger-btn">
-            <i className="bi bi-box-arrow-right" aria-hidden="true" /> Sair
+            <i className="bi bi-box-arrow-right" aria-hidden="true" /> <span className="crm-v2-sidebar-btn-label">Sair</span>
           </button>
         </div>
       </aside>
 
+      <button
+        type="button"
+        className="crm-v2-sidebar-backdrop"
+        aria-label="Fechar menu lateral"
+        onClick={() => setIsSidebarDrawerOpen(false)}
+      />
+
       <main className="crm-v2-main">
         <header className="crm-v2-topbar">
-          <div className="crm-v2-topbar-main">
-            <h1>{sectionTitle(section)}</h1>
-            <p>{topbarDescription}</p>
+          <div className="crm-v2-topbar-title">
+            <button
+              type="button"
+              className="crm-v2-sidebar-toggle"
+              onClick={toggleSidebar}
+              aria-label={
+                isMobileViewport
+                  ? isSidebarDrawerOpen
+                    ? 'Fechar menu lateral'
+                    : 'Abrir menu lateral'
+                  : isSidebarCollapsed
+                    ? 'Expandir menu lateral'
+                    : 'Recolher menu lateral'
+              }
+              aria-expanded={isMobileViewport ? isSidebarDrawerOpen : !isSidebarCollapsed}
+              aria-controls="crm-v2-sidebar"
+            >
+              <i className={`bi ${isMobileViewport ? (isSidebarDrawerOpen ? 'bi-x-lg' : 'bi-list') : isSidebarCollapsed ? 'bi-layout-sidebar-inset' : 'bi-layout-sidebar'}`} aria-hidden="true" />
+            </button>
+            <div className="crm-v2-topbar-main">
+              <h1>{sectionTitle(section)}</h1>
+              <p>{topbarDescription}</p>
+            </div>
           </div>
           {section === 'dashboard' ? (
             <div className="crm-v2-topbar-meta" aria-live="polite">
@@ -2483,17 +2684,350 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
             ) : null}
 
             {!saasLoading && saasTab === 'templates' ? (
-              <div className="saas-ready-grid">
-                <article className="saas-box">
-                  <h4>Templates</h4>
-                  <p className="saas-ready-text">Aba pronta para centralização dos modelos de e-mail por produto e site.</p>
-                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Templates pronta para próxima etapa do Painel de Controle.')}>
-                    Configurar templates
-                  </button>
+              <div className="saas-grid-two saas-template-layout">
+                <article className="saas-box saas-template-form-card">
+                  <div className="saas-template-form-head">
+                    <div>
+                      <h4>{saasTemplateForm.id ? 'Editar template' : 'Cadastro de template'}</h4>
+                      <p>Estruture metadados, assunto, conteúdo e variáveis do template em um único fluxo operacional.</p>
+                    </div>
+                    <span className={`saas-status-chip ${saasTemplateForm.isActive ? 'is-active' : 'is-inactive'}`}>
+                      {saasTemplateForm.isActive ? 'Ativo' : 'Inativo'}
+                    </span>
+                  </div>
+
+                  <form className="stack-form saas-template-form" onSubmit={submitSaasTemplate}>
+                    <section className="saas-template-section">
+                      <h5>Metadados</h5>
+                      <div className="saas-template-grid-two">
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-name">Nome do template</label>
+                          <input
+                            id="cp-template-name"
+                            className="saas-input"
+                            value={saasTemplateForm.templateName}
+                            onChange={(e) =>
+                              setSaasTemplateForm((prev) => ({
+                                ...prev,
+                                templateName: e.target.value,
+                                templateKey: prev.templateKey ? prev.templateKey : normalizeTemplateKey(e.target.value),
+                              }))
+                            }
+                            placeholder="Ex: Boas-vindas Praja"
+                            required
+                          />
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-category">Tipo/Categoria</label>
+                          <select
+                            id="cp-template-category"
+                            className="saas-input"
+                            value={saasTemplateForm.templateCategory}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateCategory: e.target.value }))}
+                          >
+                            <option value="transacional">Transacional</option>
+                            <option value="seguranca">Segurança</option>
+                            <option value="comunicacao">Comunicação</option>
+                            <option value="operacional">Operacional</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="saas-template-grid-three">
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-product">Produto</label>
+                          <select
+                            id="cp-template-product"
+                            className="saas-input"
+                            value={saasTemplateForm.productId}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
+                            required
+                          >
+                            <option value="">Selecione um produto</option>
+                            {saasProducts.map((product) => (
+                              <option key={product.id} value={product.id}>
+                                {product.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-site">Site/Domínio</label>
+                          <select
+                            id="cp-template-site"
+                            className="saas-input"
+                            value={saasTemplateForm.siteId}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, siteId: e.target.value }))}
+                          >
+                            <option value="">Sem site específico</option>
+                            {saasSites
+                              .filter((site) => !saasTemplateForm.productId || site.productId === saasTemplateForm.productId)
+                              .map((site) => (
+                                <option key={site.id} value={site.id}>
+                                  {site.domain}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-version">Versão</label>
+                          <input
+                            id="cp-template-version"
+                            className="saas-input"
+                            type="number"
+                            min={1}
+                            value={saasTemplateForm.version}
+                            onChange={(e) =>
+                              setSaasTemplateForm((prev) => ({
+                                ...prev,
+                                version: Math.max(1, Number.parseInt(e.target.value || '1', 10) || 1),
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="saas-template-grid-two">
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-key">Nome interno</label>
+                          <input
+                            id="cp-template-key"
+                            className="saas-input"
+                            value={saasTemplateForm.templateKey}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateKey: normalizeTemplateKey(e.target.value) }))}
+                            placeholder="Ex: reset_password"
+                            required
+                          />
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-template-subject">Assunto</label>
+                          <input
+                            id="cp-template-subject"
+                            className="saas-input"
+                            value={saasTemplateForm.subject}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, subject: e.target.value }))}
+                            placeholder="Ex: Recuperação de acesso ao Praja"
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-template-description">Descrição</label>
+                        <textarea
+                          id="cp-template-description"
+                          className="saas-input saas-template-textarea"
+                          value={saasTemplateForm.description}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, description: e.target.value }))}
+                          placeholder="Resumo funcional e contexto de uso do template."
+                        />
+                      </div>
+                    </section>
+
+                    <section className="saas-template-section">
+                      <h5>Conteúdo</h5>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-template-html">Conteúdo HTML</label>
+                        <textarea
+                          id="cp-template-html"
+                          className="saas-input saas-template-editor"
+                          value={saasTemplateForm.html}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, html: e.target.value }))}
+                          placeholder="<h1>Olá, {{name}}</h1>"
+                        />
+                      </div>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-template-text">Conteúdo texto (fallback)</label>
+                        <textarea
+                          id="cp-template-text"
+                          className="saas-input saas-template-textarea"
+                          value={saasTemplateForm.text}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, text: e.target.value }))}
+                          placeholder="Olá {{name}}, seja bem-vindo(a)!"
+                        />
+                      </div>
+                    </section>
+
+                    <section className="saas-template-section">
+                      <h5>Variáveis e configurações</h5>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-template-vars">Variáveis disponíveis</label>
+                        <textarea
+                          id="cp-template-vars"
+                          className="saas-input saas-template-textarea"
+                          value={saasTemplateForm.availableVariables}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, availableVariables: e.target.value }))}
+                          placeholder="{{name}}, {{email}}, {{resetUrl}}"
+                        />
+                        <small className="saas-template-hint">Campo auxiliar para documentação visual do template.</small>
+                      </div>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-template-notes">Observações</label>
+                        <textarea
+                          id="cp-template-notes"
+                          className="saas-input saas-template-textarea"
+                          value={saasTemplateForm.notes}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, notes: e.target.value }))}
+                          placeholder="Regras de uso, limitações ou orientações internas."
+                        />
+                      </div>
+                      <label className="saas-check-row">
+                        <input
+                          type="checkbox"
+                          checked={saasTemplateForm.isActive}
+                          onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                        />
+                        <span>Template ativo</span>
+                      </label>
+                    </section>
+
+                    <footer className="saas-template-actions">
+                      <button type="button" className="secondary-btn" onClick={resetSaasTemplateEditor}>
+                        Limpar
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => setSaasTemplatePreviewOpen((prev) => !prev)}
+                      >
+                        {saasTemplatePreviewOpen ? 'Ocultar preview' : 'Visualizar preview'}
+                      </button>
+                      <button type="submit" className="primary-btn" disabled={saasSaving}>
+                        {saasSaving ? 'Salvando...' : saasTemplateForm.id ? 'Salvar alterações' : 'Salvar template'}
+                      </button>
+                    </footer>
+                  </form>
+
+                  {saasTemplatePreviewOpen ? (
+                    <div className="saas-template-preview" role="status" aria-live="polite">
+                      <strong>{saasTemplateForm.subject || 'Sem assunto'}</strong>
+                      <small>{saasTemplateForm.templateKey || 'sem-chave'}</small>
+                      <pre>{saasTemplateForm.html || saasTemplateForm.text || 'Nenhum conteúdo informado.'}</pre>
+                    </div>
+                  ) : null}
                 </article>
-                <article className="saas-box">
-                  <h4>Resumo atual</h4>
-                  <p className="saas-ready-count">{saasTemplates.length} template(s) cadastrado(s)</p>
+
+                <article className="saas-box saas-template-table-card">
+                  <div className="saas-template-table-head">
+                    <div>
+                      <h4>Templates cadastrados</h4>
+                      <p>Selecione um item para editar rapidamente e manter histórico de versões por template.</p>
+                    </div>
+                    <span className="saas-email-table-count">{saasTemplates.length} registro(s)</span>
+                  </div>
+
+                  {saasTemplates.length === 0 ? (
+                    <div className="saas-empty-inline saas-empty-rich" role="status" aria-live="polite">
+                      <strong>Nenhum template cadastrado</strong>
+                      <span>Preencha o formulário para criar o primeiro template transacional.</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="saas-template-table-desktop">
+                        <div className="saas-table-wrap">
+                          <table className="saas-table">
+                            <thead>
+                              <tr>
+                                <th scope="col">Template</th>
+                                <th scope="col">Produto</th>
+                                <th scope="col">Site</th>
+                                <th scope="col">Assunto</th>
+                                <th scope="col">Versão</th>
+                                <th scope="col">Status</th>
+                                <th scope="col">Atualizado</th>
+                                <th scope="col">Ações</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {saasTemplateVisibleItems.map((item) => (
+                                <tr key={item.id}>
+                                  <td>
+                                    <div className="saas-template-name-cell">
+                                      <strong>{displayTemplateName(item.templateKey)}</strong>
+                                      <span className="saas-template-key">{item.templateKey}</span>
+                                    </div>
+                                  </td>
+                                  <td title={item.productName || '-'}>
+                                    <span className="saas-cell-truncate">{item.productName || '-'}</span>
+                                  </td>
+                                  <td title={item.siteDomain || '-'}>
+                                    <span className="saas-cell-truncate">{item.siteDomain || '-'}</span>
+                                  </td>
+                                  <td title={item.subject}>
+                                    <span className="saas-cell-truncate">{item.subject}</span>
+                                  </td>
+                                  <td>v{item.version}</td>
+                                  <td>
+                                    <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                      {item.isActive ? 'Ativo' : 'Inativo'}
+                                    </span>
+                                  </td>
+                                  <td>{shortDateTime(item.updatedAt)}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="secondary-btn saas-inline-action"
+                                      onClick={() => startSaasTemplateEdit(item)}
+                                    >
+                                      Editar
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="saas-template-mobile-list">
+                        {saasTemplateVisibleItems.map((item) => (
+                          <article key={item.id} className="saas-template-mobile-item">
+                            <header>
+                              <strong>{displayTemplateName(item.templateKey)}</strong>
+                              <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                {item.isActive ? 'Ativo' : 'Inativo'}
+                              </span>
+                            </header>
+                            <p><b>Nome interno:</b> <code>{item.templateKey}</code></p>
+                            <p><b>Produto:</b> {item.productName || '-'}</p>
+                            <p><b>Site:</b> {item.siteDomain || '-'}</p>
+                            <p><b>Assunto:</b> {item.subject}</p>
+                            <p><b>Versão:</b> v{item.version}</p>
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() => startSaasTemplateEdit(item)}
+                            >
+                              Editar template
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+
+                      <footer className="saas-pagination">
+                        <span>Mostrando {saasTemplateRangeStart}-{saasTemplateRangeEnd} de {saasTemplates.length}</span>
+                        <div className="saas-pagination-actions">
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => setSaasTemplatePage((prev) => Math.max(1, prev - 1))}
+                            disabled={saasTemplatePage <= 1}
+                          >
+                            Anterior
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => setSaasTemplatePage((prev) => Math.min(saasTemplateTotalPages, prev + 1))}
+                            disabled={saasTemplatePage >= saasTemplateTotalPages}
+                          >
+                            Próxima
+                          </button>
+                        </div>
+                        <span>Página {saasTemplatePage} de {saasTemplateTotalPages}</span>
+                      </footer>
+                    </>
+                  )}
                 </article>
               </div>
             ) : null}
