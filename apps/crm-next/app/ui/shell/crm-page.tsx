@@ -365,6 +365,8 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'config', label: 'Configurações', icon: 'bi-sliders2', href: '/config' },
 ];
 
+const SAAS_EMAILS_PER_PAGE = 8;
+
 function currency(cents: number | null | undefined) {
   if (cents === null || cents === undefined) return 'R$ 0,00';
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cents / 100);
@@ -568,6 +570,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     isDefault: false,
     isActive: true,
   });
+  const [saasEmailPage, setSaasEmailPage] = useState(1);
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -1261,6 +1264,17 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, [saasTemplates, saasEventForm.templateId]);
 
   useEffect(() => {
+    if (saasTab !== 'emails') return;
+    setSaasEmailPage(1);
+  }, [saasTab]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(saasEmailAccounts.length / SAAS_EMAILS_PER_PAGE));
+    if (saasEmailPage <= totalPages) return;
+    setSaasEmailPage(totalPages);
+  }, [saasEmailAccounts.length, saasEmailPage]);
+
+  useEffect(() => {
     if (socialAccounts.length === 0) return;
     if (socialPostForm.accountId) return;
     setSocialPostForm((prev) => ({ ...prev, accountId: socialAccounts[0].id }));
@@ -1645,6 +1659,17 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
       }, {}),
     [saasSites],
   );
+  const saasEmailTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(saasEmailAccounts.length / SAAS_EMAILS_PER_PAGE)),
+    [saasEmailAccounts.length],
+  );
+  const saasEmailVisibleItems = useMemo(() => {
+    const start = (saasEmailPage - 1) * SAAS_EMAILS_PER_PAGE;
+    return saasEmailAccounts.slice(start, start + SAAS_EMAILS_PER_PAGE);
+  }, [saasEmailAccounts, saasEmailPage]);
+  const saasEmailRangeStart = saasEmailAccounts.length === 0 ? 0 : (saasEmailPage - 1) * SAAS_EMAILS_PER_PAGE + 1;
+  const saasEmailRangeEnd =
+    saasEmailAccounts.length === 0 ? 0 : Math.min(saasEmailRangeStart + saasEmailVisibleItems.length - 1, saasEmailAccounts.length);
 
   function resolveClientStatus(item: ClienteItem): ClienteStatus {
     if (item.ghostedAt) return 'FANTASMA';
@@ -2210,12 +2235,13 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
             ) : null}
 
             {!saasLoading && saasTab === 'emails' ? (
-              <div className="saas-grid-two">
-                <article className="saas-box">
+              <div className="saas-grid-two saas-email-layout">
+                <article className="saas-box saas-email-form-card">
                   <h4>Novo e-mail transacional</h4>
                   <form className="stack-form" onSubmit={submitSaasEmailAccount}>
-                    <label>Produto</label>
+                    <label className="saas-field-label" htmlFor="cp-email-product">Produto</label>
                     <select
+                      id="cp-email-product"
                       className="saas-input"
                       value={saasEmailForm.productId}
                       onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
@@ -2229,8 +2255,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       ))}
                     </select>
 
-                    <label>Site/Domínio (opcional)</label>
+                    <label className="saas-field-label" htmlFor="cp-email-site">Site/Domínio (opcional)</label>
                     <select
+                      id="cp-email-site"
                       className="saas-input"
                       value={saasEmailForm.siteId}
                       onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, siteId: e.target.value }))}
@@ -2245,8 +2272,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                         ))}
                     </select>
 
-                    <label>Nome interno</label>
+                    <label className="saas-field-label" htmlFor="cp-email-label">Nome interno</label>
                     <input
+                      id="cp-email-label"
                       className="saas-input"
                       value={saasEmailForm.emailLabel}
                       onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, emailLabel: e.target.value }))}
@@ -2254,8 +2282,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       required
                     />
 
-                    <label>Nome do remetente</label>
+                    <label className="saas-field-label" htmlFor="cp-email-from-name">Nome do remetente</label>
                     <input
+                      id="cp-email-from-name"
                       className="saas-input"
                       value={saasEmailForm.fromName}
                       onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromName: e.target.value }))}
@@ -2263,8 +2292,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       required
                     />
 
-                    <label>E-mail remetente</label>
+                    <label className="saas-field-label" htmlFor="cp-email-from-email">E-mail remetente</label>
                     <input
+                      id="cp-email-from-email"
                       className="saas-input"
                       type="email"
                       value={saasEmailForm.fromEmail}
@@ -2273,8 +2303,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       required
                     />
 
-                    <label>Responder para</label>
+                    <label className="saas-field-label" htmlFor="cp-email-reply-to">Responder para</label>
                     <input
+                      id="cp-email-reply-to"
                       className="saas-input"
                       type="email"
                       value={saasEmailForm.replyTo}
@@ -2282,8 +2313,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                       placeholder="Opcional"
                     />
 
-                    <label>Provider</label>
+                    <label className="saas-field-label" htmlFor="cp-email-provider">Provider</label>
                     <select
+                      id="cp-email-provider"
                       className="saas-input"
                       value={saasEmailForm.provider}
                       onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, provider: e.target.value }))}
@@ -2319,50 +2351,116 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                   </form>
                 </article>
 
-                <article className="saas-box">
-                  <h4>E-mails cadastrados</h4>
-                  <div className="table-wrap">
-                    <table className="saas-table">
-                      <thead>
-                        <tr>
-                          <th>Produto</th>
-                          <th>Site</th>
-                          <th>Nome interno</th>
-                          <th>Remetente</th>
-                          <th>Provider</th>
-                          <th>Padrão</th>
-                          <th>Status</th>
-                          <th>Ações</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {saasEmailAccounts.length === 0 ? (
-                          <tr>
-                            <td colSpan={8}>
-                              <div className="saas-empty-inline">Nenhuma configuração de e-mail cadastrada ainda.</div>
-                            </td>
-                          </tr>
-                        ) : (
-                          saasEmailAccounts.map((item) => (
-                            <tr key={item.id}>
-                              <td>{item.productName}</td>
-                              <td>{item.siteDomain || '-'}</td>
-                              <td>{item.emailLabel}</td>
-                              <td>{item.fromName} &lt;{item.fromEmail}&gt;</td>
-                              <td>{item.provider}</td>
-                              <td>{item.isDefault ? 'Sim' : 'Não'}</td>
-                              <td>
-                                <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
-                                  {item.isActive ? 'Ativo' : 'Inativo'}
-                                </span>
-                              </td>
-                              <td>-</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                <article className="saas-box saas-email-table-card">
+                  <div className="saas-email-table-head">
+                    <div>
+                      <h4>E-mails cadastrados</h4>
+                      <p>Configurações disponíveis para envio transacional por produto e site.</p>
+                    </div>
+                    <span className="saas-email-table-count">{saasEmailAccounts.length} registro(s)</span>
                   </div>
+
+                  {saasEmailAccounts.length === 0 ? (
+                    <div className="saas-empty-inline saas-empty-rich" role="status" aria-live="polite">
+                      <strong>Nenhuma configuração cadastrada</strong>
+                      <span>Preencha o formulário para adicionar o primeiro e-mail transacional.</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="saas-email-table-desktop">
+                        <div className="saas-table-wrap">
+                          <table className="saas-table">
+                            <thead>
+                              <tr>
+                                <th scope="col">Produto</th>
+                                <th scope="col">Site</th>
+                                <th scope="col">Nome interno</th>
+                                <th scope="col">Remetente</th>
+                                <th scope="col">Provider</th>
+                                <th scope="col">Padrão</th>
+                                <th scope="col">Status</th>
+                                <th scope="col">Ações</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {saasEmailVisibleItems.map((item) => (
+                                <tr key={item.id}>
+                                  <td title={item.productName}>{item.productName}</td>
+                                  <td title={item.siteDomain || '-'}>
+                                    <span className="saas-cell-truncate">{item.siteDomain || '-'}</span>
+                                  </td>
+                                  <td title={item.emailLabel}>
+                                    <span className="saas-cell-truncate">{item.emailLabel}</span>
+                                  </td>
+                                  <td>
+                                    <div className="saas-email-sender-cell" title={`${item.fromName} <${item.fromEmail}>`}>
+                                      <strong>{item.fromName}</strong>
+                                      <span>{item.fromEmail}</span>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <span className="saas-provider-pill">{item.provider}</span>
+                                  </td>
+                                  <td>{item.isDefault ? 'Sim' : 'Não'}</td>
+                                  <td>
+                                    <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                      {item.isActive ? 'Ativo' : 'Inativo'}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <button type="button" className="saas-ghost-action" disabled aria-label="Ações em breve">
+                                      -
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="saas-email-mobile-list">
+                        {saasEmailVisibleItems.map((item) => (
+                          <article key={item.id} className="saas-email-mobile-item">
+                            <header>
+                              <strong>{item.emailLabel}</strong>
+                              <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                {item.isActive ? 'Ativo' : 'Inativo'}
+                              </span>
+                            </header>
+                            <p><b>Produto:</b> {item.productName}</p>
+                            <p><b>Site:</b> {item.siteDomain || '-'}</p>
+                            <p><b>Remetente:</b> {item.fromName} &lt;{item.fromEmail}&gt;</p>
+                            <p><b>Provider:</b> {item.provider}</p>
+                            <p><b>Padrão:</b> {item.isDefault ? 'Sim' : 'Não'}</p>
+                          </article>
+                        ))}
+                      </div>
+
+                      <footer className="saas-pagination">
+                        <span>Mostrando {saasEmailRangeStart}-{saasEmailRangeEnd} de {saasEmailAccounts.length}</span>
+                        <div className="saas-pagination-actions">
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => setSaasEmailPage((prev) => Math.max(1, prev - 1))}
+                            disabled={saasEmailPage <= 1}
+                          >
+                            Anterior
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => setSaasEmailPage((prev) => Math.min(saasEmailTotalPages, prev + 1))}
+                            disabled={saasEmailPage >= saasEmailTotalPages}
+                          >
+                            Próxima
+                          </button>
+                        </div>
+                        <span>Página {saasEmailPage} de {saasEmailTotalPages}</span>
+                      </footer>
+                    </>
+                  )}
                 </article>
               </div>
             ) : null}

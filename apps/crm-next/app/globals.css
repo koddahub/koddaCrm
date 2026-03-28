@@ -1752,33 +1752,97 @@ td {
 
 .saas-grid-two {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.45fr);
+  gap: 14px;
+  align-items: start;
 }
 
 .saas-box {
-  border: 1px solid #1f2a44;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.75);
-  padding: 12px;
+  border: 1px solid rgba(55, 80, 122, 0.56);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(14, 22, 39, 0.94), rgba(10, 17, 31, 0.88)),
+    radial-gradient(120% 140% at 0% 0%, rgba(30, 64, 175, 0.14), transparent 58%);
+  padding: 14px;
   color: #dbeafe;
+  box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.1), 0 12px 26px rgba(2, 6, 23, 0.32);
 }
 
 .saas-box h4 {
-  margin: 0 0 8px;
-  font-size: 1rem;
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.35;
   color: #f8fbff;
 }
 
 .saas-input {
-  border: 1px solid #2a3d61 !important;
-  background: rgba(12, 18, 32, 0.92) !important;
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid #2f476e !important;
+  background: rgba(12, 18, 32, 0.96) !important;
   color: #e6f0ff !important;
   border-radius: 10px !important;
+  line-height: 1.35;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.saas-input::placeholder {
+  color: #7f93b8;
+}
+
+.saas-input:focus {
+  border-color: #60a5fa !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  background: rgba(10, 15, 28, 0.98) !important;
+  outline: none;
+}
+
+.saas-input option {
+  background: #0f172a;
+  color: #e6f0ff;
+}
+
+.saas-field-label {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  margin-bottom: 2px;
+  font-size: 0.79rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #c5d7f2;
+}
+
+.saas-email-layout {
+  align-items: stretch;
+}
+
+.saas-email-form-card {
+  position: sticky;
+  top: 0;
+}
+
+.saas-email-form-card .stack-form {
+  margin-top: 12px;
+  gap: 8px;
+}
+
+.saas-email-form-card .saas-check-row {
+  border: 1px solid rgba(63, 95, 145, 0.5);
+  border-radius: 10px;
+  padding: 9px 10px;
+  margin: 2px 0 0;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.saas-email-form-card .saas-primary-btn {
+  margin-top: 8px;
+  min-height: 42px;
 }
 
 .saas-check-row {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   margin: 4px 0 2px;
@@ -1796,13 +1860,268 @@ td {
   margin-top: 4px;
 }
 
+.saas-email-table-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.saas-email-table-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.saas-email-table-head p {
+  margin: 5px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #9db4d8;
+}
+
+.saas-email-table-count {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  border-radius: 999px;
+  background: rgba(29, 78, 216, 0.2);
+  color: #dbeafe;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.saas-email-table-desktop {
+  display: block;
+}
+
+.saas-table-wrap {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(125, 211, 252, 0.42) rgba(15, 23, 42, 0.42);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 12px;
+  background: rgba(7, 12, 22, 0.5);
+}
+
+.saas-table-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.saas-table-wrap::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.saas-table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(125, 211, 252, 0.42);
+  border-radius: 999px;
+}
+
+.saas-email-table-card .saas-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
 .saas-table th {
   color: #a8c2e8;
-  background: rgba(30, 41, 59, 0.9);
+  background: rgba(21, 33, 52, 0.96);
+  border-bottom: 1px solid rgba(100, 116, 139, 0.45);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .saas-table td {
   color: #e7f0ff;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.56);
+  font-size: 0.83rem;
+}
+
+.saas-table th,
+.saas-table td {
+  padding: 10px 11px;
+}
+
+.saas-email-table-card .saas-table th:nth-child(1),
+.saas-email-table-card .saas-table td:nth-child(1) {
+  width: 13%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(2),
+.saas-email-table-card .saas-table td:nth-child(2) {
+  width: 17%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(3),
+.saas-email-table-card .saas-table td:nth-child(3) {
+  width: 18%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(4),
+.saas-email-table-card .saas-table td:nth-child(4) {
+  width: 24%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(5),
+.saas-email-table-card .saas-table td:nth-child(5) {
+  width: 10%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(6),
+.saas-email-table-card .saas-table td:nth-child(6) {
+  width: 7%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(7),
+.saas-email-table-card .saas-table td:nth-child(7) {
+  width: 8%;
+}
+
+.saas-email-table-card .saas-table th:nth-child(8),
+.saas-email-table-card .saas-table td:nth-child(8) {
+  width: 8%;
+  text-align: center;
+}
+
+.saas-cell-truncate {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saas-email-sender-cell {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.saas-email-sender-cell strong,
+.saas-email-sender-cell span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.saas-email-sender-cell strong {
+  color: #eff6ff;
+}
+
+.saas-email-sender-cell span {
+  color: #9db4d8;
+  font-size: 0.77rem;
+}
+
+.saas-provider-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.42);
+  background: rgba(8, 47, 73, 0.35);
+  color: #bfdbfe;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  min-height: 24px;
+  padding: 0 8px;
+}
+
+.saas-ghost-action {
+  min-width: 30px;
+  min-height: 30px;
+  border: 1px dashed rgba(125, 211, 252, 0.36);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.48);
+  color: #8ea6ca;
+}
+
+.saas-empty-rich {
+  min-height: 180px;
+  border: 1px dashed rgba(96, 165, 250, 0.35);
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.44);
+  text-align: center;
+}
+
+.saas-empty-rich strong {
+  font-size: 0.94rem;
+  color: #e2ecfb;
+}
+
+.saas-empty-rich span {
+  display: block;
+  margin-top: 6px;
+  max-width: 440px;
+  line-height: 1.45;
+}
+
+.saas-email-mobile-list {
+  display: none;
+}
+
+.saas-email-mobile-item {
+  border: 1px solid rgba(62, 89, 134, 0.58);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.58);
+  display: grid;
+  gap: 8px;
+}
+
+.saas-email-mobile-item header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.saas-email-mobile-item header strong {
+  font-size: 0.94rem;
+  color: #f0f7ff;
+}
+
+.saas-email-mobile-item p {
+  margin: 0;
+  color: #c8daf5;
+  font-size: 0.8rem;
+  line-height: 1.42;
+  word-break: break-word;
+}
+
+.saas-email-mobile-item b {
+  color: #dbeafe;
+  font-weight: 700;
+}
+
+.saas-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 2px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(71, 85, 105, 0.5);
+  color: #9eb4d8;
+  font-size: 0.78rem;
+}
+
+.saas-pagination-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.saas-pagination-actions .secondary-btn {
+  min-height: 36px;
 }
 
 .saas-status-chip {
@@ -2704,6 +3023,14 @@ td {
   .deal-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .saas-email-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .saas-email-form-card {
+    position: static;
+  }
 }
 
 @media (max-width: 980px) {
@@ -2815,6 +3142,37 @@ td {
     grid-template-columns: 1fr;
   }
 
+  .saas-email-table-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .saas-email-table-head .saas-email-table-count {
+    width: fit-content;
+  }
+
+  .saas-email-table-desktop {
+    display: none;
+  }
+
+  .saas-email-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .saas-pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .saas-pagination-actions {
+    width: 100%;
+  }
+
+  .saas-pagination-actions .secondary-btn {
+    width: 100%;
+  }
+
   .saas-ready-grid {
     grid-template-columns: 1fr;
   }
@@ -2894,6 +3252,18 @@ td {
 
   .crm-v2-topbar h1 {
     font-size: 1.2rem;
+  }
+
+  .saas-box {
+    padding: 12px;
+  }
+
+  .saas-email-mobile-item {
+    padding: 10px;
+  }
+
+  .saas-field-label {
+    font-size: 0.76rem;
   }
 
   .crm-v2-modal-content {
