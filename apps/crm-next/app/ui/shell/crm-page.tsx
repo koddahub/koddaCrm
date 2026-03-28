@@ -2239,93 +2239,110 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                 <article className="saas-box saas-email-form-card">
                   <h4>Novo e-mail transacional</h4>
                   <form className="stack-form" onSubmit={submitSaasEmailAccount}>
-                    <label className="saas-field-label" htmlFor="cp-email-product">Produto</label>
-                    <select
-                      id="cp-email-product"
-                      className="saas-input"
-                      value={saasEmailForm.productId}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
-                      required
-                    >
-                      <option value="">Selecione um produto</option>
-                      {saasProducts.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="saas-form-grid-two">
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-product">Produto</label>
+                        <select
+                          id="cp-email-product"
+                          className="saas-input"
+                          value={saasEmailForm.productId}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
+                          required
+                        >
+                          <option value="">Selecione um produto</option>
+                          {saasProducts.map((product) => (
+                            <option key={product.id} value={product.id}>
+                              {product.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-site">Site/Domínio (opcional)</label>
+                        <select
+                          id="cp-email-site"
+                          className="saas-input"
+                          value={saasEmailForm.siteId}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, siteId: e.target.value }))}
+                        >
+                          <option value="">Sem site específico</option>
+                          {saasSites
+                            .filter((site) => !saasEmailForm.productId || site.productId === saasEmailForm.productId)
+                            .map((site) => (
+                              <option key={site.id} value={site.id}>
+                                {site.domain}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
 
-                    <label className="saas-field-label" htmlFor="cp-email-site">Site/Domínio (opcional)</label>
-                    <select
-                      id="cp-email-site"
-                      className="saas-input"
-                      value={saasEmailForm.siteId}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, siteId: e.target.value }))}
-                    >
-                      <option value="">Sem site específico</option>
-                      {saasSites
-                        .filter((site) => !saasEmailForm.productId || site.productId === saasEmailForm.productId)
-                        .map((site) => (
-                          <option key={site.id} value={site.id}>
-                            {site.domain}
-                          </option>
-                        ))}
-                    </select>
+                    <div className="saas-field-group">
+                      <label className="saas-field-label" htmlFor="cp-email-label">Nome interno</label>
+                      <input
+                        id="cp-email-label"
+                        className="saas-input"
+                        value={saasEmailForm.emailLabel}
+                        onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, emailLabel: e.target.value }))}
+                        placeholder="Ex: Praja Transacional"
+                        required
+                      />
+                    </div>
 
-                    <label className="saas-field-label" htmlFor="cp-email-label">Nome interno</label>
-                    <input
-                      id="cp-email-label"
-                      className="saas-input"
-                      value={saasEmailForm.emailLabel}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, emailLabel: e.target.value }))}
-                      placeholder="Ex: Praja Transacional"
-                      required
-                    />
+                    <div className="saas-form-grid-two">
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-from-name">Nome do remetente</label>
+                        <input
+                          id="cp-email-from-name"
+                          className="saas-input"
+                          value={saasEmailForm.fromName}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromName: e.target.value }))}
+                          placeholder="Ex: Praja"
+                          required
+                        />
+                      </div>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-from-email">E-mail remetente</label>
+                        <input
+                          id="cp-email-from-email"
+                          className="saas-input"
+                          type="email"
+                          value={saasEmailForm.fromEmail}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromEmail: e.target.value }))}
+                          placeholder="Ex: noreply@prajakoddahub.com"
+                          required
+                        />
+                      </div>
+                    </div>
 
-                    <label className="saas-field-label" htmlFor="cp-email-from-name">Nome do remetente</label>
-                    <input
-                      id="cp-email-from-name"
-                      className="saas-input"
-                      value={saasEmailForm.fromName}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromName: e.target.value }))}
-                      placeholder="Ex: Praja"
-                      required
-                    />
-
-                    <label className="saas-field-label" htmlFor="cp-email-from-email">E-mail remetente</label>
-                    <input
-                      id="cp-email-from-email"
-                      className="saas-input"
-                      type="email"
-                      value={saasEmailForm.fromEmail}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, fromEmail: e.target.value }))}
-                      placeholder="Ex: noreply@prajakoddahub.com"
-                      required
-                    />
-
-                    <label className="saas-field-label" htmlFor="cp-email-reply-to">Responder para</label>
-                    <input
-                      id="cp-email-reply-to"
-                      className="saas-input"
-                      type="email"
-                      value={saasEmailForm.replyTo}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, replyTo: e.target.value }))}
-                      placeholder="Opcional"
-                    />
-
-                    <label className="saas-field-label" htmlFor="cp-email-provider">Provider</label>
-                    <select
-                      id="cp-email-provider"
-                      className="saas-input"
-                      value={saasEmailForm.provider}
-                      onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, provider: e.target.value }))}
-                      required
-                    >
-                      <option value="resend">resend</option>
-                      <option value="smtp">smtp</option>
-                      <option value="ses">ses</option>
-                      <option value="custom">custom</option>
-                    </select>
+                    <div className="saas-form-grid-two">
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-reply-to">Responder para</label>
+                        <input
+                          id="cp-email-reply-to"
+                          className="saas-input"
+                          type="email"
+                          value={saasEmailForm.replyTo}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, replyTo: e.target.value }))}
+                          placeholder="Opcional"
+                        />
+                      </div>
+                      <div className="saas-field-group">
+                        <label className="saas-field-label" htmlFor="cp-email-provider">Provider</label>
+                        <select
+                          id="cp-email-provider"
+                          className="saas-input"
+                          value={saasEmailForm.provider}
+                          onChange={(e) => setSaasEmailForm((prev) => ({ ...prev, provider: e.target.value }))}
+                          required
+                        >
+                          <option value="resend">resend</option>
+                          <option value="smtp">smtp</option>
+                          <option value="ses">ses</option>
+                          <option value="custom">custom</option>
+                        </select>
+                      </div>
+                    </div>
 
                     <label className="saas-check-row">
                       <input
