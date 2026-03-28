@@ -17,4 +17,5 @@ out/
 
 # Arquivos locais
 .env
-storage/postgres/g
+.env.example
+storage/postgres/

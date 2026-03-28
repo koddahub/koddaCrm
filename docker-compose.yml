@@ -49,7 +49,7 @@ services:
       dockerfile: docker/crm-next/Dockerfile
     container_name: ac_crm_next
     ports:
-      - "8082:3000"
+      - "8092:3000"
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://ac_user:ac_pass@ac_postgres:5432/ac_db?schema=public

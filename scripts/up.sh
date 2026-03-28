@@ -7,4 +7,4 @@ cd "$BASE_DIR"
 docker compose up -d --build
 
 echo "Portal Cliente:      http://192.168.25.3:8081"
-echo "CRM V2 (Next/Prisma): http://192.168.25.3:8082"
+echo "CRM V2 (Next/Prisma): http://192.168.25.3:8092"

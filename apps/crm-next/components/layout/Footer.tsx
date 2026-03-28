@@ -13,11 +13,11 @@ export function Footer() {
   const currentYear = new Date().getFullYear();
 
   return (
-    <footer className="bg-light border-top pt-5 pb-4 position-relative">
+    <footer className="site-footer bg-light border-top pt-5 pb-4 position-relative">
       <div className="container">
         <div className="row g-4 mb-4">
           <div className="col-12 col-md-6 col-lg-3">
-            <h3 className="h5 mb-3" style={{ color: '#0f172a' }}>Praja</h3>
+            <h3 className="h5 mb-3" style={{ color: '#0f172a' }}>KoddaHub Studios</h3>
             <p className="small text-secondary mb-0">
               Plataforma SaaS para agendamento profissional com foco em simplicidade, segurança e crescimento do seu negócio.
             </p>
@@ -91,7 +91,7 @@ export function Footer() {
         </div>
 
         <div className="d-flex flex-column flex-lg-row justify-content-between align-items-center gap-2 pt-3 border-top">
-          <p className="small text-secondary mb-0">© {currentYear} Praja. Todos os direitos reservados.</p>
+          <p className="small text-secondary mb-0">© {currentYear} KoddaHub Studios. Todos os direitos reservados.</p>
 
           <div className="d-flex align-items-center gap-2 small">
             <Link href="/termo-uso" className="text-decoration-none text-secondary">Termos</Link>

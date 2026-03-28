@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { DealDetail } from '@/app/ui/shell/deal-detail';
 
@@ -10,6 +10,10 @@ type SectionKey =
   | 'pipeline_hospedagem'
   | 'pipeline_avulsos'
   | 'clientes'
+  | 'saas'
+  | 'social_accounts'
+  | 'social_posts'
+  | 'social_logs'
   | 'financeiro'
   | 'tickets'
   | 'config'
@@ -97,8 +101,11 @@ type ClienteItem = {
   ticketSlaDeadline: string | null;
 };
 
+type ClienteStatus = 'ATIVO' | 'ATRASADO' | 'INATIVO' | 'FANTASMA';
+type ClienteStatusFilter = ClienteStatus | 'TODOS';
+
 type ClientesApiResponse = {
-  status: 'ATIVO' | 'ATRASADO' | 'INATIVO' | 'FANTASMA';
+  status: ClienteStatusFilter;
   page: number;
   pageSize: number;
   total: number;
@@ -110,6 +117,14 @@ type ClientesApiResponse = {
     FANTASMA: number;
   };
   items: ClienteItem[];
+};
+
+type QuickClientForm = {
+  name: string;
+  email: string;
+  phone: string;
+  planCode: string;
+  value: string;
 };
 
 type EditDealForm = {
@@ -175,6 +190,125 @@ type TicketItem = {
   createdAt: string;
 };
 
+type SocialInstagramAccountItem = {
+  id: string;
+  pageId: string;
+  pageName: string | null;
+  instagramId: string;
+  instagramUsername: string;
+  instagramName: string | null;
+  profilePictureUrl: string | null;
+  tokenExpiresAt: string | null;
+  scopes: string | null;
+  status: string;
+  lastSyncedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SocialInstagramPostItem = {
+  id: string;
+  accountId: string;
+  caption: string;
+  mediaUrl: string;
+  igCreationId: string | null;
+  igMediaId: string | null;
+  status: string;
+  errorMessage: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  account?: {
+    id: string;
+    instagramUsername: string;
+    pageName: string | null;
+  } | null;
+};
+
+type SocialInstagramLogItem = {
+  id: string;
+  action: string;
+  endpoint: string | null;
+  httpMethod: string | null;
+  statusCode: number | null;
+  success: boolean;
+  errorMessage: string | null;
+  createdAt: string;
+  account?: {
+    id: string;
+    instagramUsername: string;
+    pageName: string | null;
+  } | null;
+  post?: {
+    id: string;
+    status: string;
+    mediaUrl: string;
+    igMediaId: string | null;
+  } | null;
+};
+
+type SaasTabKey = 'produtos' | 'sites' | 'templates' | 'eventos';
+
+type SaasProductItem = {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  status: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SaasSiteItem = {
+  id: string;
+  productId: string;
+  productName: string;
+  productSlug: string;
+  name: string;
+  domain: string;
+  appType: string;
+  brandName: string | null;
+  supportEmail: string | null;
+  isActive: boolean;
+  env: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SaasTemplateItem = {
+  id: string;
+  productId: string | null;
+  productName: string | null;
+  productSlug: string | null;
+  siteId: string | null;
+  siteDomain: string | null;
+  templateKey: string;
+  subject: string;
+  html: string | null;
+  text: string | null;
+  isActive: boolean;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SaasEventItem = {
+  id: string;
+  productId: string | null;
+  productName: string | null;
+  productSlug: string | null;
+  siteId: string | null;
+  siteDomain: string | null;
+  eventKey: string;
+  templateId: string;
+  templateKey: string;
+  templateSubject: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type CrmPageProps = {
   section: SectionKey;
   dealId?: string;
@@ -204,6 +338,10 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'pipeline_hospedagem', label: 'Pipeline Hospedagem', icon: 'bi-diagram-3-fill', href: '/pipeline/hospedagem' },
   { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
   { key: 'clientes', label: 'Clientes', icon: 'bi-people-fill', href: '/clientes' },
+  { key: 'saas', label: 'SaaS', icon: 'bi-boxes', href: '/saas' },
+  { key: 'social_accounts', label: 'Social · Contas', icon: 'bi-instagram', href: '/social/contas' },
+  { key: 'social_posts', label: 'Social · Posts', icon: 'bi-images', href: '/social/posts' },
+  { key: 'social_logs', label: 'Social · Logs', icon: 'bi-journal-code', href: '/social/logs' },
   { key: 'financeiro', label: 'Financeiro', icon: 'bi-cash-stack', href: '/financeiro' },
   { key: 'tickets', label: 'Tickets', icon: 'bi-ticket-detailed-fill', href: '/tickets' },
   { key: 'config', label: 'Configurações', icon: 'bi-sliders2', href: '/config' },
@@ -244,6 +382,14 @@ function sectionTitle(section: SectionKey) {
       return 'Pipeline Avulsos';
     case 'clientes':
       return 'Clientes';
+    case 'saas':
+      return 'SaaS';
+    case 'social_accounts':
+      return 'Social · Contas Instagram';
+    case 'social_posts':
+      return 'Social · Posts Instagram';
+    case 'social_logs':
+      return 'Social · Logs Instagram';
     case 'financeiro':
       return 'Financeiro';
     case 'tickets':
@@ -313,31 +459,85 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [dashboardError, setDashboardError] = useState('');
   const [dashboardUpdatedAt, setDashboardUpdatedAt] = useState<string | null>(null);
   const [pipelineData, setPipelineData] = useState<PipelineTableData | null>(null);
-  const [clientesAtivos, setClientesAtivos] = useState<ClienteItem[]>([]);
-  const [clientesAtrasados, setClientesAtrasados] = useState<ClienteItem[]>([]);
-  const [clientesInativos, setClientesInativos] = useState<ClienteItem[]>([]);
-  const [clientesFantasma, setClientesFantasma] = useState<ClienteItem[]>([]);
+  const [clientesItems, setClientesItems] = useState<ClienteItem[]>([]);
   const [clientesCounts, setClientesCounts] = useState({ ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
-  const [showGhostModal, setShowGhostModal] = useState(false);
+  const [clientesPage, setClientesPage] = useState(1);
+  const [clientesTotal, setClientesTotal] = useState(0);
+  const [clientesTotalPages, setClientesTotalPages] = useState(1);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ClienteStatusFilter>('TODOS');
+  const [planFilter, setPlanFilter] = useState('');
+  const [selectedClients, setSelectedClients] = useState<string[]>([]);
+  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [createClientModalOpen, setCreateClientModalOpen] = useState(false);
+  const [quickClientForm, setQuickClientForm] = useState<QuickClientForm>({
+    name: '',
+    email: '',
+    phone: '',
+    planCode: 'basic',
+    value: '',
+  });
+  const [wonStageId, setWonStageId] = useState<string | null>(null);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [ghostTarget, setGhostTarget] = useState<DeleteTarget>(null);
   const [restoreTarget, setRestoreTarget] = useState<DeleteTarget>(null);
   const [purgeTarget, setPurgeTarget] = useState<DeleteTarget>(null);
   const [purgeConfirm, setPurgeConfirm] = useState('');
-  const [searchAtivos, setSearchAtivos] = useState('');
-  const [searchAtrasados, setSearchAtrasados] = useState('');
-  const [searchInativos, setSearchInativos] = useState('');
-  const [searchFantasma, setSearchFantasma] = useState('');
-  const [pageAtivos, setPageAtivos] = useState(1);
-  const [pageAtrasados, setPageAtrasados] = useState(1);
-  const [pageInativos, setPageInativos] = useState(1);
-  const [pageFantasma, setPageFantasma] = useState(1);
-  const [totals, setTotals] = useState({ ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
-  const [totalPages, setTotalPages] = useState({ ATIVO: 1, ATRASADO: 1, INATIVO: 1, FANTASMA: 1 });
+  const clientsSelectAllRef = useRef<HTMLInputElement | null>(null);
   const [financeOverview, setFinanceOverview] = useState<FinanceOverview | null>(null);
   const [recebimentos, setRecebimentos] = useState<RecebimentoItem[]>([]);
   const [inadimplencia, setInadimplencia] = useState<InadimplenciaItem[]>([]);
   const [tickets, setTickets] = useState<TicketItem[]>([]);
+  const [socialAccounts, setSocialAccounts] = useState<SocialInstagramAccountItem[]>([]);
+  const [socialPosts, setSocialPosts] = useState<SocialInstagramPostItem[]>([]);
+  const [socialLogs, setSocialLogs] = useState<SocialInstagramLogItem[]>([]);
+  const [socialMetaConfigured, setSocialMetaConfigured] = useState(true);
+  const [socialConnectUrl, setSocialConnectUrl] = useState('/api/social/instagram/oauth/start?returnTo=/social/contas');
+  const [socialPublishing, setSocialPublishing] = useState(false);
+  const [socialPostForm, setSocialPostForm] = useState({
+    accountId: '',
+    mediaUrl: '',
+    caption: '',
+  });
+  const [saasTab, setSaasTab] = useState<SaasTabKey>('produtos');
+  const [saasLoading, setSaasLoading] = useState(section === 'saas');
+  const [saasSaving, setSaasSaving] = useState(false);
+  const [saasProducts, setSaasProducts] = useState<SaasProductItem[]>([]);
+  const [saasSites, setSaasSites] = useState<SaasSiteItem[]>([]);
+  const [saasTemplates, setSaasTemplates] = useState<SaasTemplateItem[]>([]);
+  const [saasEvents, setSaasEvents] = useState<SaasEventItem[]>([]);
+  const [saasProductForm, setSaasProductForm] = useState({
+    name: '',
+    slug: '',
+    isActive: true,
+  });
+  const [saasSiteForm, setSaasSiteForm] = useState({
+    productId: '',
+    name: '',
+    domain: '',
+    appType: 'web',
+    brandName: '',
+    supportEmail: '',
+    env: 'production',
+    isActive: true,
+  });
+  const [saasTemplateForm, setSaasTemplateForm] = useState({
+    productId: '',
+    siteId: '',
+    templateKey: 'welcome',
+    subject: '',
+    html: '',
+    text: '',
+    isActive: true,
+  });
+  const [saasEventForm, setSaasEventForm] = useState({
+    productId: '',
+    siteId: '',
+    eventKey: 'user.created',
+    templateId: '',
+    enabled: true,
+  });
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -488,7 +688,8 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setShowLeadModal(false);
     setShowEditModal(false);
     setShowDeleteModal(false);
-    setShowGhostModal(false);
+    setShowBulkDeleteModal(false);
+    setCreateClientModalOpen(false);
     setShowPurgeModal(false);
     setDeleteTarget(null);
     setGhostTarget(null);
@@ -550,38 +751,43 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setNotice(data.error || 'Falha ao carregar pipeline');
   }
 
-  async function loadClientesByStatus(
-    status: 'ATIVO' | 'ATRASADO' | 'INATIVO' | 'FANTASMA',
-    search: string,
-    page: number,
-    setter: (items: ClienteItem[]) => void
-  ) {
-    const qs = new URLSearchParams({
-      status,
-      search,
-      page: String(page),
-      pageSize: '10',
-    });
-    const res = await fetch(`/api/clientes?${qs.toString()}`);
-    const data = (await res.json()) as ClientesApiResponse & { error?: string };
+  async function resolveWonStageId() {
+    if (wonStageId) return wonStageId;
+    const res = await fetch('/api/pipeline-table/hospedagem');
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setNotice(data.error || `Falha ao carregar clientes ${status.toLowerCase()}`);
-      return;
+      throw new Error(data.error || 'Falha ao carregar pipeline de hospedagem');
     }
-
-    setter(data.items || []);
-    setClientesCounts(data.counts || { ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
-    setTotals((prev) => ({ ...prev, [status]: data.total ?? 0 }));
-    setTotalPages((prev) => ({ ...prev, [status]: Math.max(1, data.totalPages ?? 1) }));
+    const stage = (data.stages || []).find((item: { code?: string; id?: string }) =>
+      ['fechado_ganho', 'assinatura_ativa_ganho'].includes(String(item.code || '')),
+    );
+    if (!stage?.id) {
+      throw new Error('Estágio de fechamento não encontrado no pipeline de hospedagem');
+    }
+    setWonStageId(stage.id);
+    return stage.id;
   }
 
   async function loadClientes() {
-    await Promise.all([
-      loadClientesByStatus('ATIVO', searchAtivos, pageAtivos, setClientesAtivos),
-      loadClientesByStatus('ATRASADO', searchAtrasados, pageAtrasados, setClientesAtrasados),
-      loadClientesByStatus('INATIVO', searchInativos, pageInativos, setClientesInativos),
-      loadClientesByStatus('FANTASMA', searchFantasma, pageFantasma, setClientesFantasma),
-    ]);
+    const qs = new URLSearchParams({
+      status: statusFilter,
+      search: searchTerm.trim(),
+      page: String(clientesPage),
+      pageSize: '10',
+    });
+    if (planFilter.trim()) qs.set('plan', planFilter.trim());
+
+    const res = await fetch(`/api/clientes?${qs.toString()}`);
+    const data = (await res.json()) as ClientesApiResponse & { error?: string };
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao carregar clientes');
+      return;
+    }
+
+    setClientesItems(data.items || []);
+    setClientesCounts(data.counts || { ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
+    setClientesTotal(data.total ?? 0);
+    setClientesTotalPages(Math.max(1, data.totalPages ?? 1));
   }
 
   async function loadFinanceiro() {
@@ -608,6 +814,234 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     if (res.ok) setTickets(data.items || []);
   }
 
+  async function loadSocialAccounts() {
+    const res = await fetch('/api/social/instagram/accounts');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao carregar contas Instagram.');
+      return;
+    }
+
+    setSocialAccounts(data.items || []);
+    setSocialMetaConfigured(Boolean(data.metaConfigured));
+    setSocialConnectUrl(
+      String(data.connectUrl || '/api/social/instagram/oauth/start?returnTo=/social/contas'),
+    );
+  }
+
+  async function loadSocialPosts() {
+    const res = await fetch('/api/social/instagram/posts?limit=60');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao carregar posts Instagram.');
+      return;
+    }
+
+    setSocialPosts(data.items || []);
+  }
+
+  async function loadSocialLogs() {
+    const res = await fetch('/api/social/instagram/logs?limit=120');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao carregar logs Instagram.');
+      return;
+    }
+
+    setSocialLogs(data.items || []);
+  }
+
+  async function submitSocialPost(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!socialPostForm.mediaUrl.trim()) {
+      setNotice('Informe a URL pública da imagem para publicar.');
+      return;
+    }
+
+    setSocialPublishing(true);
+    const payload = {
+      accountId: socialPostForm.accountId || undefined,
+      mediaUrl: socialPostForm.mediaUrl.trim(),
+      caption: socialPostForm.caption.trim(),
+    };
+
+    const res = await fetch('/api/social/instagram/posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    setSocialPublishing(false);
+
+    if (!res.ok) {
+      setNotice(data.error || data.details || 'Falha ao publicar imagem no Instagram.');
+      await Promise.all([loadSocialPosts(), loadSocialLogs()]);
+      return;
+    }
+
+    setNotice('Imagem publicada no Instagram com sucesso.');
+    setSocialPostForm((prev) => ({
+      ...prev,
+      mediaUrl: '',
+      caption: '',
+    }));
+    await Promise.all([loadSocialPosts(), loadSocialLogs()]);
+  }
+
+  async function loadSaas() {
+    setSaasLoading(true);
+    try {
+      const [productsRes, sitesRes, templatesRes, eventsRes] = await Promise.all([
+        fetch('/api/saas/products'),
+        fetch('/api/saas/sites'),
+        fetch('/api/saas/templates'),
+        fetch('/api/saas/events'),
+      ]);
+
+      const [productsData, sitesData, templatesData, eventsData] = await Promise.all([
+        productsRes.json().catch(() => ({})),
+        sitesRes.json().catch(() => ({})),
+        templatesRes.json().catch(() => ({})),
+        eventsRes.json().catch(() => ({})),
+      ]);
+
+      if (!productsRes.ok) {
+        setNotice(productsData.error || 'Falha ao carregar produtos SaaS');
+        return;
+      }
+      if (!sitesRes.ok) {
+        setNotice(sitesData.error || 'Falha ao carregar sites SaaS');
+        return;
+      }
+      if (!templatesRes.ok) {
+        setNotice(templatesData.error || 'Falha ao carregar templates SaaS');
+        return;
+      }
+      if (!eventsRes.ok) {
+        setNotice(eventsData.error || 'Falha ao carregar eventos SaaS');
+        return;
+      }
+
+      setSaasProducts(productsData.items || []);
+      setSaasSites(sitesData.items || []);
+      setSaasTemplates(templatesData.items || []);
+      setSaasEvents(eventsData.items || []);
+    } catch (error) {
+      setNotice(`Falha ao carregar módulo SaaS: ${String(error)}`);
+    } finally {
+      setSaasLoading(false);
+    }
+  }
+
+  async function submitSaasProduct(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaasSaving(true);
+
+    const payload = {
+      name: saasProductForm.name,
+      slug: saasProductForm.slug,
+      category: 'saas',
+      status: saasProductForm.isActive ? 'active' : 'inactive',
+    };
+
+    const res = await fetch('/api/saas/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setSaasSaving(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar produto SaaS');
+      return;
+    }
+
+    setNotice('Produto SaaS salvo com sucesso.');
+    setSaasProductForm({
+      name: '',
+      slug: '',
+      isActive: true,
+    });
+    await loadSaas();
+  }
+
+  async function submitSaasSite(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaasSaving(true);
+
+    const res = await fetch('/api/saas/sites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(saasSiteForm),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setSaasSaving(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar site SaaS');
+      return;
+    }
+
+    setNotice('Site SaaS salvo com sucesso.');
+    setSaasSiteForm((prev) => ({
+      ...prev,
+      name: '',
+      domain: '',
+      brandName: '',
+      supportEmail: '',
+    }));
+    await loadSaas();
+  }
+
+  async function submitSaasTemplate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaasSaving(true);
+
+    const res = await fetch('/api/saas/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(saasTemplateForm),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setSaasSaving(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar template SaaS');
+      return;
+    }
+
+    setNotice('Template SaaS salvo com sucesso.');
+    setSaasTemplateForm((prev) => ({
+      ...prev,
+      subject: '',
+      html: '',
+      text: '',
+    }));
+    await loadSaas();
+  }
+
+  async function submitSaasEvent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaasSaving(true);
+
+    const res = await fetch('/api/saas/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(saasEventForm),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setSaasSaving(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar evento SaaS');
+      return;
+    }
+
+    setNotice('Evento SaaS salvo com sucesso.');
+    await loadSaas();
+  }
+
   async function reloadSection() {
     if (section === 'dashboard') {
       await loadDashboard();
@@ -619,6 +1053,22 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     }
     if (section === 'clientes') {
       await loadClientes();
+      return;
+    }
+    if (section === 'saas') {
+      await loadSaas();
+      return;
+    }
+    if (section === 'social_accounts') {
+      await loadSocialAccounts();
+      return;
+    }
+    if (section === 'social_posts') {
+      await Promise.all([loadSocialAccounts(), loadSocialPosts()]);
+      return;
+    }
+    if (section === 'social_logs') {
+      await loadSocialLogs();
       return;
     }
     if (section === 'financeiro') {
@@ -635,6 +1085,13 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, [section, pipelineType]);
 
   useEffect(() => {
+    document.body.classList.add('crm-v2-internal');
+    return () => {
+      document.body.classList.remove('crm-v2-internal');
+    };
+  }, []);
+
+  useEffect(() => {
     resetTransientOverlays();
   }, [pathname]);
 
@@ -645,20 +1102,85 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, []);
 
   useEffect(() => {
+    if (section !== 'social_accounts') return;
+    const params = new URLSearchParams(window.location.search);
+    const socialErrorParam = params.get('social_error');
+    const socialNoticeParam = params.get('social_notice');
+
+    if (socialErrorParam) {
+      setNotice(socialErrorParam);
+      return;
+    }
+    if (socialNoticeParam) {
+      setNotice(socialNoticeParam);
+    }
+  }, [section, pathname]);
+
+  useEffect(() => {
     if (section === 'clientes') {
       loadClientes();
     }
   }, [
     section,
-    searchAtivos,
-    searchAtrasados,
-    searchInativos,
-    searchFantasma,
-    pageAtivos,
-    pageAtrasados,
-    pageInativos,
-    pageFantasma,
+    searchTerm,
+    statusFilter,
+    planFilter,
+    clientesPage,
   ]);
+
+  useEffect(() => {
+    setClientesPage(1);
+  }, [searchTerm, statusFilter, planFilter]);
+
+  useEffect(() => {
+    setSelectedClients([]);
+  }, [clientesPage, searchTerm, statusFilter, planFilter]);
+
+  useEffect(() => {
+    if (!clientsSelectAllRef.current) return;
+    const currentPageIds = clientesItems.map((item) => item.id);
+    const selectedOnPage = currentPageIds.filter((id) => selectedClients.includes(id)).length;
+    clientsSelectAllRef.current.indeterminate =
+      selectedOnPage > 0 && selectedOnPage < currentPageIds.length;
+  }, [clientesItems, selectedClients]);
+
+  useEffect(() => {
+    if (saasProducts.length === 0) return;
+    const firstProductId = saasProducts[0].id;
+    if (!saasSiteForm.productId) {
+      setSaasSiteForm((prev) => ({ ...prev, productId: firstProductId }));
+    }
+    if (!saasTemplateForm.productId) {
+      setSaasTemplateForm((prev) => ({ ...prev, productId: firstProductId }));
+    }
+    if (!saasEventForm.productId) {
+      setSaasEventForm((prev) => ({ ...prev, productId: firstProductId }));
+    }
+  }, [saasProducts, saasSiteForm.productId, saasTemplateForm.productId, saasEventForm.productId]);
+
+  useEffect(() => {
+    if (saasSites.length === 0) return;
+    const firstSiteId = saasSites[0].id;
+    if (!saasTemplateForm.siteId) {
+      setSaasTemplateForm((prev) => ({ ...prev, siteId: firstSiteId }));
+    }
+    if (!saasEventForm.siteId) {
+      setSaasEventForm((prev) => ({ ...prev, siteId: firstSiteId }));
+    }
+  }, [saasSites, saasTemplateForm.siteId, saasEventForm.siteId]);
+
+  useEffect(() => {
+    if (saasTemplates.length === 0) return;
+    if (!saasEventForm.templateId) {
+      setSaasEventForm((prev) => ({ ...prev, templateId: saasTemplates[0].id }));
+    }
+  }, [saasTemplates, saasEventForm.templateId]);
+
+  useEffect(() => {
+    if (socialAccounts.length === 0) return;
+    if (socialPostForm.accountId) return;
+    setSocialPostForm((prev) => ({ ...prev, accountId: socialAccounts[0].id }));
+  }, [socialAccounts, socialPostForm.accountId]);
 
   async function updateStage(dealIdValue: string, stageId: string) {
     const res = await fetch(`/api/deals/${dealIdValue}/stage`, {
@@ -746,6 +1268,112 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     });
 
     if (pipelineType) await loadPipeline(pipelineType);
+  }
+
+  async function createQuickClient(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const hasContact = quickClientForm.email.trim() || quickClientForm.phone.trim();
+    if (!quickClientForm.name.trim() || !hasContact) {
+      setNotice('Nome e pelo menos e-mail ou telefone são obrigatórios.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const createRes = await fetch('/api/deals/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pipelineType: 'hospedagem',
+          name: quickClientForm.name.trim(),
+          email: quickClientForm.email.trim(),
+          phone: quickClientForm.phone.trim(),
+          planCode: quickClientForm.planCode,
+          value: quickClientForm.value,
+          intent: `cliente_${quickClientForm.planCode}`,
+        }),
+      });
+      const createData = await createRes.json().catch(() => ({}));
+      if (!createRes.ok || !createData?.dealId) {
+        setNotice(createData.error || 'Falha ao cadastrar cliente rápido');
+        return;
+      }
+
+      const targetStageId = await resolveWonStageId();
+      const closeRes = await fetch(`/api/deals/${createData.dealId}/stage`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stageId: targetStageId,
+          reason: 'Cadastro rápido de cliente pela aba Clientes',
+        }),
+      });
+      const closeData = await closeRes.json().catch(() => ({}));
+      if (!closeRes.ok) {
+        setNotice(closeData.error || 'Cliente criado, mas falhou ao finalizar como cliente ativo.');
+        return;
+      }
+
+      setCreateClientModalOpen(false);
+      setQuickClientForm({
+        name: '',
+        email: '',
+        phone: '',
+        planCode: 'basic',
+        value: '',
+      });
+      setNotice('Cliente cadastrado com sucesso.');
+      await loadClientes();
+    } catch (error) {
+      setNotice(`Falha ao cadastrar cliente rápido: ${String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function toggleClientSelection(clientId: string) {
+    setSelectedClients((prev) =>
+      prev.includes(clientId) ? prev.filter((id) => id !== clientId) : [...prev, clientId],
+    );
+  }
+
+  function toggleSelectAllClients() {
+    const currentIds = clientesItems.map((item) => item.id);
+    const allSelected = currentIds.length > 0 && currentIds.every((id) => selectedClients.includes(id));
+    setSelectedClients((prev) => {
+      if (allSelected) return prev.filter((id) => !currentIds.includes(id));
+      return Array.from(new Set([...prev, ...currentIds]));
+    });
+  }
+
+  async function confirmBulkDeleteClients() {
+    if (selectedClients.length === 0) return;
+    setBulkDeleteLoading(true);
+
+    const results = await Promise.all(
+      selectedClients.map(async (dealIdValue) => {
+        const res = await fetch(`/api/deals/${dealIdValue}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        return { dealIdValue, ok: res.ok, error: data.error || 'Falha ao excluir' };
+      }),
+    );
+
+    const failures = results.filter((item) => !item.ok);
+    const successCount = results.length - failures.length;
+
+    if (failures.length === 0) {
+      setNotice(`${successCount} cliente(s) removido(s) com sucesso.`);
+      setSelectedClients([]);
+      setShowBulkDeleteModal(false);
+    } else {
+      setNotice(
+        `Removidos ${successCount} cliente(s). ${failures.length} falharam e permaneceram selecionados.`,
+      );
+      setSelectedClients(failures.map((item) => item.dealIdValue));
+    }
+
+    setBulkDeleteLoading(false);
+    await loadClientes();
   }
 
   async function submitFinancialEntry(event: React.FormEvent<HTMLFormElement>) {
@@ -915,9 +1543,36 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const topbarDescription =
     section === 'dashboard'
       ? 'Visão rápida da saúde comercial, financeira e operacional.'
-      : 'KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.';
+      : section === 'saas'
+        ? 'Módulo administrativo para produtos, sites, templates e eventos automáticos.'
+        : section === 'social_accounts' || section === 'social_posts' || section === 'social_logs'
+          ? 'Instagram via Meta Graph API: conexão OAuth, publicação de imagem e trilha de auditoria.'
+        : 'KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.';
   const currentHour = new Date().getHours();
   const periodLabel = currentHour < 12 ? 'Manhã' : currentHour < 18 ? 'Tarde' : 'Noite';
+  const currentPageClientIds = clientesItems.map((item) => item.id);
+  const allClientsOnPageSelected =
+    currentPageClientIds.length > 0 && currentPageClientIds.every((id) => selectedClients.includes(id));
+  const saasSitesByProductId = useMemo(
+    () =>
+      saasSites.reduce<Record<string, number>>((acc, site) => {
+        acc[site.productId] = (acc[site.productId] || 0) + 1;
+        return acc;
+      }, {}),
+    [saasSites],
+  );
+
+  function resolveClientStatus(item: ClienteItem): ClienteStatus {
+    if (item.ghostedAt) return 'FANTASMA';
+    return item.classStatus;
+  }
+
+  function socialPostStatusClass(status: string) {
+    const normalized = String(status || '').toUpperCase();
+    if (normalized === 'PUBLISHED') return 'ativo';
+    if (normalized === 'FAILED') return 'atrasado';
+    return 'inativo';
+  }
 
   return (
     <div className="crm-v2-layout">
@@ -1156,234 +1811,559 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         ) : null}
 
         {section === 'clientes' ? (
-          <section className="clientes-v2-grid">
-            <section className="crm-v2-panel clientes-table-panel ativos">
-              <div className="table-header-actions">
-                <div>
-                  <h3>Ativos</h3>
-                  <p>Pagamento confirmado ou até 2 dias de tolerância.</p>
-                </div>
-                <span className="status-chip ativo">{clientesCounts.ATIVO}</span>
+          <section className="crm-v2-panel clientes-operacao-panel">
+            <div className="table-header-actions">
+              <div>
+                <h3>Carteira de Clientes</h3>
+                <p>Operação unificada: busca rápida, filtros e ações em massa.</p>
               </div>
-              <div className="clientes-table-toolbar">
-                <input
-                  placeholder="Buscar cliente ativo..."
-                  value={searchAtivos}
-                  onChange={(e) => {
-                    setSearchAtivos(e.target.value);
-                    setPageAtivos(1);
-                  }}
-                />
+              <div className="clientes-actions-group">
+                <span className="status-chip ativo" title="Clientes ativos">{clientesCounts.ATIVO}</span>
+                <span className="status-chip atrasado" title="Clientes atrasados">{clientesCounts.ATRASADO}</span>
+                <span className="status-chip inativo" title="Clientes inativos">{clientesCounts.INATIVO}</span>
+                <span className="status-chip fantasma" title="Lista fantasma">{clientesCounts.FANTASMA}</span>
+                <button
+                  type="button"
+                  className="primary-btn icon-only-add-btn"
+                  aria-label="Cadastro rápido de cliente"
+                  title="Cadastro rápido de cliente"
+                  onClick={() => setCreateClientModalOpen(true)}
+                >
+                  +
+                </button>
               </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Cliente</th>
-                      <th>Contato</th>
-                      <th>Plano</th>
-                      <th>Valor</th>
-                      <th>Vencimento</th>
-                      <th>Status</th>
-                      <th>Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {clientesAtivos.map((item) => (
-                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
-                        <td>{item.contactName || item.title}</td>
-                        <td>{item.contactEmail || '-'}</td>
-                        <td>{item.planCode || '-'}</td>
-                        <td>{currency(item.valueCents)}</td>
-                        <td>{dateOnly(item.nextDueDate || item.referenceDueDate)}</td>
-                        <td><span className="status-chip ativo">{item.classStatus}</span></td>
-                        <td>
-                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              aria-label="Editar cliente"
-                              title="Editar"
-                              onClick={() =>
-                                openEditDeal({
-                                  id: item.id,
-                                  title: item.title,
-                                  contactName: item.contactName,
-                                  contactEmail: item.contactEmail,
-                                  valueCents: item.valueCents,
-                                })
-                              }
-                            >
-                              <i className="bi bi-pencil-square" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="clientes-pagination">
-                <button type="button" onClick={() => setPageAtivos((p) => Math.max(1, p - 1))} disabled={pageAtivos <= 1}>Anterior</button>
-                <span>Página {pageAtivos} de {totalPages.ATIVO} ({totals.ATIVO} registros)</span>
-                <button type="button" onClick={() => setPageAtivos((p) => Math.min(totalPages.ATIVO, p + 1))} disabled={pageAtivos >= totalPages.ATIVO}>Próxima</button>
-              </div>
-            </section>
+            </div>
 
-            <section className="crm-v2-panel clientes-table-panel atrasados">
-              <div className="table-header-actions">
-                <div>
-                  <h3>Atrasados</h3>
-                  <p>Pagamentos com atraso entre 3 e 15 dias.</p>
-                </div>
-                <span className="status-chip atrasado">{clientesCounts.ATRASADO}</span>
-              </div>
-              <div className="clientes-table-toolbar">
-                <input
-                  placeholder="Buscar cliente atrasado..."
-                  value={searchAtrasados}
-                  onChange={(e) => {
-                    setSearchAtrasados(e.target.value);
-                    setPageAtrasados(1);
-                  }}
-                />
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Cliente</th>
-                      <th>Contato</th>
-                      <th>Plano</th>
-                      <th>Dias atraso</th>
-                      <th>Status pagamento</th>
-                      <th>Atualizado</th>
-                      <th>Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {clientesAtrasados.map((item) => (
-                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
-                        <td>{item.contactName || item.title}</td>
-                        <td>{item.contactEmail || '-'}</td>
-                        <td>{item.planCode || '-'}</td>
-                        <td>{item.daysLate}</td>
-                        <td>{item.lastPaymentStatus || '-'}</td>
-                        <td>{dateTime(item.updatedAt)}</td>
-                        <td>
-                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              aria-label="Editar cliente"
-                              title="Editar"
-                              onClick={() =>
-                                openEditDeal({
-                                  id: item.id,
-                                  title: item.title,
-                                  contactName: item.contactName,
-                                  contactEmail: item.contactEmail,
-                                  valueCents: item.valueCents,
-                                })
-                              }
-                            >
-                              <i className="bi bi-pencil-square" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="clientes-pagination">
-                <button type="button" onClick={() => setPageAtrasados((p) => Math.max(1, p - 1))} disabled={pageAtrasados <= 1}>Anterior</button>
-                <span>Página {pageAtrasados} de {totalPages.ATRASADO} ({totals.ATRASADO} registros)</span>
-                <button type="button" onClick={() => setPageAtrasados((p) => Math.min(totalPages.ATRASADO, p + 1))} disabled={pageAtrasados >= totalPages.ATRASADO}>Próxima</button>
-              </div>
-            </section>
+            <div className="clientes-toolbar-inline">
+              <input
+                placeholder="Buscar cliente..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                aria-label="Buscar cliente"
+              />
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as ClienteStatusFilter)}
+                aria-label="Filtrar por status"
+              >
+                <option value="TODOS">Todos os status</option>
+                <option value="ATIVO">Ativos</option>
+                <option value="ATRASADO">Atrasados</option>
+                <option value="INATIVO">Inativos</option>
+                <option value="FANTASMA">Fantasma</option>
+              </select>
+              <input
+                placeholder="Filtrar plano/produto..."
+                value={planFilter}
+                onChange={(e) => setPlanFilter(e.target.value)}
+                aria-label="Filtrar por plano"
+              />
+            </div>
 
-            <section className="crm-v2-panel clientes-table-panel inativos">
-              <div className="table-header-actions">
-                <div>
-                  <h3>Inativos</h3>
-                  <p>Atraso superior a 15 dias. Elegíveis para lista fantasma.</p>
-                </div>
-                <div className="clientes-actions-group">
-                  <span className="status-chip inativo">{clientesCounts.INATIVO}</span>
-                  <button type="button" className="secondary-btn" onClick={() => setShowGhostModal(true)}>
-                    <i className="bi bi-archive" aria-hidden="true" /> Lista Fantasma
+            {selectedClients.length > 0 ? (
+              <div className="clientes-bulk-actions" role="status" aria-live="polite">
+                <strong>{selectedClients.length} selecionado(s)</strong>
+                <div className="clientes-bulk-actions-buttons">
+                  <button type="button" className="secondary-btn" onClick={() => setSelectedClients([])}>
+                    Limpar seleção
+                  </button>
+                  <button type="button" className="danger-btn" onClick={() => setShowBulkDeleteModal(true)}>
+                    Remover em massa
                   </button>
                 </div>
               </div>
-              <div className="clientes-table-toolbar">
+            ) : null}
+
+            <div className="table-wrap">
+              <table className="clientes-main-table">
+                <thead>
+                  <tr>
+                    <th>
+                      <input
+                        ref={clientsSelectAllRef}
+                        type="checkbox"
+                        checked={allClientsOnPageSelected}
+                        onChange={toggleSelectAllClients}
+                        aria-label="Selecionar todos os clientes da página"
+                      />
+                    </th>
+                    <th>Cliente</th>
+                    <th>Contato</th>
+                    <th>Plano</th>
+                    <th className="hide-on-mobile">Valor</th>
+                    <th className="hide-on-mobile">Vencimento</th>
+                    <th>Status</th>
+                    <th>Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clientesItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={8}>
+                        <div className="clientes-empty-state">
+                          Nenhum cliente encontrado para os filtros atuais.
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    clientesItems.map((item) => {
+                      const itemStatus = resolveClientStatus(item);
+                      const statusClass =
+                        itemStatus === 'ATIVO'
+                          ? 'ativo'
+                          : itemStatus === 'ATRASADO'
+                            ? 'atrasado'
+                            : itemStatus === 'INATIVO'
+                              ? 'inativo'
+                              : 'fantasma';
+
+                      return (
+                        <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
+                          <td onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={selectedClients.includes(item.id)}
+                              onChange={() => toggleClientSelection(item.id)}
+                              aria-label={`Selecionar ${item.contactName || item.title}`}
+                            />
+                          </td>
+                          <td>{item.contactName || item.title}</td>
+                          <td>{item.contactEmail || '-'}</td>
+                          <td>{item.planCode || item.productCode || '-'}</td>
+                          <td className="hide-on-mobile">{currency(item.valueCents)}</td>
+                          <td className="hide-on-mobile">{dateOnly(item.nextDueDate || item.referenceDueDate)}</td>
+                          <td><span className={`status-chip ${statusClass}`}>{itemStatus}</span></td>
+                          <td>
+                            <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                aria-label="Editar cliente"
+                                title="Editar"
+                                onClick={() =>
+                                  openEditDeal({
+                                    id: item.id,
+                                    title: item.title,
+                                    contactName: item.contactName,
+                                    contactEmail: item.contactEmail,
+                                    valueCents: item.valueCents,
+                                  })
+                                }
+                              >
+                                <i className="bi bi-pencil-square" aria-hidden="true" />
+                              </button>
+
+                              {itemStatus === 'INATIVO' ? (
+                                <button
+                                  type="button"
+                                  className="danger-inline-btn"
+                                  aria-label="Mover para lista fantasma"
+                                  title="Mover para lista fantasma"
+                                  onClick={() => setGhostTarget({ id: item.id, label: item.contactName || item.title })}
+                                >
+                                  <i className="bi bi-archive-fill" aria-hidden="true" />
+                                </button>
+                              ) : null}
+
+                              {itemStatus === 'FANTASMA' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    aria-label="Restaurar cliente"
+                                    title="Restaurar"
+                                    onClick={() => setRestoreTarget({ id: item.id, label: item.contactName || item.title })}
+                                  >
+                                    <i className="bi bi-arrow-counterclockwise" aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="danger-inline-btn"
+                                    aria-label="Excluir permanentemente"
+                                    title="Excluir permanentemente"
+                                    onClick={() => {
+                                      setPurgeTarget({ id: item.id, label: item.contactName || item.title });
+                                      setShowPurgeModal(true);
+                                    }}
+                                  >
+                                    <i className="bi bi-trash3-fill" aria-hidden="true" />
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="danger-inline-btn"
+                                  aria-label="Excluir cliente"
+                                  title="Excluir"
+                                  onClick={() => openDeleteDealModal(item.id, item.contactName || item.title)}
+                                >
+                                  <i className="bi bi-trash3" aria-hidden="true" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="clientes-pagination">
+              <button type="button" onClick={() => setClientesPage((p) => Math.max(1, p - 1))} disabled={clientesPage <= 1}>Anterior</button>
+              <span>Página {clientesPage} de {clientesTotalPages} ({clientesTotal} registros)</span>
+              <button type="button" onClick={() => setClientesPage((p) => Math.min(clientesTotalPages, p + 1))} disabled={clientesPage >= clientesTotalPages}>Próxima</button>
+            </div>
+          </section>
+        ) : null}
+
+        {section === 'saas' ? (
+          <section className="crm-v2-panel saas-v2-panel">
+            <div className="saas-hero">
+              <div>
+                <span className="saas-hero-kicker">Painel administrativo</span>
+                <h3>Módulo SaaS</h3>
+                <p>Centralize produtos, sites, templates e eventos automáticos em uma visão operacional única.</p>
+              </div>
+              <span className="saas-hero-chip">{saasProducts.length} produtos</span>
+            </div>
+
+            <div className="saas-tabbar" role="tablist" aria-label="Subseções SaaS">
+              <button type="button" role="tab" aria-selected={saasTab === 'produtos'} className={saasTab === 'produtos' ? 'active' : ''} onClick={() => setSaasTab('produtos')}>Produtos</button>
+              <button type="button" role="tab" aria-selected={saasTab === 'sites'} className={saasTab === 'sites' ? 'active' : ''} onClick={() => setSaasTab('sites')}>Sites</button>
+              <button type="button" role="tab" aria-selected={saasTab === 'templates'} className={saasTab === 'templates' ? 'active' : ''} onClick={() => setSaasTab('templates')}>Templates</button>
+              <button type="button" role="tab" aria-selected={saasTab === 'eventos'} className={saasTab === 'eventos' ? 'active' : ''} onClick={() => setSaasTab('eventos')}>Eventos</button>
+            </div>
+
+            {saasLoading ? <p className="saas-loading">Carregando módulo SaaS...</p> : null}
+
+            {!saasLoading && saasTab === 'produtos' ? (
+              <div className="saas-grid-two">
+                <article className="saas-box">
+                  <h4>Novo produto</h4>
+                  <form className="stack-form" onSubmit={submitSaasProduct}>
+                    <label>Nome do produto</label>
+                    <input
+                      className="saas-input"
+                      value={saasProductForm.name}
+                      onChange={(e) => setSaasProductForm((p) => ({ ...p, name: e.target.value }))}
+                      placeholder="Ex: Praja"
+                      required
+                    />
+                    <label>Slug</label>
+                    <input
+                      className="saas-input"
+                      value={saasProductForm.slug}
+                      onChange={(e) => setSaasProductForm((p) => ({ ...p, slug: e.target.value }))}
+                      placeholder="ex: praja"
+                    />
+                    <label className="saas-check-row">
+                      <input
+                        type="checkbox"
+                        checked={saasProductForm.isActive}
+                        onChange={(e) => setSaasProductForm((p) => ({ ...p, isActive: e.target.checked }))}
+                      />
+                      <span>Ativo</span>
+                    </label>
+                    <button type="submit" className="primary-btn saas-primary-btn" disabled={saasSaving}>
+                      {saasSaving ? 'Salvando...' : 'Cadastrar produto'}
+                    </button>
+                  </form>
+                </article>
+                <article className="saas-box">
+                  <h4>Produtos cadastrados</h4>
+                  <div className="table-wrap">
+                    <table className="saas-table">
+                      <thead>
+                        <tr>
+                          <th>Nome</th>
+                          <th>Slug</th>
+                          <th>Status</th>
+                          <th>Sites</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {saasProducts.length === 0 ? (
+                          <tr>
+                            <td colSpan={4}>
+                              <div className="saas-empty-inline">Nenhum produto cadastrado ainda.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          saasProducts.map((item) => (
+                            <tr key={item.id}>
+                              <td>{item.name}</td>
+                              <td>{item.slug}</td>
+                              <td>
+                                <span className={`saas-status-chip ${item.status === 'active' ? 'is-active' : 'is-inactive'}`}>
+                                  {item.status === 'active' ? 'Ativo' : 'Inativo'}
+                                </span>
+                              </td>
+                              <td>{saasSitesByProductId[item.id] || 0}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              </div>
+            ) : null}
+
+            {!saasLoading && saasTab === 'sites' ? (
+              <div className="saas-ready-grid">
+                <article className="saas-box">
+                  <h4>Sites</h4>
+                  <p className="saas-ready-text">Aba pronta para gestão de domínios e instâncias operacionais.</p>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Sites pronta para próxima etapa de cadastro.')}>
+                    Configurar sites
+                  </button>
+                </article>
+                <article className="saas-box">
+                  <h4>Resumo atual</h4>
+                  <p className="saas-ready-count">{saasSites.length} site(s) cadastrado(s)</p>
+                </article>
+              </div>
+            ) : null}
+
+            {!saasLoading && saasTab === 'templates' ? (
+              <div className="saas-ready-grid">
+                <article className="saas-box">
+                  <h4>Templates</h4>
+                  <p className="saas-ready-text">Aba pronta para centralização dos modelos de e-mail por produto e site.</p>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Templates pronta para próxima etapa de cadastro.')}>
+                    Configurar templates
+                  </button>
+                </article>
+                <article className="saas-box">
+                  <h4>Resumo atual</h4>
+                  <p className="saas-ready-count">{saasTemplates.length} template(s) cadastrado(s)</p>
+                </article>
+              </div>
+            ) : null}
+
+            {!saasLoading && saasTab === 'eventos' ? (
+              <div className="saas-ready-grid">
+                <article className="saas-box">
+                  <h4>Eventos</h4>
+                  <p className="saas-ready-text">Aba pronta para vincular eventos automáticos aos templates cadastrados.</p>
+                  <button type="button" className="secondary-btn" onClick={() => setNotice('Aba Eventos pronta para próxima etapa de configuração.')}>
+                    Configurar eventos
+                  </button>
+                </article>
+                <article className="saas-box">
+                  <h4>Resumo atual</h4>
+                  <p className="saas-ready-count">{saasEvents.length} evento(s) cadastrado(s)</p>
+                </article>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {section === 'social_accounts' ? (
+          <section className="crm-v2-panel">
+            <div className="table-header-actions">
+              <div>
+                <h3>Contas Instagram conectadas</h3>
+                <p>Conexão OAuth administrativa para contas profissionais do Instagram.</p>
+              </div>
+              <div className="social-header-actions">
+                <button type="button" className="secondary-btn" onClick={() => void loadSocialAccounts()}>
+                  Atualizar
+                </button>
+                <a className="primary-btn social-link-btn" href={socialConnectUrl}>
+                  <i className="bi bi-instagram" aria-hidden="true" /> Conectar Instagram
+                </a>
+              </div>
+            </div>
+
+            {!socialMetaConfigured ? (
+              <p className="social-warning-text">
+                Configure `META_APP_ID`, `META_APP_SECRET` e `META_REDIRECT_URI` para habilitar a conexão OAuth.
+              </p>
+            ) : null}
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Usuário Instagram</th>
+                    <th>Página</th>
+                    <th>Instagram ID</th>
+                    <th>Token expira</th>
+                    <th>Status</th>
+                    <th>Escopos</th>
+                    <th>Atualizado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {socialAccounts.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>Nenhuma conta conectada até o momento.</td>
+                    </tr>
+                  ) : (
+                    socialAccounts.map((account) => (
+                      <tr key={account.id}>
+                        <td>@{account.instagramUsername}</td>
+                        <td>{account.pageName || account.pageId}</td>
+                        <td>{account.instagramId}</td>
+                        <td>{dateTime(account.tokenExpiresAt)}</td>
+                        <td><span className={`status-chip ${account.status === 'ACTIVE' ? 'ativo' : 'inativo'}`}>{account.status}</span></td>
+                        <td className="social-text-cell">{account.scopes || '-'}</td>
+                        <td>{dateTime(account.updatedAt)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
+
+        {section === 'social_posts' ? (
+          <div className="social-grid-two">
+            <section className="crm-v2-panel">
+              <h3>Publicar imagem única (MVP)</h3>
+              <form className="stack-form" onSubmit={submitSocialPost}>
+                <label>Conta Instagram</label>
+                <select
+                  value={socialPostForm.accountId}
+                  onChange={(e) => setSocialPostForm((prev) => ({ ...prev, accountId: e.target.value }))}
+                  required
+                  disabled={socialAccounts.length === 0}
+                >
+                  {socialAccounts.length === 0 ? (
+                    <option value="">Sem conta conectada</option>
+                  ) : (
+                    socialAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        @{account.instagramUsername} ({account.pageName || account.pageId})
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                <label>URL da imagem (`media_url`)</label>
                 <input
-                  placeholder="Buscar cliente inativo..."
-                  value={searchInativos}
-                  onChange={(e) => {
-                    setSearchInativos(e.target.value);
-                    setPageInativos(1);
-                  }}
+                  type="url"
+                  value={socialPostForm.mediaUrl}
+                  onChange={(e) => setSocialPostForm((prev) => ({ ...prev, mediaUrl: e.target.value }))}
+                  placeholder="https://..."
+                  required
                 />
+
+                <label>Legenda (`caption`)</label>
+                <textarea
+                  value={socialPostForm.caption}
+                  onChange={(e) => setSocialPostForm((prev) => ({ ...prev, caption: e.target.value }))}
+                  placeholder="Texto do post..."
+                />
+
+                <button type="submit" className="primary-btn" disabled={socialPublishing || socialAccounts.length === 0}>
+                  {socialPublishing ? 'Publicando...' : 'Publicar no Instagram'}
+                </button>
+              </form>
+            </section>
+
+            <section className="crm-v2-panel">
+              <div className="table-header-actions">
+                <div>
+                  <h3>Posts recentes</h3>
+                  <p>Histórico de publicações enviadas pelo CRM.</p>
+                </div>
+                <button type="button" className="secondary-btn" onClick={() => void loadSocialPosts()}>
+                  Atualizar
+                </button>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Cliente</th>
-                      <th>Contato</th>
-                      <th>Dias atraso</th>
-                      <th>Ticket</th>
-                      <th>SLA ticket</th>
-                      <th>Ações</th>
+                      <th>Data</th>
+                      <th>Conta</th>
+                      <th>Imagem</th>
+                      <th>Legenda</th>
+                      <th>Status</th>
+                      <th>IG Media ID</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {clientesInativos.map((item) => (
-                      <tr key={item.id} className="table-clickable-row" onClick={() => router.push(`/deals/${item.id}`)}>
-                        <td>{item.contactName || item.title}</td>
-                        <td>{item.contactEmail || '-'}</td>
-                        <td>{item.daysLate}</td>
-                        <td>{item.ticketId ? item.ticketId.slice(0, 8) : '-'}</td>
-                        <td>{dateTime(item.ticketSlaDeadline)}</td>
-                        <td>
-                          <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              aria-label="Editar cliente"
-                              title="Editar"
-                              onClick={() =>
-                                openEditDeal({
-                                  id: item.id,
-                                  title: item.title,
-                                  contactName: item.contactName,
-                                  contactEmail: item.contactEmail,
-                                  valueCents: item.valueCents,
-                                })
-                              }
-                            >
-                              <i className="bi bi-pencil-square" aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              className="danger-inline-btn"
-                              aria-label="Mover para fantasma"
-                              title="Mover para fantasma"
-                              onClick={() => setGhostTarget({ id: item.id, label: item.contactName || item.title })}
-                            >
-                              <i className="bi bi-archive-fill" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </td>
+                    {socialPosts.length === 0 ? (
+                      <tr>
+                        <td colSpan={6}>Nenhum post registrado.</td>
                       </tr>
-                    ))}
+                    ) : (
+                      socialPosts.map((post) => (
+                        <tr key={post.id}>
+                          <td>{dateTime(post.createdAt)}</td>
+                          <td>{post.account?.instagramUsername ? `@${post.account.instagramUsername}` : '-'}</td>
+                          <td className="social-url-cell">
+                            <a href={post.mediaUrl} target="_blank" rel="noreferrer">
+                              {post.mediaUrl}
+                            </a>
+                          </td>
+                          <td className="social-text-cell">{post.caption || '-'}</td>
+                          <td>
+                            <span className={`status-chip ${socialPostStatusClass(post.status)}`}>{post.status}</span>
+                          </td>
+                          <td>{post.igMediaId || '-'}</td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
-              <div className="clientes-pagination">
-                <button type="button" onClick={() => setPageInativos((p) => Math.max(1, p - 1))} disabled={pageInativos <= 1}>Anterior</button>
-                <span>Página {pageInativos} de {totalPages.INATIVO} ({totals.INATIVO} registros)</span>
-                <button type="button" onClick={() => setPageInativos((p) => Math.min(totalPages.INATIVO, p + 1))} disabled={pageInativos >= totalPages.INATIVO}>Próxima</button>
-              </div>
             </section>
+          </div>
+        ) : null}
+
+        {section === 'social_logs' ? (
+          <section className="crm-v2-panel">
+            <div className="table-header-actions">
+              <div>
+                <h3>Logs da integração Instagram</h3>
+                <p>Auditoria de request/response/status das chamadas para a Meta Graph API.</p>
+              </div>
+              <button type="button" className="secondary-btn" onClick={() => void loadSocialLogs()}>
+                Atualizar
+              </button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Ação</th>
+                    <th>Conta</th>
+                    <th>Status</th>
+                    <th>HTTP</th>
+                    <th>Endpoint</th>
+                    <th>Erro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {socialLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>Nenhum log encontrado.</td>
+                    </tr>
+                  ) : (
+                    socialLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td>{dateTime(log.createdAt)}</td>
+                        <td>{log.action}</td>
+                        <td>{log.account?.instagramUsername ? `@${log.account.instagramUsername}` : '-'}</td>
+                        <td>
+                          <span className={`status-chip ${log.success ? 'ativo' : 'atrasado'}`}>
+                            {log.success ? 'OK' : 'ERRO'}
+                          </span>
+                        </td>
+                        <td>{log.statusCode ?? '-'}</td>
+                        <td className="social-url-cell">{log.endpoint || '-'}</td>
+                        <td className="social-text-cell">{log.errorMessage || '-'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </section>
         ) : null}
 
@@ -1660,78 +2640,82 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
         </div>
       ) : null}
 
-      {showGhostModal ? (
-        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Lista fantasma">
-          <div className="crm-v2-modal-backdrop" onClick={() => setShowGhostModal(false)} />
-          <div className="crm-v2-modal-content ghost-modal-content">
+      {createClientModalOpen ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Cadastro rápido de cliente">
+          <div className="crm-v2-modal-backdrop" onClick={() => setCreateClientModalOpen(false)} />
+          <div className="crm-v2-modal-content">
             <header>
-              <h3>Lista Fantasma</h3>
-              <button type="button" onClick={() => setShowGhostModal(false)}>
+              <h3>Cadastro rápido de cliente</h3>
+              <button type="button" onClick={() => setCreateClientModalOpen(false)}>
                 <i className="bi bi-x-lg" aria-hidden="true" />
               </button>
             </header>
-            <p className="ghost-modal-note">
-              Clientes removidos da operação principal. Você pode restaurar ou excluir permanentemente.
-            </p>
-            <div className="clientes-table-toolbar">
+            <form className="stack-form" onSubmit={createQuickClient}>
+              <label>Nome</label>
               <input
-                placeholder="Buscar na lista fantasma..."
-                value={searchFantasma}
-                onChange={(e) => {
-                  setSearchFantasma(e.target.value);
-                  setPageFantasma(1);
-                }}
+                required
+                value={quickClientForm.name}
+                onChange={(e) => setQuickClientForm((p) => ({ ...p, name: e.target.value }))}
               />
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Cliente</th>
-                    <th>Contato</th>
-                    <th>Atraso</th>
-                    <th>Movido em</th>
-                    <th>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {clientesFantasma.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.contactName || item.title}</td>
-                      <td>{item.contactEmail || '-'}</td>
-                      <td>{item.daysLate} dias</td>
-                      <td>{dateTime(item.ghostedAt)}</td>
-                      <td>
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            title="Restaurar"
-                            onClick={() => setRestoreTarget({ id: item.id, label: item.contactName || item.title })}
-                          >
-                            <i className="bi bi-arrow-counterclockwise" aria-hidden="true" />
-                          </button>
-                          <button
-                            type="button"
-                            className="danger-inline-btn"
-                            title="Excluir permanentemente"
-                            onClick={() => {
-                              setPurgeTarget({ id: item.id, label: item.contactName || item.title });
-                              setShowPurgeModal(true);
-                            }}
-                          >
-                            <i className="bi bi-trash3-fill" aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="clientes-pagination">
-              <button type="button" onClick={() => setPageFantasma((p) => Math.max(1, p - 1))} disabled={pageFantasma <= 1}>Anterior</button>
-              <span>Página {pageFantasma} de {totalPages.FANTASMA} ({totals.FANTASMA} registros)</span>
-              <button type="button" onClick={() => setPageFantasma((p) => Math.min(totalPages.FANTASMA, p + 1))} disabled={pageFantasma >= totalPages.FANTASMA}>Próxima</button>
+              <label>E-mail</label>
+              <input
+                type="email"
+                value={quickClientForm.email}
+                onChange={(e) => setQuickClientForm((p) => ({ ...p, email: e.target.value }))}
+              />
+              <label>Telefone</label>
+              <input
+                value={quickClientForm.phone}
+                onChange={(e) => setQuickClientForm((p) => ({ ...p, phone: e.target.value }))}
+              />
+              <label>Plano</label>
+              <select
+                value={quickClientForm.planCode}
+                onChange={(e) => setQuickClientForm((p) => ({ ...p, planCode: e.target.value }))}
+              >
+                <option value="basic">Básico</option>
+                <option value="profissional">Profissional</option>
+                <option value="pro">Pro</option>
+              </select>
+              <label>Valor (R$)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={quickClientForm.value}
+                onChange={(e) => setQuickClientForm((p) => ({ ...p, value: e.target.value }))}
+              />
+              <button type="submit" className="primary-btn" disabled={loading}>
+                {loading ? 'Salvando...' : 'Salvar cliente'}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {showBulkDeleteModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Remoção em massa de clientes">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowBulkDeleteModal(false)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Remover clientes selecionados</h3>
+              <button type="button" onClick={() => setShowBulkDeleteModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p>
+              Você está prestes a remover <strong>{selectedClients.length}</strong> cliente(s) de teste.
+            </p>
+            <p style={{ marginTop: 0, color: '#64748b', fontSize: '0.92rem' }}>
+              Esta ação remove os registros do CRM atual e não pode ser desfeita.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setShowBulkDeleteModal(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="danger-btn" onClick={confirmBulkDeleteClients} disabled={bulkDeleteLoading}>
+                {bulkDeleteLoading ? 'Removendo...' : 'Remover selecionados'}
+              </button>
             </div>
           </div>
         </div>

@@ -9,15 +9,18 @@ export async function GET(req: NextRequest) {
 
   await ensureClientBillingInfra();
 
-  const statusParam = (req.nextUrl.searchParams.get('status') || CLIENT_CLASS_STATUS.ATIVO).toUpperCase();
+  const rawStatusParam = (req.nextUrl.searchParams.get('status') || CLIENT_CLASS_STATUS.ATIVO).toUpperCase();
+  const statusParam = rawStatusParam === 'ALL' ? 'TODOS' : rawStatusParam;
   const search = (req.nextUrl.searchParams.get('search') || '').trim();
+  const plan = (req.nextUrl.searchParams.get('plan') || '').trim();
   const page = Math.max(1, Number.parseInt(req.nextUrl.searchParams.get('page') || '1', 10) || 1);
   const pageSizeRaw = Number.parseInt(req.nextUrl.searchParams.get('pageSize') || '10', 10) || 10;
   const pageSize = Math.max(1, Math.min(50, pageSizeRaw));
   const offset = (page - 1) * pageSize;
 
   const isGhost = statusParam === 'FANTASMA';
-  const validStatuses = new Set(['ATIVO', 'ATRASADO', 'INATIVO', 'FANTASMA']);
+  const isAll = statusParam === 'TODOS';
+  const validStatuses = new Set(['TODOS', 'ATIVO', 'ATRASADO', 'INATIVO', 'FANTASMA']);
   if (!validStatuses.has(statusParam)) {
     return NextResponse.json({ error: 'Status inválido' }, { status: 422 });
   }
@@ -48,6 +51,8 @@ export async function GET(req: NextRequest) {
 
   if (isGhost) {
     whereParts.push(`c.ghosted_at IS NOT NULL`);
+  } else if (isAll) {
+    whereParts.push(`c.ghosted_at IS NULL`);
   } else {
     params.push(statusParam);
     whereParts.push(`c.ghosted_at IS NULL`);
@@ -64,6 +69,17 @@ export async function GET(req: NextRequest) {
         OR coalesce(d.contact_email, '') ILIKE ${searchBind}
         OR coalesce(d.plan_code, '') ILIKE ${searchBind}
         OR coalesce(d.product_code, '') ILIKE ${searchBind}
+      )
+    `);
+  }
+
+  if (plan !== '') {
+    params.push(`%${plan}%`);
+    const planBind = `$${params.length}`;
+    whereParts.push(`
+      (
+        coalesce(d.plan_code, '') ILIKE ${planBind}
+        OR coalesce(d.product_code, '') ILIKE ${planBind}
       )
     `);
   }

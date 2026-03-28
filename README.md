@@ -2,7 +2,7 @@
 
 Estrutura local para:
 - Portal do cliente (PHP) em `8081`
-- CRM V2 (Next.js + Prisma) em `8082`
+- CRM V2 (Next.js + Prisma) em `8092`
 - Cobrança recorrente via ASAAS (PIX + cartão)
 - Banco compartilhado com schemas separados (`client`, `crm`, `audit`)
 
@@ -12,16 +12,26 @@ Estrutura local para:
 cd /home/server/projects/projeto-area-cliente
 cp .env.example .env
 ./scripts/up.sh
-# ou manual: CLIENT_PORT=8081 CRM_PORT=8082 docker compose up -d --build
+# ou manual: docker compose up -d --build
 ```
 
 Acessos:
 - Portal cliente: `http://192.168.25.3:8081/signup?plan=basic`
-- CRM V2: `http://192.168.25.3:8082/login`
+- CRM V2: `http://192.168.25.3:8092/login`
 
 Login padrão CRM V2:
 - E-mail: `admin@koddahub.local`
 - Senha: `admin123`
+
+## Deploy recomendado
+
+```bash
+cd /home/server/projects/projeto-area-cliente
+./deploy.sh
+```
+
+Documentação operacional completa:
+- `docs/DEPLOY_CRM_8092.md`
 
 ## Fluxo implementado (V1 local)
 
@@ -54,7 +64,7 @@ Login padrão CRM V2:
 - `POST /api/onboarding/site-brief`
 - `POST /api/tickets`
 
-### CRM V2 (8082)
+### CRM V2 (8092)
 - `POST /api/auth/login`
 - `GET /api/dashboard/kpis`
 - `GET /api/pipelines`

@@ -79,4 +79,4 @@
     WHERE NOT EXISTS (
       SELECT 1 FROM crm.deal d WHERE d.lead_id = l.id
     )
-  `)}},4738:(a,e,t)=>{t.d(e,{_:()=>n});var i=t(3524);let n=global.__prisma__??new i.PrismaClient({log:["error"]})}};var e=require("../../../../../webpack-runtime.js");e.C(a);var t=a=>e(e.s=a),i=e.X(0,[7787,4833],()=>t(8621));module.exports=i})();
+  `)}},4738:(a,e,t)=>{t.d(e,{_:()=>n});var i=t(3524);let n=global.__prisma__??new i.PrismaClient({log:["error"]})}};var e=require("../../../../../webpack-runtime.js");e.C(a);var t=a=>e(e.s=a),i=e.X(0,[9379,4833],()=>t(8621));module.exports=i})();

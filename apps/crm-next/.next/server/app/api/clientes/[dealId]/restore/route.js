@@ -44,4 +44,4 @@
           INSERT INTO crm.holiday_calendar (holiday_date, name, scope)
           VALUES ($1::date, $2::varchar, 'NACIONAL')
           ON CONFLICT (holiday_date) DO NOTHING
-        `,a.date,a.name)}},4738:(e,a,t)=>{t.d(a,{_:()=>n});var i=t(3524);let n=global.__prisma__??new i.PrismaClient({log:["error"]})}};var a=require("../../../../../webpack-runtime.js");a.C(e);var t=e=>a(a.s=e),i=a.X(0,[7787,4833],()=>t(1054));module.exports=i})();
+        `,a.date,a.name)}},4738:(e,a,t)=>{t.d(a,{_:()=>n});var i=t(3524);let n=global.__prisma__??new i.PrismaClient({log:["error"]})}};var a=require("../../../../../webpack-runtime.js");a.C(e);var t=e=>a(a.s=e),i=a.X(0,[9379,4833],()=>t(1054));module.exports=i})();

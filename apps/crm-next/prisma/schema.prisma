@@ -633,6 +633,76 @@ model CollectionAction {
   @@schema("crm")
 }
 
+model SocialInstagramAccount {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pageId            String               @unique @map("page_id") @db.VarChar(80)
+  pageName          String?              @map("page_name") @db.VarChar(190)
+  instagramId       String               @unique @map("instagram_id") @db.VarChar(80)
+  instagramUsername String               @map("instagram_username") @db.VarChar(190)
+  instagramName     String?              @map("instagram_name") @db.VarChar(190)
+  profilePictureUrl String?              @map("profile_picture_url")
+  accessToken       String               @map("access_token")
+  tokenExpiresAt    DateTime?            @map("token_expires_at")
+  scopes            String?
+  status            String               @default("ACTIVE") @db.VarChar(20)
+  lastSyncedAt      DateTime             @default(now()) @map("last_synced_at")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @default(now()) @map("updated_at")
+
+  posts             SocialInstagramPost[]
+  logs              SocialInstagramLog[]
+
+  @@index([status, updatedAt])
+  @@map("social_instagram_account")
+  @@schema("crm")
+}
+
+model SocialInstagramPost {
+  id           String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId    String               @map("account_id") @db.Uuid
+  caption      String
+  mediaUrl     String               @map("media_url")
+  igCreationId String?              @map("ig_creation_id") @db.VarChar(120)
+  igMediaId    String?              @map("ig_media_id") @db.VarChar(120)
+  status       String               @default("PENDING") @db.VarChar(30)
+  errorMessage String?              @map("error_message")
+  publishedAt  DateTime?            @map("published_at")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @default(now()) @map("updated_at")
+
+  account      SocialInstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  logs         SocialInstagramLog[]
+
+  @@index([accountId, createdAt])
+  @@index([status, createdAt])
+  @@map("social_instagram_post")
+  @@schema("crm")
+}
+
+model SocialInstagramLog {
+  id              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId       String?                @map("account_id") @db.Uuid
+  postId          String?                @map("post_id") @db.Uuid
+  action          String                 @db.VarChar(80)
+  endpoint        String?
+  httpMethod      String?                @map("http_method") @db.VarChar(10)
+  requestPayload  Json?                  @map("request_payload")
+  responsePayload Json?                  @map("response_payload")
+  statusCode      Int?                   @map("status_code")
+  success         Boolean                @default(false)
+  errorMessage    String?                @map("error_message")
+  createdAt       DateTime               @default(now()) @map("created_at")
+
+  account         SocialInstagramAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  post            SocialInstagramPost?   @relation(fields: [postId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([accountId, createdAt])
+  @@index([postId, createdAt])
+  @@map("social_instagram_log")
+  @@schema("crm")
+}
+
 model SignupSession {
   id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId   String?       @map("organization_id") @db.Uuid

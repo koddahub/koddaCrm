@@ -1,7 +1,8 @@
-"use strict";(()=>{var e={};e.id=5620,e.ids=[5620],e.modules={3524:e=>{e.exports=require("@prisma/client")},399:e=>{e.exports=require("next/dist/compiled/next-server/app-page.runtime.prod.js")},517:e=>{e.exports=require("next/dist/compiled/next-server/app-route.runtime.prod.js")},5315:e=>{e.exports=require("path")},2414:(e,t,a)=>{a.r(t),a.d(t,{originalPathname:()=>N,patchFetch:()=>m,requestAsyncStorage:()=>c,routeModule:()=>E,serverHooks:()=>p,staticGenerationAsyncStorage:()=>T});var r={};a.r(r),a.d(r,{GET:()=>u});var i=a(3278),o=a(5002),s=a(4877),d=a(1309),_=a(7392),n=a(4738),l=a(1043);async function u(e,{params:t}){let a=(0,_.I)(e);if(a)return a;if("publicacao"!==(e.nextUrl.searchParams.get("stage")||"publicacao").trim().toLowerCase())return d.NextResponse.json({error:"Sub-etapas dispon\xedveis apenas para o est\xe1gio publicacao nesta vers\xe3o."},{status:422});let r=await n._.deal.findUnique({where:{id:t.id},select:{id:!0,dealType:!0,lifecycleStatus:!0}});if(!r)return d.NextResponse.json({error:"Deal n\xe3o encontrado"},{status:404});if("HOSPEDAGEM"!==r.dealType)return d.NextResponse.json({error:"Sub-etapas dispon\xedveis apenas para hospedagem."},{status:422});await (0,l.js)(r.id);let i=await (0,l.LO)(r.id),o=await (0,l.wP)(r.id);return d.NextResponse.json({ok:!0,stage:"publicacao",summary:o,items:i})}let E=new i.AppRouteRouteModule({definition:{kind:o.x.APP_ROUTE,page:"/api/deals/[id]/operation/substeps/route",pathname:"/api/deals/[id]/operation/substeps",filename:"route",bundlePath:"app/api/deals/[id]/operation/substeps/route"},resolvedPagePath:"/home/server/projects/projeto-area-cliente/apps/crm-next/app/api/deals/[id]/operation/substeps/route.ts",nextConfigOutput:"standalone",userland:r}),{requestAsyncStorage:c,staticGenerationAsyncStorage:T,serverHooks:p}=E,N="/api/deals/[id]/operation/substeps/route";function m(){return(0,s.patchFetch)({serverHooks:p,staticGenerationAsyncStorage:T})}},7392:(e,t,a)=>{a.d(t,{I:()=>i});var r=a(1309);function i(e){return e.cookies.get("crm_admin_session")?.value!==(process.env.CRM_ADMIN_SESSION_TOKEN||"koddahub-crm-v2-session")?r.NextResponse.json({error:"Nao autorizado"},{status:401}):null}},4738:(e,t,a)=>{a.d(t,{_:()=>i});var r=a(3524);let i=global.__prisma__??new r.PrismaClient({log:["error"]})},1043:(e,t,a)=>{a.d(t,{Bv:()=>p,CQ:()=>E,Df:()=>u,LO:()=>m,UH:()=>c,Ug:()=>T,js:()=>N,wP:()=>A});var r=a(5315),i=a.n(r),o=a(4738);let s=process.env.SITE24H_TEMPLATE_LIBRARY_ROOT||"/home/server/projects/projeto-area-cliente/storage/site-models",d=[{code:"dominio_decisao",name:"Dom\xednio j\xe1 existe / precisa contratar",order:1,required:!0},{code:"dominio_registro",name:"Registro/transfer\xeancia de dom\xednio",order:2,required:!0},{code:"dns_config",name:"Configura\xe7\xe3o de DNS e apontamentos",order:3,required:!0},{code:"hostgator_account",name:"Cadastro/ajuste na Hostgator",order:4,required:!0},{code:"deploy_ssl",name:"Deploy + SSL + valida\xe7\xe3o t\xe9cnica",order:5,required:!0},{code:"go_live_monitor",name:"Monitoramento de entrada no ar",order:6,required:!0}],_=!1,n=[{code:"template_v1_institucional_1pagina",name:"V1 - Institucional 1 p\xe1gina",folder:"template_v1_institucional_1pagina",entryFile:"index.html",isDefault:!0},{code:"template_v2_institucional_3paginas",name:"V2 - Institucional 3 p\xe1ginas",folder:"template_v2_institucional_3paginas",entryFile:"index.html",isDefault:!1},{code:"template_v3_institucional_chatbot",name:"V3 - Institucional com chatbot",folder:"template_v3_institucional_chatbot",entryFile:"index.html",isDefault:!1}];function l(e){let t=i().resolve(String(e||"").trim());if(!t)throw Error("Caminho do modelo \xe9 obrigat\xf3rio");if(!function(e,t){let a=i().resolve(t),r=i().resolve(e);return r===a||r.startsWith(`${a}${i().sep}`)}(t,s))throw Error(`Caminho do modelo deve estar dentro de ${s}`);return t}function u(){return"Host server\n    HostName ssh.koddahub.com.br\n    User server\n    ProxyCommand cloudflared access ssh --hostname %h\n    IdentityFile ~/.ssh/id_rsa\n    ServerAliveInterval 30\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    ConnectTimeout 180"}async function E(){if(!_){for(let e of(await o._.$executeRawUnsafe(`
+"use strict";(()=>{var e={};e.id=5620,e.ids=[5620],e.modules={3524:e=>{e.exports=require("@prisma/client")},399:e=>{e.exports=require("next/dist/compiled/next-server/app-page.runtime.prod.js")},517:e=>{e.exports=require("next/dist/compiled/next-server/app-route.runtime.prod.js")},5315:e=>{e.exports=require("path")},2414:(e,t,a)=>{a.r(t),a.d(t,{originalPathname:()=>N,patchFetch:()=>R,requestAsyncStorage:()=>u,routeModule:()=>c,serverHooks:()=>p,staticGenerationAsyncStorage:()=>T});var r={};a.r(r),a.d(r,{GET:()=>l});var i=a(3278),o=a(5002),s=a(4877),d=a(1309),_=a(7392),n=a(4738),E=a(1043);async function l(e,{params:t}){let a=(0,_.I)(e);if(a)return a;if("publicacao"!==(e.nextUrl.searchParams.get("stage")||"publicacao").trim().toLowerCase())return d.NextResponse.json({error:"Sub-etapas dispon\xedveis apenas para o est\xe1gio publicacao nesta vers\xe3o."},{status:422});let r=await n._.deal.findUnique({where:{id:t.id},select:{id:!0,dealType:!0,lifecycleStatus:!0}});if(!r)return d.NextResponse.json({error:"Deal n\xe3o encontrado"},{status:404});if("HOSPEDAGEM"!==r.dealType)return d.NextResponse.json({error:"Sub-etapas dispon\xedveis apenas para hospedagem."},{status:422});await (0,E.js)(r.id);let i=await (0,E.LO)(r.id),o=await (0,E.wP)(r.id);return d.NextResponse.json({ok:!0,stage:"publicacao",summary:o,items:i})}let c=new i.AppRouteRouteModule({definition:{kind:o.x.APP_ROUTE,page:"/api/deals/[id]/operation/substeps/route",pathname:"/api/deals/[id]/operation/substeps",filename:"route",bundlePath:"app/api/deals/[id]/operation/substeps/route"},resolvedPagePath:"/home/server/projects/projeto-area-cliente/apps/crm-next/app/api/deals/[id]/operation/substeps/route.ts",nextConfigOutput:"standalone",userland:r}),{requestAsyncStorage:u,staticGenerationAsyncStorage:T,serverHooks:p}=c,N="/api/deals/[id]/operation/substeps/route";function R(){return(0,s.patchFetch)({serverHooks:p,staticGenerationAsyncStorage:T})}},7392:(e,t,a)=>{a.d(t,{I:()=>i});var r=a(1309);function i(e){return e.cookies.get("crm_admin_session")?.value!==(process.env.CRM_ADMIN_SESSION_TOKEN||"koddahub-crm-v2-session")?r.NextResponse.json({error:"Nao autorizado"},{status:401}):null}},4738:(e,t,a)=>{a.d(t,{_:()=>i});var r=a(3524);let i=global.__prisma__??new r.PrismaClient({log:["error"]})},1043:(e,t,a)=>{a.d(t,{Bv:()=>p,CQ:()=>c,Df:()=>l,LO:()=>R,UH:()=>u,Ug:()=>T,js:()=>N,wP:()=>A});var r=a(5315),i=a.n(r),o=a(4738);let s=process.env.SITE24H_TEMPLATE_LIBRARY_ROOT||"/home/server/projects/projeto-area-cliente/storage/site-models",d=[{code:"dominio_decisao",name:"Dom\xednio j\xe1 existe / precisa contratar",order:1,required:!0},{code:"dominio_registro",name:"Registro/transfer\xeancia de dom\xednio",order:2,required:!0},{code:"dns_config",name:"Configura\xe7\xe3o de DNS e apontamentos",order:3,required:!0},{code:"hostgator_account",name:"Cadastro/ajuste na Hostgator",order:4,required:!0},{code:"deploy_ssl",name:"Deploy + SSL + valida\xe7\xe3o t\xe9cnica",order:5,required:!0},{code:"go_live_monitor",name:"Monitoramento de entrada no ar",order:6,required:!0}],_=!1,n=[{code:"template_v1_institucional_1pagina",name:"V1 - Institucional 1 p\xe1gina",folder:"template_v1_institucional_1pagina",entryFile:"index.html",isDefault:!0},{code:"template_v2_institucional_3paginas",name:"V2 - Institucional 3 p\xe1ginas",folder:"template_v2_institucional_3paginas",entryFile:"index.html",isDefault:!1},{code:"template_v3_institucional_chatbot",name:"V3 - Institucional com chatbot",folder:"template_v3_institucional_chatbot",entryFile:"index.html",isDefault:!1}];function E(e){let t=i().resolve(String(e||"").trim());if(!t)throw Error("Caminho do modelo \xe9 obrigat\xf3rio");if(!function(e,t){let a=i().resolve(t),r=i().resolve(e);return r===a||r.startsWith(`${a}${i().sep}`)}(t,s))throw Error(`Caminho do modelo deve estar dentro de ${s}`);return t}function l(){return"Host server\n    HostName ssh.koddahub.com.br\n    User server\n    ProxyCommand cloudflared access ssh --hostname %h\n    IdentityFile ~/.ssh/id_rsa\n    ServerAliveInterval 30\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n    ConnectTimeout 180"}async function c(){if(!_){for(let e of(await o._.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS crm.deal_operation_substep (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE CASCADE,
       stage_code VARCHAR(80) NOT NULL,
       substep_code VARCHAR(80) NOT NULL,
       substep_name VARCHAR(140) NOT NULL,
@@ -14,11 +15,20 @@
       completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (deal_id, stage_code, substep_code)
+      UNIQUE (deal_id, project_id, stage_code, substep_code)
     )
   `),await o._.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_operation_substep
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE CASCADE
+  `),await o._.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_operation_substep
+    DROP CONSTRAINT IF EXISTS deal_operation_substep_deal_id_stage_code_substep_code_key
+  `),await o._.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_deal_operation_substep_project_stage_code
+      ON crm.deal_operation_substep(deal_id, project_id, stage_code, substep_code)
+  `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_order
-      ON crm.deal_operation_substep(deal_id, stage_code, substep_order)
+      ON crm.deal_operation_substep(deal_id, project_id, stage_code, substep_order)
   `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_operation_substep_status
       ON crm.deal_operation_substep(deal_id, stage_code, status)
@@ -41,6 +51,7 @@
     CREATE TABLE IF NOT EXISTS crm.deal_prompt_request (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL,
       prompt_revision_id UUID REFERENCES crm.deal_prompt_revision(id) ON DELETE SET NULL,
       subject VARCHAR(220) NOT NULL,
       request_items JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -53,8 +64,11 @@
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `),await o._.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_prompt_request
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL
+  `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_prompt_request_deal
-      ON crm.deal_prompt_request(deal_id, created_at DESC)
+      ON crm.deal_prompt_request(deal_id, project_id, created_at DESC)
   `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_prompt_request_status
       ON crm.deal_prompt_request(status, due_at)
@@ -62,6 +76,7 @@
     CREATE TABLE IF NOT EXISTS crm.deal_site_release (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       deal_id UUID NOT NULL REFERENCES crm.deal(id) ON DELETE CASCADE,
+      project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL,
       version INT NOT NULL,
       status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
       project_root VARCHAR(500) NOT NULL,
@@ -71,11 +86,20 @@
       created_by VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (deal_id, version)
+      UNIQUE (deal_id, project_id, version)
     )
   `),await o._.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    ADD COLUMN IF NOT EXISTS project_id UUID REFERENCES client.projects(id) ON DELETE SET NULL
+  `),await o._.$executeRawUnsafe(`
+    ALTER TABLE crm.deal_site_release
+    DROP CONSTRAINT IF EXISTS deal_site_release_deal_id_version_key
+  `),await o._.$executeRawUnsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_deal_site_release_project_version
+      ON crm.deal_site_release(deal_id, project_id, version)
+  `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_version
-      ON crm.deal_site_release(deal_id, version DESC)
+      ON crm.deal_site_release(deal_id, project_id, version DESC)
   `),await o._.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS idx_deal_site_release_deal_status
       ON crm.deal_site_release(deal_id, status)
@@ -113,7 +137,7 @@
     UPDATE crm.template_model_catalog
     SET is_default = false, updated_at = now()
     WHERE is_default = true
-  `),n)){let t=l(i().resolve(s,e.folder));await o._.$queryRaw`
+  `),n)){let t=E(i().resolve(s,e.folder));await o._.$queryRaw`
       INSERT INTO crm.template_model_catalog (code, name, root_path, entry_file, is_default, is_active, created_at, updated_at)
       VALUES (${e.code}, ${e.name}, ${t}, ${e.entryFile}, ${e.isDefault}, true, now(), now())
       ON CONFLICT (code)
@@ -128,12 +152,12 @@
     UPDATE crm.template_model_catalog
     SET is_active = false, is_default = false, updated_at = now()
     WHERE code = 'institucional_padrao'
-  `),_=!0}}async function c(){return await E(),(await o._.$queryRaw`
+  `),_=!0}}async function u(){return await c(),(await o._.$queryRaw`
     SELECT id::text, code, name, root_path, entry_file, is_default, is_active, created_at, updated_at
     FROM crm.template_model_catalog
     WHERE is_active = true
     ORDER BY is_default DESC, name ASC
-  `).map(e=>({id:e.id,code:e.code,name:e.name,rootPath:e.root_path,entryFile:e.entry_file,isDefault:e.is_default,isActive:e.is_active,createdAt:e.created_at,updatedAt:e.updated_at}))}async function T(e){await E();let t=e.code.trim().toLowerCase().replace(/[^a-z0-9_-]/g,"_");if(!t)throw Error("C\xf3digo do modelo inv\xe1lido");let a=e.name.trim();if(!a)throw Error("Nome do modelo \xe9 obrigat\xf3rio");let r=l(e.rootPath),i=(e.entryFile||"index.html").replace(/^\/+/,"").trim()||"index.html",s=!!e.isDefault,d=void 0===e.isActive||!!e.isActive;s&&await o._.$executeRaw`UPDATE crm.template_model_catalog SET is_default=false, updated_at=now()`;let _=await o._.$queryRaw`
+  `).map(e=>({id:e.id,code:e.code,name:e.name,rootPath:e.root_path,entryFile:e.entry_file,isDefault:e.is_default,isActive:e.is_active,createdAt:e.created_at,updatedAt:e.updated_at}))}async function T(e){await c();let t=e.code.trim().toLowerCase().replace(/[^a-z0-9_-]/g,"_");if(!t)throw Error("C\xf3digo do modelo inv\xe1lido");let a=e.name.trim();if(!a)throw Error("Nome do modelo \xe9 obrigat\xf3rio");let r=E(e.rootPath),i=(e.entryFile||"index.html").replace(/^\/+/,"").trim()||"index.html",s=!!e.isDefault,d=void 0===e.isActive||!!e.isActive;s&&await o._.$executeRaw`UPDATE crm.template_model_catalog SET is_default=false, updated_at=now()`;let _=await o._.$queryRaw`
     INSERT INTO crm.template_model_catalog (code, name, root_path, entry_file, is_default, is_active, created_at, updated_at)
     VALUES (${t}, ${a}, ${r}, ${i}, ${s}, ${d}, now(), now())
     ON CONFLICT (code)
@@ -145,7 +169,7 @@
       is_active = EXCLUDED.is_active,
       updated_at = now()
     RETURNING id::text
-  `;return _[0]?.id||null}async function p(e){await E();let t=String(e||"").trim().toLowerCase(),a=t?await o._.$queryRaw`
+  `;return _[0]?.id||null}async function p(e){await c();let t=String(e||"").trim().toLowerCase(),a=t?await o._.$queryRaw`
         SELECT id::text, code, name, root_path, entry_file, is_default
         FROM crm.template_model_catalog
         WHERE code = ${t}
@@ -157,15 +181,17 @@
         WHERE is_active = true
         ORDER BY is_default DESC, updated_at DESC
         LIMIT 1
-      `;return a[0]?{id:a[0].id,code:a[0].code,name:a[0].name,rootPath:a[0].root_path,entryFile:a[0].entry_file,isDefault:a[0].is_default}:null}async function N(e){for(let t of(await E(),d))await o._.$executeRaw`
+      `;return a[0]?{id:a[0].id,code:a[0].code,name:a[0].name,rootPath:a[0].root_path,entryFile:a[0].entry_file,isDefault:a[0].is_default}:null}async function N(e,t){await c();let a=String(t||"").trim();for(let t of d)await o._.$executeRaw`
       INSERT INTO crm.deal_operation_substep (
-        deal_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
+        deal_id, project_id, stage_code, substep_code, substep_name, substep_order, status, is_required, created_at, updated_at
       )
       VALUES (
-        ${e}::uuid, 'publicacao', ${t.code}, ${t.name}, ${t.order}, 'PENDING', ${t.required}, now(), now()
+        ${e}::uuid,
+        CASE WHEN ${a} <> '' THEN ${a}::uuid ELSE NULL END,
+        'publicacao', ${t.code}, ${t.name}, ${t.order}, 'PENDING', ${t.required}, now(), now()
       )
-      ON CONFLICT (deal_id, stage_code, substep_code) DO NOTHING
-    `}async function m(e){return await E(),o._.$queryRaw`
+      ON CONFLICT (deal_id, project_id, stage_code, substep_code) DO NOTHING
+    `}async function R(e,t){await c();let a=String(t||"").trim();return o._.$queryRaw`
     SELECT
       id::text,
       deal_id::text,
@@ -183,14 +209,22 @@
       updated_at
     FROM crm.deal_operation_substep
     WHERE deal_id = ${e}::uuid
+      AND (
+        ${a} = ''
+        OR project_id = ${a}::uuid
+      )
       AND stage_code = 'publicacao'
     ORDER BY substep_order ASC, created_at ASC
-  `}async function A(e){await E();let t=(await o._.$queryRaw`
+  `}async function A(e,t){await c();let a=String(t||"").trim(),r=(await o._.$queryRaw`
     SELECT
       COUNT(*) FILTER (WHERE is_required = true) AS required_total,
       COUNT(*) FILTER (WHERE is_required = true AND status IN ('COMPLETED', 'SKIPPED')) AS required_completed,
       COUNT(*) FILTER (WHERE is_required = true AND status NOT IN ('COMPLETED', 'SKIPPED')) AS pending_total
     FROM crm.deal_operation_substep
     WHERE deal_id = ${e}::uuid
+      AND (
+        ${a} = ''
+        OR project_id = ${a}::uuid
+      )
       AND stage_code = 'publicacao'
-  `)[0]||{required_total:0,required_completed:0,pending_total:0},a=Number(t.required_total||0),r=Number(t.required_completed||0),i=Number(t.pending_total||0);return{requiredTotal:a,requiredCompleted:r,pendingTotal:i,ready:a>0&&0===i}}}};var t=require("../../../../../../webpack-runtime.js");t.C(e);var a=e=>t(t.s=e),r=t.X(0,[7787,4833],()=>a(2414));module.exports=r})();
+  `)[0]||{required_total:0,required_completed:0,pending_total:0},i=Number(r.required_total||0),s=Number(r.required_completed||0),d=Number(r.pending_total||0);return{requiredTotal:i,requiredCompleted:s,pendingTotal:d,ready:i>0&&0===d}}}};var t=require("../../../../../../webpack-runtime.js");t.C(e);var a=e=>t(t.s=e),r=t.X(0,[9379,4833],()=>a(2414));module.exports=r})();
