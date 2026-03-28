@@ -19,3 +19,6 @@ out/
 .env
 .env.example
 storage/postgres/
+
+# Código SQL/migrations locais
+database/
