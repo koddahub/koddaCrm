@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { DealDetail } from '@/app/ui/shell/deal-detail';
+import { CommunicationModule, type CommunicationView } from '@/app/ui/communication/communication-module';
 
 type SectionKey =
   | 'dashboard'
@@ -11,6 +12,7 @@ type SectionKey =
   | 'pipeline_avulsos'
   | 'clientes'
   | 'saas'
+  | 'communication'
   | 'social_accounts'
   | 'social_posts'
   | 'social_logs'
@@ -354,6 +356,8 @@ type CrmPageProps = {
   saasInitialTab?: SaasTabKey;
   saasTemplatesRouteMode?: SaasTemplatesRouteMode;
   saasTemplateRouteId?: string;
+  communicationView?: CommunicationView;
+  communicationRecordId?: string;
 };
 
 type KpiSeverity = 'normal' | 'attention' | 'critical' | 'success';
@@ -381,6 +385,7 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
   { key: 'clientes', label: 'Clientes', icon: 'bi-people-fill', href: '/clientes' },
   { key: 'saas', label: 'Painel de Controle', icon: 'bi-boxes', href: '/painel-de-controle' },
+  { key: 'communication', label: 'Comunicação', icon: 'bi-chat-square-dots-fill', href: '/painel/comunicacao' },
   { key: 'social_accounts', label: 'Social · Contas', icon: 'bi-instagram', href: '/social/contas' },
   { key: 'social_posts', label: 'Social · Posts', icon: 'bi-images', href: '/social/posts' },
   { key: 'social_logs', label: 'Social · Logs', icon: 'bi-journal-code', href: '/social/logs' },
@@ -466,6 +471,8 @@ function sectionTitle(section: SectionKey) {
       return 'Clientes';
     case 'saas':
       return 'Painel de Controle';
+    case 'communication':
+      return 'Comunicação';
     case 'social_accounts':
       return 'Social · Contas Instagram';
     case 'social_posts':
@@ -535,6 +542,8 @@ export function CrmPage({
   saasInitialTab = 'emails',
   saasTemplatesRouteMode = 'embedded',
   saasTemplateRouteId,
+  communicationView = 'overview',
+  communicationRecordId,
 }: CrmPageProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -2068,6 +2077,8 @@ export function CrmPage({
       ? 'Visão rápida da saúde comercial, financeira e operacional.'
       : section === 'saas'
         ? 'Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.'
+        : section === 'communication'
+          ? 'Central de Comunicação/Engajamento com listagens, filtros e cadastros separados por domínio.'
         : section === 'social_accounts' || section === 'social_posts' || section === 'social_logs'
           ? 'Instagram via Meta Graph API: conexão OAuth, publicação de imagem e trilha de auditoria.'
         : 'KoddaCRM: tabela por estágio, área do cliente, operação integrada e financeiro avançado.';
@@ -2675,6 +2686,10 @@ export function CrmPage({
               <button type="button" onClick={() => setClientesPage((p) => Math.min(clientesTotalPages, p + 1))} disabled={clientesPage >= clientesTotalPages}>Próxima</button>
             </div>
           </section>
+        ) : null}
+
+        {section === 'communication' ? (
+          <CommunicationModule view={communicationView} recordId={communicationRecordId} setNotice={setNotice} />
         ) : null}
 
         {section === 'saas' ? (
