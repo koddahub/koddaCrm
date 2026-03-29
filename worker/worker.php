@@ -816,6 +816,28 @@ function normalizeMailBody(string $body): string
     return preg_replace("/(?<!\r)\n/", "\r\n", (string)$body) ?? (string)$body;
 }
 
+function sanitizeMailHeaderValue(string $value, int $maxLength = 190): string
+{
+    $clean = preg_replace("/[\r\n]+/", ' ', $value) ?? $value;
+    $clean = trim((string)$clean);
+    if ($clean === '') {
+        return '';
+    }
+    if (strlen($clean) > $maxLength) {
+        return substr($clean, 0, $maxLength);
+    }
+    return $clean;
+}
+
+function normalizeOutboundEmail(string $value): string
+{
+    $email = strtolower(trim((string)$value));
+    if ($email === '') {
+        return '';
+    }
+    return preg_match('/^[^\s@]+@[^\s@]+\.[^\s@]+$/', $email) === 1 ? $email : '';
+}
+
 function containsHtmlBody(string $body): bool
 {
     return preg_match('/<[^>]+>/', $body) === 1;
@@ -828,6 +850,11 @@ function unpackMimePayload(string $body): array
         return [
             'html' => $body,
             'text' => null,
+            'from_name' => null,
+            'from_email' => null,
+            'reply_to' => null,
+            'provider' => null,
+            'relay' => null,
         ];
     }
 
@@ -837,14 +864,38 @@ function unpackMimePayload(string $body): array
         return [
             'html' => $body,
             'text' => null,
+            'from_name' => null,
+            'from_email' => null,
+            'reply_to' => null,
+            'provider' => null,
+            'relay' => null,
         ];
     }
 
     $html = isset($decoded['html']) ? (string)$decoded['html'] : '';
     $text = isset($decoded['text']) ? trim((string)$decoded['text']) : '';
+    $fromName = isset($decoded['fromName']) ? sanitizeMailHeaderValue((string)$decoded['fromName']) : '';
+    $fromEmail = isset($decoded['fromEmail']) ? normalizeOutboundEmail((string)$decoded['fromEmail']) : '';
+    $replyTo = isset($decoded['replyTo']) ? normalizeOutboundEmail((string)$decoded['replyTo']) : '';
+    $provider = isset($decoded['provider']) ? sanitizeMailHeaderValue(strtolower((string)$decoded['provider']), 60) : '';
+    $relay = null;
+    if (isset($decoded['relay']) && is_array($decoded['relay'])) {
+        $relay = [
+            'product' => sanitizeMailHeaderValue((string)($decoded['relay']['product'] ?? ''), 90),
+            'site' => sanitizeMailHeaderValue((string)($decoded['relay']['site'] ?? ''), 190),
+            'slug' => sanitizeMailHeaderValue((string)($decoded['relay']['slug'] ?? ''), 90),
+            'origin' => sanitizeMailHeaderValue((string)($decoded['relay']['origin'] ?? ''), 140),
+        ];
+    }
+
     return [
         'html' => $html,
         'text' => $text !== '' ? $text : null,
+        'from_name' => $fromName !== '' ? $fromName : null,
+        'from_email' => $fromEmail !== '' ? $fromEmail : null,
+        'reply_to' => $replyTo !== '' ? $replyTo : null,
+        'provider' => $provider !== '' ? $provider : null,
+        'relay' => $relay,
     ];
 }
 
@@ -890,7 +941,7 @@ function attachmentMimeType(string $path): string
     return 'application/octet-stream';
 }
 
-function buildMimeMessage(string $fromEmail, string $fromName, string $toEmail, string $subject, string $body, array $attachmentPaths = []): string
+function buildMimeMessage(string $fromEmail, string $fromName, string $toEmail, string $subject, string $body, array $attachmentPaths = [], ?string $replyToOverride = null): string
 {
     $payload = unpackMimePayload($body);
     $htmlCandidate = sanitizeEmailHtml((string)($payload['html'] ?? $body));
@@ -907,7 +958,13 @@ function buildMimeMessage(string $fromEmail, string $fromName, string $toEmail, 
     $fromDomain = strstr($fromEmail, '@');
     $fromDomain = $fromDomain !== false ? ltrim($fromDomain, '@') : 'koddahub.com.br';
     $messageId = '<' . bin2hex(random_bytes(16)) . '@' . preg_replace('/[^a-z0-9\.\-]/i', '', $fromDomain) . '>';
-    $replyTo = envString('MAIL_REPLY_TO', $fromEmail);
+    $replyTo = normalizeOutboundEmail((string)$replyToOverride);
+    if ($replyTo === '') {
+        $replyTo = normalizeOutboundEmail(envString('MAIL_REPLY_TO', $fromEmail));
+    }
+    if ($replyTo === '') {
+        $replyTo = $fromEmail;
+    }
 
     $headers = [
         'Date: ' . gmdate('D, d M Y H:i:s O'),
@@ -1024,8 +1081,33 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
     $encryption = strtolower(envString('SMTP_ENCRYPTION', 'tls'));
     $heloDomain = envString('SMTP_HELO', $host !== '' ? $host : 'mail.koddahub.com.br');
     $allowSelfSigned = in_array(strtolower(envString('SMTP_ALLOW_SELF_SIGNED', 'false')), ['1', 'true', 'yes'], true);
-    $fromEmail = envString('MAIL_FROM', 'no-reply@clientes.koddahub.com.br');
-    $fromName = envString('MAIL_FROM_NAME', 'KoddaHub');
+    $payload = unpackMimePayload($body);
+    $defaultFromEmail = normalizeOutboundEmail(envString('MAIL_FROM', 'no-reply@clientes.koddahub.com.br'));
+    if ($defaultFromEmail === '') {
+        $defaultFromEmail = 'no-reply@clientes.koddahub.com.br';
+    }
+    $defaultFromName = sanitizeMailHeaderValue(envString('MAIL_FROM_NAME', 'KoddaHub'));
+    if ($defaultFromName === '') {
+        $defaultFromName = 'KoddaHub';
+    }
+
+    $fromEmail = normalizeOutboundEmail((string)($payload['from_email'] ?? ''));
+    if ($fromEmail === '') {
+        $fromEmail = $defaultFromEmail;
+    }
+
+    $fromName = sanitizeMailHeaderValue((string)($payload['from_name'] ?? ''));
+    if ($fromName === '') {
+        $fromName = $defaultFromName;
+    }
+
+    $replyTo = normalizeOutboundEmail((string)($payload['reply_to'] ?? ''));
+    if ($replyTo === '') {
+        $replyTo = normalizeOutboundEmail(envString('MAIL_REPLY_TO', $fromEmail));
+    }
+    if ($replyTo === '') {
+        $replyTo = $fromEmail;
+    }
 
     if ($host === '' || $port <= 0) {
         throw new RuntimeException('SMTP_HOST/SMTP_PORT não configurados.');
@@ -1077,7 +1159,7 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
     smtpCommand($socket, 'MAIL FROM:<' . $fromEmail . '>', [250, 251]);
     smtpCommand($socket, 'RCPT TO:<' . $toEmail . '>', [250, 251]);
     smtpCommand($socket, 'DATA', 354);
-    fwrite($socket, buildMimeMessage($fromEmail, $fromName, $toEmail, $subject, $body, $attachmentPaths) . "\r\n.\r\n");
+    fwrite($socket, buildMimeMessage($fromEmail, $fromName, $toEmail, $subject, $body, $attachmentPaths, $replyTo) . "\r\n.\r\n");
     $dataResponse = smtpRead($socket);
     if ((int)substr($dataResponse, 0, 3) !== 250) {
         fclose($socket);
@@ -1086,6 +1168,55 @@ function sendEmailSmtp(string $toEmail, string $subject, string $body, array $at
     smtpCommand($socket, 'QUIT', 221);
     fclose($socket);
     return trim($dataResponse);
+}
+
+function relayLogContextFromBody(string $body): array
+{
+    $payload = unpackMimePayload($body);
+    $relay = is_array($payload['relay'] ?? null) ? $payload['relay'] : [];
+
+    return [
+        'product' => sanitizeMailHeaderValue((string)($relay['product'] ?? ''), 90),
+        'site' => sanitizeMailHeaderValue((string)($relay['site'] ?? ''), 190),
+        'slug' => sanitizeMailHeaderValue((string)($relay['slug'] ?? ''), 90),
+        'origin' => sanitizeMailHeaderValue((string)($relay['origin'] ?? ''), 140),
+        'provider' => sanitizeMailHeaderValue((string)($payload['provider'] ?? ''), 60),
+    ];
+}
+
+function updateRelayEmailLogStatus(string $queueId, string $status, string $provider = '', array $response = [], ?string $error = null): void
+{
+    $safeStatus = sanitizeMailHeaderValue($status, 40);
+    if ($safeStatus === '') {
+        return;
+    }
+
+    $safeProvider = sanitizeMailHeaderValue($provider, 60);
+    $safeError = sanitizeMailHeaderValue((string)$error, 500);
+    $responseJson = json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($responseJson) || $responseJson === '') {
+        $responseJson = '{}';
+    }
+
+    try {
+        db()->exec("
+            UPDATE saas.email_log
+            SET
+                status = :status,
+                provider = CASE WHEN :provider <> '' THEN :provider ELSE provider END,
+                response_payload_json = COALESCE(response_payload_json, '{}'::jsonb) || (:response_json)::jsonb,
+                error_message = CASE WHEN :error_message <> '' THEN :error_message ELSE error_message END
+            WHERE provider_message_id = :queue_id
+        ", [
+            ':status' => $safeStatus,
+            ':provider' => $safeProvider,
+            ':response_json' => $responseJson,
+            ':error_message' => $safeError,
+            ':queue_id' => $queueId,
+        ]);
+    } catch (Throwable $e) {
+        // Ignore missing schema/table errors to keep worker resilient.
+    }
 }
 
 function queueDailyBriefingReminders(string $logFile): void
@@ -2174,6 +2305,8 @@ while (true) {
 
         $emails = db()->all("SELECT id, email_to, subject, body, attachments FROM crm.email_queue WHERE status='PENDING' ORDER BY created_at ASC LIMIT 20");
         foreach ($emails as $mail) {
+            $queueId = (string)($mail['id'] ?? '');
+            $relayContext = relayLogContextFromBody((string)($mail['body'] ?? ''));
             $attachmentPaths = [];
             $attachments = decodeAttachmentList($mail['attachments'] ?? null);
             foreach ($attachments as $att) {
@@ -2192,6 +2325,13 @@ while (true) {
 
             if ($targetEmail === '') {
                 db()->exec("UPDATE crm.email_queue SET status='FAILED', processed_at=now() WHERE id=:id", [':id' => $mail['id']]);
+                updateRelayEmailLogStatus(
+                    $queueId,
+                    'FAILED',
+                    (string)($relayContext['provider'] ?? ''),
+                    ['status' => 'failed', 'reason' => 'empty_recipient'],
+                    'Destinatário vazio'
+                );
                 continue;
             }
 
@@ -2204,29 +2344,105 @@ while (true) {
                     }
 
                     db()->exec("UPDATE crm.email_queue SET status='SENT', processed_at=now() WHERE id=:id", [':id' => $mail['id']]);
+                    $providerUsed = (string)($relayContext['provider'] ?? '');
+                    if ($providerUsed === '') {
+                        $providerUsed = 'smtp';
+                    }
+                    updateRelayEmailLogStatus(
+                        $queueId,
+                        'SENT',
+                        $providerUsed,
+                        [
+                            'status' => 'sent',
+                            'mode' => 'smtp',
+                            'product' => (string)($relayContext['product'] ?? ''),
+                            'site' => (string)($relayContext['site'] ?? ''),
+                            'slug' => (string)($relayContext['slug'] ?? ''),
+                            'smtp_response' => $primaryResponse,
+                        ],
+                        null
+                    );
                     file_put_contents(
                         $logFile,
-                        '[' . date('c') . '] email_enviado_smtp -> ' . $targetEmail
-                          . ' | ' . $mail['subject']
-                          . ' | resp=' . $primaryResponse
-                          . ' | copy=' . ($testCopyTo ?: 'none')
-                          . ($copyResponse !== null ? ' | copy_resp=' . $copyResponse : '')
-                          . PHP_EOL,
+                        '[' . date('c') . '] email_dispatch ' . json_encode([
+                            'status' => 'SENT',
+                            'mode' => 'smtp',
+                            'queue_id' => $queueId,
+                            'to' => $targetEmail,
+                            'subject' => (string)$mail['subject'],
+                            'provider' => $providerUsed,
+                            'product' => (string)($relayContext['product'] ?? ''),
+                            'site' => (string)($relayContext['site'] ?? ''),
+                            'slug' => (string)($relayContext['slug'] ?? ''),
+                            'origin' => (string)($relayContext['origin'] ?? ''),
+                            'smtp_response' => $primaryResponse,
+                            'copy' => $testCopyTo ?: null,
+                            'copy_response' => $copyResponse,
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
                         FILE_APPEND
                     );
                 } else {
                     file_put_contents(
                         $logFile,
-                        '[' . date('c') . '] email_simulado -> ' . $targetEmail . ' | ' . $mail['subject'] . PHP_EOL,
+                        '[' . date('c') . '] email_dispatch ' . json_encode([
+                            'status' => 'SENT_SIMULATED',
+                            'mode' => $mailMode,
+                            'queue_id' => $queueId,
+                            'to' => $targetEmail,
+                            'subject' => (string)$mail['subject'],
+                            'provider' => (string)($relayContext['provider'] ?? ''),
+                            'product' => (string)($relayContext['product'] ?? ''),
+                            'site' => (string)($relayContext['site'] ?? ''),
+                            'slug' => (string)($relayContext['slug'] ?? ''),
+                            'origin' => (string)($relayContext['origin'] ?? ''),
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
                         FILE_APPEND
                     );
                     db()->exec("UPDATE crm.email_queue SET status='SENT_SIMULATED', processed_at=now() WHERE id=:id", [':id' => $mail['id']]);
+                    updateRelayEmailLogStatus(
+                        $queueId,
+                        'SENT_SIMULATED',
+                        (string)($relayContext['provider'] ?? ''),
+                        [
+                            'status' => 'sent_simulated',
+                            'mode' => $mailMode,
+                            'product' => (string)($relayContext['product'] ?? ''),
+                            'site' => (string)($relayContext['site'] ?? ''),
+                            'slug' => (string)($relayContext['slug'] ?? ''),
+                        ],
+                        null
+                    );
                 }
             } catch (Throwable $mailErr) {
                 db()->exec("UPDATE crm.email_queue SET status='FAILED', processed_at=now() WHERE id=:id", [':id' => $mail['id']]);
+                updateRelayEmailLogStatus(
+                    $queueId,
+                    'FAILED',
+                    (string)($relayContext['provider'] ?? ''),
+                    [
+                        'status' => 'failed',
+                        'mode' => $mailMode,
+                        'product' => (string)($relayContext['product'] ?? ''),
+                        'site' => (string)($relayContext['site'] ?? ''),
+                        'slug' => (string)($relayContext['slug'] ?? ''),
+                    ],
+                    $mailErr->getMessage()
+                );
                 file_put_contents(
                     $logFile,
-                    '[' . date('c') . '] email_failed -> ' . $targetEmail . ' | ' . $mail['subject'] . ' | err=' . $mailErr->getMessage() . PHP_EOL,
+                    '[' . date('c') . '] email_dispatch ' . json_encode([
+                        'status' => 'FAILED',
+                        'mode' => $mailMode,
+                        'queue_id' => $queueId,
+                        'to' => $targetEmail,
+                        'subject' => (string)$mail['subject'],
+                        'provider' => (string)($relayContext['provider'] ?? ''),
+                        'product' => (string)($relayContext['product'] ?? ''),
+                        'site' => (string)($relayContext['site'] ?? ''),
+                        'slug' => (string)($relayContext['slug'] ?? ''),
+                        'origin' => (string)($relayContext['origin'] ?? ''),
+                        'error' => $mailErr->getMessage(),
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
                     FILE_APPEND
                 );
             }

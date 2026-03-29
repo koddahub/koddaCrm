@@ -248,6 +248,7 @@ type SocialInstagramLogItem = {
 };
 
 type SaasTabKey = 'produtos' | 'sites' | 'emails' | 'templates' | 'eventos';
+type SaasTemplatesRouteMode = 'embedded' | 'list' | 'create' | 'view' | 'edit';
 
 type SaasProductItem = {
   id: string;
@@ -350,6 +351,9 @@ type SaasEmailAccountItem = {
 type CrmPageProps = {
   section: SectionKey;
   dealId?: string;
+  saasInitialTab?: SaasTabKey;
+  saasTemplatesRouteMode?: SaasTemplatesRouteMode;
+  saasTemplateRouteId?: string;
 };
 
 type KpiSeverity = 'normal' | 'attention' | 'critical' | 'success';
@@ -525,7 +529,13 @@ function DashboardBlockCard({ block }: { block: DashboardBlock }) {
   );
 }
 
-export function CrmPage({ section, dealId }: CrmPageProps) {
+export function CrmPage({
+  section,
+  dealId,
+  saasInitialTab = 'emails',
+  saasTemplatesRouteMode = 'embedded',
+  saasTemplateRouteId,
+}: CrmPageProps) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -579,7 +589,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     mediaUrl: '',
     caption: '',
   });
-  const [saasTab, setSaasTab] = useState<SaasTabKey>('emails');
+  const [saasTab, setSaasTab] = useState<SaasTabKey>(saasInitialTab);
   const [saasLoading, setSaasLoading] = useState(section === 'saas');
   const [saasSaving, setSaasSaving] = useState(false);
   const [saasProducts, setSaasProducts] = useState<SaasProductItem[]>([]);
@@ -638,6 +648,8 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   });
   const [saasEmailPage, setSaasEmailPage] = useState(1);
   const [saasTemplatePage, setSaasTemplatePage] = useState(1);
+  const [saasTemplateSearch, setSaasTemplateSearch] = useState('');
+  const [saasTemplateStatusFilter, setSaasTemplateStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [saasTemplatePreviewOpen, setSaasTemplatePreviewOpen] = useState(false);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [showTemplateBulkRemoveModal, setShowTemplateBulkRemoveModal] = useState(false);
@@ -651,6 +663,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarDrawerOpen, setIsSidebarDrawerOpen] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
+
+  const isTemplateRouteMode = section === 'saas' && saasTemplatesRouteMode !== 'embedded';
+  const isTemplateListRoute = saasTemplatesRouteMode === 'list';
+  const isTemplateCreateRoute = saasTemplatesRouteMode === 'create';
+  const isTemplateViewRoute = saasTemplatesRouteMode === 'view';
+  const isTemplateEditRoute = saasTemplatesRouteMode === 'edit';
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -1323,6 +1341,47 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setNotice(`${successIds.length} template(s) removido(s) com sucesso.`);
   }
 
+  async function removeSingleTemplate(item: SaasTemplateItem) {
+    if (!item.productId) {
+      setNotice(`Template ${item.templateKey} sem productId.`);
+      return;
+    }
+
+    const shouldRemove = window.confirm(
+      `Deseja remover o template "${displayTemplateName(item.templateKey)}" da listagem ativa?`,
+    );
+    if (!shouldRemove) return;
+
+    setSaasSaving(true);
+    const payload = {
+      id: item.id,
+      productId: item.productId,
+      siteId: item.siteId || '',
+      templateKey: item.templateKey,
+      subject: item.subject,
+      html: item.html || '',
+      text: item.text || '',
+      version: item.version || 1,
+      isActive: false,
+    };
+
+    const res = await fetch('/api/control-panel/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    setSaasSaving(false);
+
+    if (!res.ok) {
+      setNotice(data.error || `Falha ao remover template ${item.templateKey}`);
+      return;
+    }
+
+    setNotice(`Template ${displayTemplateName(item.templateKey)} removido com sucesso.`);
+    await loadSaas();
+  }
+
   async function submitSaasEvent(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaasSaving(true);
@@ -1578,9 +1637,13 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   }, [saasTab]);
 
   useEffect(() => {
+    setSaasTemplatePage(1);
+  }, [saasTemplateSearch, saasTemplateStatusFilter]);
+
+  useEffect(() => {
     if (saasTab !== 'templates') return;
     setSelectedTemplateIds([]);
-  }, [saasTemplatePage, saasTab]);
+  }, [saasTemplatePage, saasTab, saasTemplateSearch, saasTemplateStatusFilter]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(saasEmailAccounts.length / SAAS_EMAILS_PER_PAGE));
@@ -1599,6 +1662,48 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     if (socialPostForm.accountId) return;
     setSocialPostForm((prev) => ({ ...prev, accountId: socialAccounts[0].id }));
   }, [socialAccounts, socialPostForm.accountId]);
+
+  useEffect(() => {
+    if (!isTemplateRouteMode) return;
+    setSaasTab('templates');
+  }, [isTemplateRouteMode]);
+
+  useEffect(() => {
+    if (!isTemplateRouteMode || !saasTemplateRouteId) return;
+    if (saasLoading) return;
+
+    const matched = saasTemplates.find((item) => item.id === saasTemplateRouteId);
+    if (!matched) {
+      setNotice('Template não encontrado para o caminho informado.');
+      return;
+    }
+
+    setTemplateModalSource(matched);
+    setTemplateModalSnapshot((prev) => mapTemplateItemToForm(matched, prev || saasTemplateForm));
+    setSaasTemplateForm((prev) => mapTemplateItemToForm(matched, prev));
+    setSaasTemplatePreviewOpen(false);
+  }, [isTemplateRouteMode, saasLoading, saasTemplateRouteId, saasTemplates]);
+
+  useEffect(() => {
+    if (!isTemplateCreateRoute) return;
+    setTemplateModalSource(null);
+    setTemplateModalSnapshot(null);
+    setSaasTemplatePreviewOpen(false);
+    setSaasTemplateForm((prev) => ({
+      ...prev,
+      id: '',
+      templateName: prev.templateName || 'Boas-vindas',
+      templateCategory: 'transacional',
+      subject: '',
+      description: '',
+      html: '',
+      text: '',
+      availableVariables: '',
+      notes: '',
+      version: 1,
+      isActive: true,
+    }));
+  }, [isTemplateCreateRoute]);
 
   async function updateStage(dealIdValue: string, stageId: string) {
     const res = await fetch(`/api/deals/${dealIdValue}/stage`, {
@@ -1990,17 +2095,42 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const saasEmailRangeStart = saasEmailAccounts.length === 0 ? 0 : (saasEmailPage - 1) * SAAS_EMAILS_PER_PAGE + 1;
   const saasEmailRangeEnd =
     saasEmailAccounts.length === 0 ? 0 : Math.min(saasEmailRangeStart + saasEmailVisibleItems.length - 1, saasEmailAccounts.length);
+  const saasTemplateFilteredItems = useMemo(() => {
+    const normalizedSearch = saasTemplateSearch.trim().toLowerCase();
+
+    return saasTemplates.filter((item) => {
+      if (saasTemplateStatusFilter === 'active' && !item.isActive) return false;
+      if (saasTemplateStatusFilter === 'inactive' && item.isActive) return false;
+
+      if (!normalizedSearch) return true;
+      const haystack = [
+        item.templateKey,
+        displayTemplateName(item.templateKey),
+        item.subject,
+        item.productName || '',
+        item.siteDomain || '',
+        `v${item.version}`,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    });
+  }, [saasTemplateSearch, saasTemplateStatusFilter, saasTemplates]);
   const saasTemplateTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(saasTemplates.length / SAAS_TEMPLATES_PER_PAGE)),
-    [saasTemplates.length],
+    () => Math.max(1, Math.ceil(saasTemplateFilteredItems.length / SAAS_TEMPLATES_PER_PAGE)),
+    [saasTemplateFilteredItems.length],
   );
   const saasTemplateVisibleItems = useMemo(() => {
     const start = (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE;
-    return saasTemplates.slice(start, start + SAAS_TEMPLATES_PER_PAGE);
-  }, [saasTemplatePage, saasTemplates]);
-  const saasTemplateRangeStart = saasTemplates.length === 0 ? 0 : (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE + 1;
+    return saasTemplateFilteredItems.slice(start, start + SAAS_TEMPLATES_PER_PAGE);
+  }, [saasTemplateFilteredItems, saasTemplatePage]);
+  const saasTemplateRangeStart =
+    saasTemplateFilteredItems.length === 0 ? 0 : (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE + 1;
   const saasTemplateRangeEnd =
-    saasTemplates.length === 0 ? 0 : Math.min(saasTemplateRangeStart + saasTemplateVisibleItems.length - 1, saasTemplates.length);
+    saasTemplateFilteredItems.length === 0
+      ? 0
+      : Math.min(saasTemplateRangeStart + saasTemplateVisibleItems.length - 1, saasTemplateFilteredItems.length);
   const saasTemplateVisibleIds = useMemo(() => saasTemplateVisibleItems.map((item) => item.id), [saasTemplateVisibleItems]);
   const saasTemplateSelectedCount = saasTemplateVisibleIds.filter((id) => selectedTemplateIds.includes(id)).length;
   const allVisibleTemplatesSelected =
@@ -2012,6 +2142,15 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     }
     return `<pre style="margin:0;white-space:pre-wrap;line-height:1.6;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${saasTemplateForm.text || 'Nenhum conteúdo disponível.'}</pre>`;
   }, [templateModalHasHtml, saasTemplateForm.html, saasTemplateForm.text]);
+  const templateRouteItem = useMemo(
+    () => (saasTemplateRouteId ? saasTemplates.find((item) => item.id === saasTemplateRouteId) || null : null),
+    [saasTemplateRouteId, saasTemplates],
+  );
+
+  useEffect(() => {
+    if (saasTemplatePage <= saasTemplateTotalPages) return;
+    setSaasTemplatePage(saasTemplateTotalPages);
+  }, [saasTemplatePage, saasTemplateTotalPages]);
 
   useEffect(() => {
     setSelectedTemplateIds((prev) => {
@@ -2542,24 +2681,580 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
           <section className="crm-v2-panel saas-v2-panel">
             <div className="saas-hero">
               <div>
-                <span className="saas-hero-kicker">Painel administrativo</span>
-                <h3>Painel de Controle</h3>
-                <p>Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.</p>
+                <span className="saas-hero-kicker">{isTemplateRouteMode ? 'Gestão de templates' : 'Painel administrativo'}</span>
+                <h3>{isTemplateRouteMode ? 'Painel de Controle · Templates' : 'Painel de Controle'}</h3>
+                <p>
+                  {isTemplateRouteMode
+                    ? 'Gerencie templates com foco em listagem, contexto de produto e navegação dedicada para criação.'
+                    : 'Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.'}
+                </p>
               </div>
-              <span className="saas-hero-chip">{saasProducts.length} produtos • {saasEmailAccounts.length} e-mails</span>
+              <span className="saas-hero-chip">
+                {isTemplateRouteMode
+                  ? `${saasTemplateFilteredItems.length} template(s) filtrado(s)`
+                  : `${saasProducts.length} produtos • ${saasEmailAccounts.length} e-mails`}
+              </span>
             </div>
 
-            <div className="saas-tabbar" role="tablist" aria-label="Subseções do Painel de Controle">
-              <button type="button" role="tab" aria-selected={saasTab === 'produtos'} className={saasTab === 'produtos' ? 'active' : ''} onClick={() => setSaasTab('produtos')}>Produtos</button>
-              <button type="button" role="tab" aria-selected={saasTab === 'sites'} className={saasTab === 'sites' ? 'active' : ''} onClick={() => setSaasTab('sites')}>Sites</button>
-              <button type="button" role="tab" aria-selected={saasTab === 'emails'} className={saasTab === 'emails' ? 'active' : ''} onClick={() => setSaasTab('emails')}>E-mails</button>
-              <button type="button" role="tab" aria-selected={saasTab === 'templates'} className={saasTab === 'templates' ? 'active' : ''} onClick={() => setSaasTab('templates')}>Templates</button>
-              <button type="button" role="tab" aria-selected={saasTab === 'eventos'} className={saasTab === 'eventos' ? 'active' : ''} onClick={() => setSaasTab('eventos')}>Eventos</button>
-            </div>
+            {!isTemplateRouteMode ? (
+              <div className="saas-tabbar" role="tablist" aria-label="Subseções do Painel de Controle">
+                <button type="button" role="tab" aria-selected={saasTab === 'produtos'} className={saasTab === 'produtos' ? 'active' : ''} onClick={() => setSaasTab('produtos')}>Produtos</button>
+                <button type="button" role="tab" aria-selected={saasTab === 'sites'} className={saasTab === 'sites' ? 'active' : ''} onClick={() => setSaasTab('sites')}>Sites</button>
+                <button type="button" role="tab" aria-selected={saasTab === 'emails'} className={saasTab === 'emails' ? 'active' : ''} onClick={() => setSaasTab('emails')}>E-mails</button>
+                <Link href="/painel-de-controle/templates" role="tab" aria-selected={false} className="saas-tab-link">Templates</Link>
+                <button type="button" role="tab" aria-selected={saasTab === 'eventos'} className={saasTab === 'eventos' ? 'active' : ''} onClick={() => setSaasTab('eventos')}>Eventos</button>
+              </div>
+            ) : (
+              <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb templates">
+                <Link href="/painel-de-controle">Painel de Controle</Link>
+                <span>/</span>
+                <Link href="/painel-de-controle/templates">Templates</Link>
+                {isTemplateCreateRoute ? (
+                  <>
+                    <span>/</span>
+                    <span>Novo</span>
+                  </>
+                ) : null}
+                {isTemplateEditRoute ? (
+                  <>
+                    <span>/</span>
+                    <span>Editar</span>
+                  </>
+                ) : null}
+                {isTemplateViewRoute ? (
+                  <>
+                    <span>/</span>
+                    <span>Detalhes</span>
+                  </>
+                ) : null}
+              </nav>
+            )}
 
             {saasLoading ? <p className="saas-loading">Carregando Painel de Controle...</p> : null}
 
-            {!saasLoading && saasTab === 'produtos' ? (
+            {!saasLoading && isTemplateRouteMode ? (
+              <div className="saas-template-route-shell">
+                {isTemplateListRoute ? (
+                  <article className="saas-box saas-template-table-card saas-template-management-card">
+                    <div className="saas-template-management-head">
+                      <div>
+                        <h4>Gestão de templates</h4>
+                        <p>Listagem focada em consulta, busca, manutenção e vínculo com produto/site.</p>
+                      </div>
+                      <Link href="/painel-de-controle/templates/novo" className="primary-btn saas-create-template-btn">
+                        + Novo template
+                      </Link>
+                    </div>
+
+                    <div className="saas-template-toolbar">
+                      <label className="saas-field-group">
+                        <span className="saas-field-label">Busca</span>
+                        <input
+                          className="saas-input"
+                          value={saasTemplateSearch}
+                          onChange={(event) => setSaasTemplateSearch(event.target.value)}
+                          placeholder="Buscar por template, assunto, produto, domínio ou versão"
+                        />
+                      </label>
+                      <label className="saas-field-group">
+                        <span className="saas-field-label">Status</span>
+                        <select
+                          className="saas-input"
+                          value={saasTemplateStatusFilter}
+                          onChange={(event) =>
+                            setSaasTemplateStatusFilter(event.target.value as 'all' | 'active' | 'inactive')
+                          }
+                        >
+                          <option value="all">Todos</option>
+                          <option value="active">Ativos</option>
+                          <option value="inactive">Inativos</option>
+                        </select>
+                      </label>
+                      <button type="button" className="secondary-btn saas-template-refresh-btn" onClick={() => void loadSaas()}>
+                        Atualizar
+                      </button>
+                    </div>
+
+                    {saasTemplateSelectedCount > 0 ? (
+                      <div className="saas-bulk-toolbar" role="status" aria-live="polite">
+                        <strong>{saasTemplateSelectedCount} template(s) selecionado(s)</strong>
+                        <div className="saas-bulk-toolbar-actions">
+                          <button type="button" className="secondary-btn" onClick={() => setSelectedTemplateIds([])}>
+                            Desmarcar
+                          </button>
+                          <button type="button" className="danger-btn" onClick={() => setShowTemplateBulkRemoveModal(true)}>
+                            Remover selecionados
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {saasTemplateFilteredItems.length === 0 ? (
+                      <div className="saas-empty-inline saas-empty-rich" role="status" aria-live="polite">
+                        <strong>Nenhum template encontrado</strong>
+                        <span>Ajuste os filtros ou cadastre um novo template para começar.</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="saas-template-table-desktop">
+                          <div className="saas-table-wrap">
+                            <table className="saas-table">
+                              <thead>
+                                <tr>
+                                  <th scope="col" className="saas-checkbox-cell">
+                                    <input
+                                      ref={templatesSelectAllRef}
+                                      type="checkbox"
+                                      className="saas-template-check"
+                                      checked={allVisibleTemplatesSelected}
+                                      onChange={toggleSelectAllVisibleTemplates}
+                                      aria-label="Selecionar todos os templates visíveis"
+                                    />
+                                  </th>
+                                  <th scope="col">Template</th>
+                                  <th scope="col">Nome interno</th>
+                                  <th scope="col">Produto</th>
+                                  <th scope="col">Site/Domínio</th>
+                                  <th scope="col">Assunto</th>
+                                  <th scope="col">Versão</th>
+                                  <th scope="col">Status</th>
+                                  <th scope="col">Atualizado</th>
+                                  <th scope="col">Ações</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {saasTemplateVisibleItems.map((item) => (
+                                  <tr key={item.id} className={selectedTemplateIds.includes(item.id) ? 'saas-row-selected' : undefined}>
+                                    <td className="saas-checkbox-cell" onClick={(event) => event.stopPropagation()}>
+                                      <input
+                                        type="checkbox"
+                                        className="saas-template-check"
+                                        checked={selectedTemplateIds.includes(item.id)}
+                                        onChange={() => toggleTemplateSelection(item.id)}
+                                        aria-label={`Selecionar template ${displayTemplateName(item.templateKey)}`}
+                                      />
+                                    </td>
+                                    <td title={displayTemplateName(item.templateKey)}>
+                                      <span className="saas-cell-truncate">{displayTemplateName(item.templateKey)}</span>
+                                    </td>
+                                    <td title={item.templateKey}>
+                                      <code>{item.templateKey}</code>
+                                    </td>
+                                    <td title={item.productName || '-'}>
+                                      <span className="saas-cell-truncate">{item.productName || '-'}</span>
+                                    </td>
+                                    <td title={item.siteDomain || '-'}>
+                                      <span className="saas-cell-truncate">{item.siteDomain || '-'}</span>
+                                    </td>
+                                    <td title={item.subject}>
+                                      <span className="saas-cell-truncate">{item.subject}</span>
+                                    </td>
+                                    <td>v{item.version}</td>
+                                    <td>
+                                      <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                        {item.isActive ? 'Ativo' : 'Inativo'}
+                                      </span>
+                                    </td>
+                                    <td>{shortDateTime(item.updatedAt)}</td>
+                                    <td>
+                                      <div className="saas-template-row-actions">
+                                        <Link href={`/painel-de-controle/templates/${item.id}`} className="secondary-btn saas-inline-action">
+                                          Visualizar
+                                        </Link>
+                                        <Link href={`/painel-de-controle/templates/${item.id}/editar`} className="secondary-btn saas-inline-action is-muted">
+                                          Editar
+                                        </Link>
+                                        <button
+                                          type="button"
+                                          className="danger-btn saas-inline-action"
+                                          disabled={saasSaving}
+                                          onClick={() => void removeSingleTemplate(item)}
+                                        >
+                                          Remover
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="saas-template-mobile-list">
+                          {saasTemplateVisibleItems.map((item) => (
+                            <article key={item.id} className={`saas-template-mobile-item ${selectedTemplateIds.includes(item.id) ? 'is-selected' : ''}`}>
+                              <header>
+                                <label className="saas-mobile-check">
+                                  <input
+                                    type="checkbox"
+                                    className="saas-template-check"
+                                    checked={selectedTemplateIds.includes(item.id)}
+                                    onChange={() => toggleTemplateSelection(item.id)}
+                                    aria-label={`Selecionar template ${displayTemplateName(item.templateKey)}`}
+                                  />
+                                  <strong>{displayTemplateName(item.templateKey)}</strong>
+                                </label>
+                                <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                  {item.isActive ? 'Ativo' : 'Inativo'}
+                                </span>
+                              </header>
+                              <p><b>Nome interno:</b> <code>{item.templateKey}</code></p>
+                              <p><b>Produto:</b> {item.productName || '-'}</p>
+                              <p><b>Site:</b> {item.siteDomain || '-'}</p>
+                              <p><b>Assunto:</b> {item.subject}</p>
+                              <p><b>Versão:</b> v{item.version}</p>
+                              <p><b>Atualizado:</b> {shortDateTime(item.updatedAt)}</p>
+                              <div className="saas-template-mobile-actions">
+                                <Link href={`/painel-de-controle/templates/${item.id}`} className="secondary-btn">
+                                  Visualizar
+                                </Link>
+                                <Link href={`/painel-de-controle/templates/${item.id}/editar`} className="secondary-btn">
+                                  Editar
+                                </Link>
+                                <button
+                                  type="button"
+                                  className="danger-btn"
+                                  disabled={saasSaving}
+                                  onClick={() => void removeSingleTemplate(item)}
+                                >
+                                  Remover
+                                </button>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+
+                        <footer className="saas-pagination">
+                          <span>Mostrando {saasTemplateRangeStart}-{saasTemplateRangeEnd} de {saasTemplateFilteredItems.length}</span>
+                          <div className="saas-pagination-actions">
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() => setSaasTemplatePage((prev) => Math.max(1, prev - 1))}
+                              disabled={saasTemplatePage <= 1}
+                            >
+                              Anterior
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() => setSaasTemplatePage((prev) => Math.min(saasTemplateTotalPages, prev + 1))}
+                              disabled={saasTemplatePage >= saasTemplateTotalPages}
+                            >
+                              Próxima
+                            </button>
+                          </div>
+                          <span>Página {saasTemplatePage} de {saasTemplateTotalPages}</span>
+                        </footer>
+                      </>
+                    )}
+                  </article>
+                ) : null}
+
+                {isTemplateCreateRoute || isTemplateEditRoute ? (
+                  <article className="saas-box saas-template-route-form-card">
+                    <div className="saas-template-form-head">
+                      <div>
+                        <h4>{isTemplateEditRoute ? 'Editar template' : 'Novo template'}</h4>
+                        <p>Preencha metadados, vínculos de produto/site, assunto e conteúdo do template.</p>
+                      </div>
+                      <span className={`saas-status-chip ${saasTemplateForm.isActive ? 'is-active' : 'is-inactive'}`}>
+                        {saasTemplateForm.isActive ? 'Ativo' : 'Inativo'}
+                      </span>
+                    </div>
+
+                    <form className="stack-form saas-template-form" onSubmit={submitSaasTemplate}>
+                      <section className="saas-template-section">
+                        <div className="saas-template-section-head">
+                          <h5>Metadados</h5>
+                          <p>Identificação interna e escopo do template.</p>
+                        </div>
+                        <div className="saas-template-grid-two">
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-name">Nome do template</label>
+                            <input
+                              id="cp-route-template-name"
+                              className="saas-input"
+                              value={saasTemplateForm.templateName}
+                              onChange={(e) =>
+                                setSaasTemplateForm((prev) => ({
+                                  ...prev,
+                                  templateName: e.target.value,
+                                  templateKey: prev.templateKey ? prev.templateKey : normalizeTemplateKey(e.target.value),
+                                }))
+                              }
+                              placeholder="Ex: Boas-vindas Praja"
+                              required
+                            />
+                          </div>
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-category">Tipo/Categoria</label>
+                            <select
+                              id="cp-route-template-category"
+                              className="saas-input"
+                              value={saasTemplateForm.templateCategory}
+                              onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateCategory: e.target.value }))}
+                            >
+                              <option value="transacional">Transacional</option>
+                              <option value="seguranca">Segurança</option>
+                              <option value="comunicacao">Comunicação</option>
+                              <option value="operacional">Operacional</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="saas-template-grid-three">
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-product">Produto</label>
+                            <select
+                              id="cp-route-template-product"
+                              className="saas-input"
+                              value={saasTemplateForm.productId}
+                              onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
+                              required
+                            >
+                              <option value="">Selecione um produto</option>
+                              {saasProducts.map((product) => (
+                                <option key={product.id} value={product.id}>
+                                  {product.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-site">Site/Domínio</label>
+                            <select
+                              id="cp-route-template-site"
+                              className="saas-input"
+                              value={saasTemplateForm.siteId}
+                              onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, siteId: e.target.value }))}
+                            >
+                              <option value="">Sem site específico</option>
+                              {saasSites
+                                .filter((site) => !saasTemplateForm.productId || site.productId === saasTemplateForm.productId)
+                                .map((site) => (
+                                  <option key={site.id} value={site.id}>
+                                    {site.domain}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-version">Versão</label>
+                            <input
+                              id="cp-route-template-version"
+                              className="saas-input"
+                              type="number"
+                              min={1}
+                              value={saasTemplateForm.version}
+                              onChange={(e) =>
+                                setSaasTemplateForm((prev) => ({
+                                  ...prev,
+                                  version: Math.max(1, Number.parseInt(e.target.value || '1', 10) || 1),
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+
+                        <div className="saas-template-grid-two">
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-key">Nome interno</label>
+                            <input
+                              id="cp-route-template-key"
+                              className="saas-input"
+                              value={saasTemplateForm.templateKey}
+                              onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateKey: normalizeTemplateKey(e.target.value) }))}
+                              placeholder="Ex: reset_password"
+                              required
+                            />
+                          </div>
+                          <div className="saas-field-group">
+                            <label className="saas-field-label" htmlFor="cp-route-template-subject">Assunto</label>
+                            <input
+                              id="cp-route-template-subject"
+                              className="saas-input"
+                              value={saasTemplateForm.subject}
+                              onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, subject: e.target.value }))}
+                              placeholder="Ex: Recuperação de acesso ao Praja"
+                              required
+                            />
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="saas-template-section">
+                        <div className="saas-template-section-head">
+                          <h5>Conteúdo</h5>
+                          <p>HTML e texto fallback com preview controlado.</p>
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-route-template-html">Conteúdo HTML</label>
+                          <textarea
+                            id="cp-route-template-html"
+                            className="saas-input saas-template-editor"
+                            value={saasTemplateForm.html}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, html: e.target.value }))}
+                            placeholder="<h1>Olá, {{name}}</h1>"
+                          />
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-route-template-text">Conteúdo texto (fallback)</label>
+                          <textarea
+                            id="cp-route-template-text"
+                            className="saas-input saas-template-textarea"
+                            value={saasTemplateForm.text}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, text: e.target.value }))}
+                            placeholder="Olá {{name}}, seja bem-vindo(a)!"
+                          />
+                        </div>
+                      </section>
+
+                      <section className="saas-template-section">
+                        <div className="saas-template-section-head">
+                          <h5>Variáveis e configurações</h5>
+                          <p>Documente variáveis e observações operacionais.</p>
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-route-template-vars">Variáveis disponíveis</label>
+                          <textarea
+                            id="cp-route-template-vars"
+                            className="saas-input saas-template-textarea"
+                            value={saasTemplateForm.availableVariables}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, availableVariables: e.target.value }))}
+                            placeholder="{{name}}, {{email}}, {{resetUrl}}"
+                          />
+                        </div>
+                        <div className="saas-field-group">
+                          <label className="saas-field-label" htmlFor="cp-route-template-notes">Observações</label>
+                          <textarea
+                            id="cp-route-template-notes"
+                            className="saas-input saas-template-textarea"
+                            value={saasTemplateForm.notes}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, notes: e.target.value }))}
+                            placeholder="Regras de uso, limitações ou orientações internas."
+                          />
+                        </div>
+                        <label className="saas-check-row">
+                          <input
+                            type="checkbox"
+                            checked={saasTemplateForm.isActive}
+                            onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                          />
+                          <span>Template ativo</span>
+                        </label>
+                      </section>
+
+                      {saasTemplatePreviewOpen ? (
+                        <div className="saas-template-preview" role="status" aria-live="polite">
+                          <strong>{saasTemplateForm.subject || 'Sem assunto'}</strong>
+                          <small>{saasTemplateForm.templateKey || 'sem-chave'}</small>
+                          <pre>{saasTemplateForm.html || saasTemplateForm.text || 'Nenhum conteúdo informado.'}</pre>
+                        </div>
+                      ) : null}
+
+                      <footer className="saas-template-actions">
+                        <Link href="/painel-de-controle/templates" className="secondary-btn">
+                          Voltar para templates
+                        </Link>
+                        <button type="button" className="secondary-btn" onClick={resetSaasTemplateEditor}>
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => setSaasTemplatePreviewOpen((prev) => !prev)}
+                        >
+                          {saasTemplatePreviewOpen ? 'Ocultar preview' : 'Visualizar preview'}
+                        </button>
+                        <button type="submit" className="primary-btn" disabled={saasSaving}>
+                          {saasSaving ? 'Salvando...' : isTemplateEditRoute ? 'Salvar alterações' : 'Salvar template'}
+                        </button>
+                      </footer>
+                    </form>
+                  </article>
+                ) : null}
+
+                {isTemplateViewRoute ? (
+                  <article className="saas-box saas-template-route-view-card">
+                    <div className="saas-template-management-head">
+                      <div>
+                        <h4>{templateRouteItem ? displayTemplateName(templateRouteItem.templateKey) : 'Template'}</h4>
+                        <p>Visualização detalhada do template com vínculos e conteúdo.</p>
+                      </div>
+                      <div className="saas-template-route-view-actions">
+                        {templateRouteItem ? (
+                          <Link href={`/painel-de-controle/templates/${templateRouteItem.id}/editar`} className="secondary-btn">
+                            Editar
+                          </Link>
+                        ) : null}
+                        <Link href="/painel-de-controle/templates" className="primary-btn">
+                          Voltar para templates
+                        </Link>
+                      </div>
+                    </div>
+
+                    {templateRouteItem ? (
+                      <>
+                        <div className="saas-template-detail-grid">
+                          <div className="saas-template-detail-item">
+                            <span>Nome interno</span>
+                            <strong>{templateRouteItem.templateKey}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Produto</span>
+                            <strong>{templateRouteItem.productName || '-'}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Site/Domínio</span>
+                            <strong>{templateRouteItem.siteDomain || '-'}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Assunto</span>
+                            <strong>{templateRouteItem.subject}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Versão</span>
+                            <strong>v{templateRouteItem.version}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Status</span>
+                            <strong>{templateRouteItem.isActive ? 'Ativo' : 'Inativo'}</strong>
+                          </div>
+                          <div className="saas-template-detail-item">
+                            <span>Atualizado</span>
+                            <strong>{shortDateTime(templateRouteItem.updatedAt)}</strong>
+                          </div>
+                        </div>
+
+                        <section className="saas-template-section">
+                          <div className="saas-template-section-head">
+                            <h5>Conteúdo</h5>
+                            <p>Preview do HTML sanitizado ou fallback em texto.</p>
+                          </div>
+                          <div
+                            className="template-modal-preview-pane"
+                            dangerouslySetInnerHTML={{
+                              __html: templateRouteItem.html
+                                ? String(templateRouteItem.html).replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+                                : `<pre style="margin:0;white-space:pre-wrap;line-height:1.6;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${templateRouteItem.text || 'Nenhum conteúdo disponível.'}</pre>`,
+                            }}
+                          />
+                        </section>
+                      </>
+                    ) : (
+                      <div className="saas-empty-inline saas-empty-rich" role="status" aria-live="polite">
+                        <strong>Template não encontrado</strong>
+                        <span>O registro solicitado não foi localizado. Verifique o caminho e tente novamente.</span>
+                      </div>
+                    )}
+                  </article>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!saasLoading && !isTemplateRouteMode && saasTab === 'produtos' ? (
               <div className="saas-grid-two">
                 <article className="saas-box">
                   <h4>Novo produto</h4>
@@ -2632,7 +3327,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               </div>
             ) : null}
 
-            {!saasLoading && saasTab === 'sites' ? (
+            {!saasLoading && !isTemplateRouteMode && saasTab === 'sites' ? (
               <div className="saas-ready-grid">
                 <article className="saas-box">
                   <h4>Sites</h4>
@@ -2648,7 +3343,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               </div>
             ) : null}
 
-            {!saasLoading && saasTab === 'emails' ? (
+            {!saasLoading && !isTemplateRouteMode && saasTab === 'emails' ? (
               <div className="saas-grid-two saas-email-layout">
                 <article className="saas-box saas-email-form-card">
                   <h4>Novo e-mail transacional</h4>
@@ -2896,7 +3591,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               </div>
             ) : null}
 
-            {!saasLoading && saasTab === 'templates' ? (
+            {!saasLoading && !isTemplateRouteMode && saasTab === 'templates' ? (
               <div className="saas-grid-two saas-template-layout">
                 <article className="saas-box saas-template-form-card">
                   <div className="saas-template-form-head">
@@ -3319,7 +4014,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
               </div>
             ) : null}
 
-            {!saasLoading && saasTab === 'eventos' ? (
+            {!saasLoading && !isTemplateRouteMode && saasTab === 'eventos' ? (
               <div className="saas-ready-grid">
                 <article className="saas-box">
                   <h4>Eventos</h4>

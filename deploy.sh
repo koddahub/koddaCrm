@@ -15,6 +15,26 @@ COMPOSE_SERVICES=(
   ac_worker
 )
 
+wait_for_http() {
+  local url="$1"
+  local label="$2"
+  local attempts="${3:-20}"
+  local delay="${4:-2}"
+
+  local i
+  for ((i=1; i<=attempts; i++)); do
+    if curl -fsS --max-time 8 "$url" >/dev/null 2>&1; then
+      echo "==> OK: $label ($url)"
+      return 0
+    fi
+    echo "==> Aguardando $label ($i/$attempts)..."
+    sleep "$delay"
+  done
+
+  echo "Erro: $label indisponivel apos ${attempts} tentativas ($url)" >&2
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 Uso:
@@ -101,8 +121,8 @@ if [ "$WITH_SEED" = true ]; then
 fi
 
 echo "==> Validando servicos"
-curl -fsS http://localhost:8092/api/health >/dev/null
-curl -fsS -I http://localhost:8081 >/dev/null
+wait_for_http "http://localhost:8092/api/health" "CRM API Health"
+wait_for_http "http://localhost:8081/login" "Portal Cliente"
 
 echo "==> Deploy concluido."
 echo "Portal Cliente: http://localhost:8081"
