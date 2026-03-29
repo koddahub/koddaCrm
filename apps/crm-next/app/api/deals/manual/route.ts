@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureApiAuth } from '@/lib/api-auth';
 import { parsePipelineType, resolvePipelineAndStages } from '@/lib/deals';
 import { normalizeIntent, normalizePhone } from '@/lib/domain';
+import { notifyNewLeadByEmail } from '@/lib/lead-notification-email';
 import { toCentsFromInput } from '@/lib/money';
 import { prisma } from '@/lib/prisma';
 
@@ -98,6 +99,25 @@ export async function POST(req: NextRequest) {
 
       return { lead, deal };
     });
+
+    try {
+      await notifyNewLeadByEmail({
+        source: 'manual',
+        leadId: result.lead.id,
+        dealId: result.deal.id,
+        name,
+        email,
+        phone,
+        interest: intent,
+        intent,
+        category,
+        dealType,
+        origin: 'MANUAL',
+        payload: body,
+      });
+    } catch (notifyError) {
+      console.error('[lead-notify] Falha ao enfileirar e-mail de novo lead (manual)', notifyError);
+    }
 
     return NextResponse.json({ ok: true, leadId: result.lead.id, dealId: result.deal.id }, { status: 201 });
   } catch (error) {

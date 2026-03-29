@@ -7,6 +7,7 @@ import {
   normalizePhone,
   ORIGINS,
 } from "@/lib/domain";
+import { notifyNewLeadByEmail } from "@/lib/lead-notification-email";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
@@ -189,6 +190,25 @@ export async function POST(req: NextRequest) {
 
       return { lead, deal };
     });
+
+    try {
+      await notifyNewLeadByEmail({
+        source: "site_form",
+        leadId: result.lead.id,
+        dealId: result.deal.id,
+        name,
+        email,
+        phone,
+        interest: rawAssunto || intent,
+        intent,
+        category,
+        dealType,
+        origin: source,
+        payload: body,
+      });
+    } catch (notifyError) {
+      console.error("[lead-notify] Falha ao enfileirar e-mail de novo lead (site_form)", notifyError);
+    }
 
     // ✅ Resposta de sucesso com CORS
     return addCorsHeaders(
