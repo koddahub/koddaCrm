@@ -262,45 +262,33 @@ async function seedSaasDefaults() {
 
   const templateDefaults = [
     {
-      templateKey: 'welcome',
-      subject: 'Bem-vindo ao Praja',
-      html: [
-        '<p>Olá {{name}},</p>',
-        '<p>Seu acesso ao Praja foi criado com sucesso.</p>',
-        '<p>Use sua conta para organizar agendamentos e acompanhar sua operação em um único lugar.</p>',
-        '<p>Se precisar de ajuda, nosso time está por aqui.</p>',
-        '<p>Equipe Praja</p>',
-      ].join(''),
+      templateKey: 'welcome_email',
+      subject: 'Bem-vindo ao Praja, {{user_name}}',
+      html: '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#1f2937"><h2 style="margin:0 0 12px;color:#1e3a8a">Boas-vindas ao Praja</h2><p>Olá {{user_name}},</p><p>Seu cadastro no Praja foi concluído com sucesso.</p><p>Empresa: <strong>{{business_name}}</strong></p><p>Login: <strong>{{login_email}}</strong></p><p><a href="{{app_url}}" style="display:inline-block;background:#2563EB;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600">Acessar o Praja</a></p></div>',
       text: [
-        'Olá {{name}},',
+        'Olá {{user_name}},',
         '',
-        'Seu acesso ao Praja foi criado com sucesso.',
-        'Use sua conta para organizar agendamentos e acompanhar sua operação em um único lugar.',
-        'Se precisar de ajuda, nosso time está por aqui.',
+        'Seu cadastro no Praja foi concluído com sucesso.',
+        'Empresa: {{business_name}}',
+        'Login: {{login_email}}',
+        'Acesse: {{app_url}}',
         '',
-        'Equipe Praja',
+        'Equipe Praja.',
       ].join('\n'),
     },
     {
-      templateKey: 'reset_password',
-      subject: 'Recuperação de acesso ao Praja',
-      html: [
-        '<p>Olá {{name}},</p>',
-        '<p>Recebemos uma solicitação para redefinir sua senha no Praja.</p>',
-        '<p>Para continuar, use este link seguro: <a href="{{resetUrl}}">{{resetUrl}}</a></p>',
-        '<p>Se você não reconhece essa solicitação, ignore este e-mail.</p>',
-        '<p>Equipe Praja</p>',
-      ].join(''),
+      templateKey: 'password_reset',
+      subject: 'Redefina sua senha no Praja',
+      html: '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#1f2937"><h2 style="margin:0 0 12px;color:#1e3a8a">Recuperação de senha - Praja</h2><p>Olá {{user_name}},</p><p>Recebemos um pedido para redefinir sua senha.</p><p><a href="{{reset_link}}" style="display:inline-block;background:#2563EB;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600">Redefinir senha</a></p><p>Este link expira em {{expiration_time}}.</p><p>Se você não solicitou, ignore esta mensagem ou fale com {{support_email}}.</p></div>',
       text: [
-        'Olá {{name}},',
+        'Olá {{user_name}},',
         '',
-        'Recebemos uma solicitação para redefinir sua senha no Praja.',
-        'Use este link seguro para continuar:',
-        '{{resetUrl}}',
+        'Recebemos um pedido para redefinir sua senha.',
+        'Redefinir senha: {{reset_link}}',
+        'Este link expira em {{expiration_time}}.',
+        'Se você não solicitou, ignore esta mensagem ou fale com {{support_email}}.',
         '',
-        'Se você não reconhece essa solicitação, ignore este e-mail.',
-        '',
-        'Equipe Praja',
+        'Equipe Praja.',
       ].join('\n'),
     },
   ] as const;
@@ -317,8 +305,8 @@ async function seedSaasDefaults() {
   if (!prajaProductId || prajaSites.length === 0) return;
 
   const bindings = [
-    { eventKey: 'user.created', templateKey: 'welcome' },
-    { eventKey: 'auth.password_reset_requested', templateKey: 'reset_password' },
+    { eventKey: 'user.created', templateKey: 'welcome_email' },
+    { eventKey: 'auth.password_reset_requested', templateKey: 'password_reset' },
   ] as const;
 
   for (const prajaSite of prajaSites) {

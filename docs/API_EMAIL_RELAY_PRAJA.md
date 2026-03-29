@@ -10,7 +10,7 @@ Permitir envio de e-mails transacionais pelo CRM sem mover a regra de negócio d
 
 ## Endpoints
 
-### 1) Resolver template
+### 1- Resolver template
 - `GET /api/email/templates/resolve?slug=welcome_email`
 - Query opcional:
   - `product` (ex: `Praja`)
@@ -28,7 +28,7 @@ Permitir envio de e-mails transacionais pelo CRM sem mover a regra de negócio d
 }
 ```
 
-### 2) Dispatch (relay)
+### 2- Dispatch (relay)
 - `POST /api/email/dispatch`
 - Headers:
   - `Content-Type: application/json`
