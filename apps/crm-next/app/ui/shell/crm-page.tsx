@@ -523,6 +523,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [purgeTarget, setPurgeTarget] = useState<DeleteTarget>(null);
   const [purgeConfirm, setPurgeConfirm] = useState('');
   const clientsSelectAllRef = useRef<HTMLInputElement | null>(null);
+  const templatesSelectAllRef = useRef<HTMLInputElement | null>(null);
   const [financeOverview, setFinanceOverview] = useState<FinanceOverview | null>(null);
   const [recebimentos, setRecebimentos] = useState<RecebimentoItem[]>([]);
   const [inadimplencia, setInadimplencia] = useState<InadimplenciaItem[]>([]);
@@ -598,6 +599,9 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [saasEmailPage, setSaasEmailPage] = useState(1);
   const [saasTemplatePage, setSaasTemplatePage] = useState(1);
   const [saasTemplatePreviewOpen, setSaasTemplatePreviewOpen] = useState(false);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [showTemplateBulkRemoveModal, setShowTemplateBulkRemoveModal] = useState(false);
+  const [saasTemplateBulkRemoving, setSaasTemplateBulkRemoving] = useState(false);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarDrawerOpen, setIsSidebarDrawerOpen] = useState(false);
@@ -760,6 +764,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setRestoreTarget(null);
     setPurgeTarget(null);
     setPurgeConfirm('');
+    setShowTemplateBulkRemoveModal(false);
   }
 
   async function logout() {
@@ -1142,6 +1147,82 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setSaasTab('templates');
   }
 
+  function toggleTemplateSelection(templateId: string) {
+    setSelectedTemplateIds((prev) =>
+      prev.includes(templateId) ? prev.filter((id) => id !== templateId) : [...prev, templateId],
+    );
+  }
+
+  function toggleSelectAllVisibleTemplates() {
+    const visibleIds = saasTemplateVisibleItems.map((item) => item.id);
+    if (visibleIds.length === 0) return;
+    const allSelected = visibleIds.every((id) => selectedTemplateIds.includes(id));
+    if (allSelected) {
+      setSelectedTemplateIds([]);
+      return;
+    }
+    setSelectedTemplateIds(visibleIds);
+  }
+
+  async function removeSelectedTemplatesInBulk() {
+    const selectedOnPage = saasTemplateVisibleItems.filter((item) => selectedTemplateIds.includes(item.id));
+    if (selectedOnPage.length === 0) {
+      setShowTemplateBulkRemoveModal(false);
+      setSelectedTemplateIds([]);
+      return;
+    }
+
+    setSaasTemplateBulkRemoving(true);
+    const results = await Promise.allSettled(
+      selectedOnPage.map(async (item) => {
+        if (!item.productId) throw new Error(`Template ${item.templateKey} sem productId`);
+
+        const payload = {
+          id: item.id,
+          productId: item.productId,
+          siteId: item.siteId || '',
+          templateKey: item.templateKey,
+          subject: item.subject,
+          html: item.html || '',
+          text: item.text || '',
+          version: item.version || 1,
+          isActive: false,
+        };
+
+        const res = await fetch('/api/control-panel/templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `Falha ao remover template ${item.templateKey}`);
+        }
+        return item.id;
+      }),
+    );
+
+    const successIds = results
+      .filter((result): result is PromiseFulfilledResult<string> => result.status === 'fulfilled')
+      .map((result) => result.value);
+    const failureCount = results.length - successIds.length;
+
+    if (successIds.length > 0) {
+      setSaasTemplates((prev) => prev.filter((item) => !successIds.includes(item.id)));
+      setSelectedTemplateIds((prev) => prev.filter((id) => !successIds.includes(id)));
+    }
+
+    setShowTemplateBulkRemoveModal(false);
+    setSaasTemplateBulkRemoving(false);
+
+    if (failureCount > 0) {
+      setNotice(`${successIds.length} template(s) removido(s) e ${failureCount} falha(s) na remoção em lote.`);
+      return;
+    }
+
+    setNotice(`${successIds.length} template(s) removido(s) com sucesso.`);
+  }
+
   async function submitSaasEvent(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaasSaving(true);
@@ -1395,6 +1476,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     if (saasTab !== 'templates') return;
     setSaasTemplatePage(1);
   }, [saasTab]);
+
+  useEffect(() => {
+    if (saasTab !== 'templates') return;
+    setSelectedTemplateIds([]);
+  }, [saasTemplatePage, saasTab]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(saasEmailAccounts.length / SAAS_EMAILS_PER_PAGE));
@@ -1815,6 +1901,26 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const saasTemplateRangeStart = saasTemplates.length === 0 ? 0 : (saasTemplatePage - 1) * SAAS_TEMPLATES_PER_PAGE + 1;
   const saasTemplateRangeEnd =
     saasTemplates.length === 0 ? 0 : Math.min(saasTemplateRangeStart + saasTemplateVisibleItems.length - 1, saasTemplates.length);
+  const saasTemplateVisibleIds = useMemo(() => saasTemplateVisibleItems.map((item) => item.id), [saasTemplateVisibleItems]);
+  const saasTemplateSelectedCount = saasTemplateVisibleIds.filter((id) => selectedTemplateIds.includes(id)).length;
+  const allVisibleTemplatesSelected =
+    saasTemplateVisibleIds.length > 0 && saasTemplateSelectedCount === saasTemplateVisibleIds.length;
+
+  useEffect(() => {
+    setSelectedTemplateIds((prev) => {
+      const next = prev.filter((id) => saasTemplateVisibleIds.includes(id));
+      if (next.length === prev.length && next.every((id, index) => id === prev[index])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [saasTemplateVisibleIds]);
+
+  useEffect(() => {
+    if (!templatesSelectAllRef.current) return;
+    templatesSelectAllRef.current.indeterminate =
+      saasTemplateSelectedCount > 0 && saasTemplateSelectedCount < saasTemplateVisibleIds.length;
+  }, [saasTemplateSelectedCount, saasTemplateVisibleIds.length]);
 
   function resolveClientStatus(item: ClienteItem): ClienteStatus {
     if (item.ghostedAt) return 'FANTASMA';
@@ -2916,6 +3022,20 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                     <span className="saas-email-table-count">{saasTemplates.length} registro(s)</span>
                   </div>
 
+                  {saasTemplateSelectedCount > 0 ? (
+                    <div className="saas-bulk-toolbar" role="status" aria-live="polite">
+                      <strong>{saasTemplateSelectedCount} template(s) selecionado(s)</strong>
+                      <div className="saas-bulk-toolbar-actions">
+                        <button type="button" className="secondary-btn" onClick={() => setSelectedTemplateIds([])}>
+                          Desmarcar todos
+                        </button>
+                        <button type="button" className="danger-btn" onClick={() => setShowTemplateBulkRemoveModal(true)}>
+                          Remover selecionados
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {saasTemplates.length === 0 ? (
                     <div className="saas-empty-inline saas-empty-rich" role="status" aria-live="polite">
                       <strong>Nenhum template cadastrado</strong>
@@ -2928,6 +3048,16 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                           <table className="saas-table">
                             <thead>
                               <tr>
+                                <th scope="col" className="saas-checkbox-cell">
+                                  <input
+                                    ref={templatesSelectAllRef}
+                                    type="checkbox"
+                                    className="saas-template-check"
+                                    checked={allVisibleTemplatesSelected}
+                                    onChange={toggleSelectAllVisibleTemplates}
+                                    aria-label="Selecionar todos os templates visíveis"
+                                  />
+                                </th>
                                 <th scope="col">Template</th>
                                 <th scope="col">Produto</th>
                                 <th scope="col">Site</th>
@@ -2940,7 +3070,16 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                             </thead>
                             <tbody>
                               {saasTemplateVisibleItems.map((item) => (
-                                <tr key={item.id}>
+                                <tr key={item.id} className={selectedTemplateIds.includes(item.id) ? 'saas-row-selected' : undefined}>
+                                  <td className="saas-checkbox-cell" onClick={(event) => event.stopPropagation()}>
+                                    <input
+                                      type="checkbox"
+                                      className="saas-template-check"
+                                      checked={selectedTemplateIds.includes(item.id)}
+                                      onChange={() => toggleTemplateSelection(item.id)}
+                                      aria-label={`Selecionar template ${displayTemplateName(item.templateKey)}`}
+                                    />
+                                  </td>
                                   <td>
                                     <div className="saas-template-name-cell">
                                       <strong>{displayTemplateName(item.templateKey)}</strong>
@@ -2981,12 +3120,23 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
                       <div className="saas-template-mobile-list">
                         {saasTemplateVisibleItems.map((item) => (
-                          <article key={item.id} className="saas-template-mobile-item">
+                          <article key={item.id} className={`saas-template-mobile-item ${selectedTemplateIds.includes(item.id) ? 'is-selected' : ''}`}>
                             <header>
-                              <strong>{displayTemplateName(item.templateKey)}</strong>
-                              <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
-                                {item.isActive ? 'Ativo' : 'Inativo'}
-                              </span>
+                              <label className="saas-mobile-check">
+                                <input
+                                  type="checkbox"
+                                  className="saas-template-check"
+                                  checked={selectedTemplateIds.includes(item.id)}
+                                  onChange={() => toggleTemplateSelection(item.id)}
+                                  aria-label={`Selecionar template ${displayTemplateName(item.templateKey)}`}
+                                />
+                                <strong>{displayTemplateName(item.templateKey)}</strong>
+                              </label>
+                              <div className="saas-mobile-header-actions">
+                                <span className={`saas-status-chip ${item.isActive ? 'is-active' : 'is-inactive'}`}>
+                                  {item.isActive ? 'Ativo' : 'Inativo'}
+                                </span>
+                              </div>
                             </header>
                             <p><b>Nome interno:</b> <code>{item.templateKey}</code></p>
                             <p><b>Produto:</b> {item.productName || '-'}</p>
@@ -3440,6 +3590,39 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
           </Link>
         ))}
       </nav>
+
+      {showTemplateBulkRemoveModal ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar remoção em lote de templates">
+          <div className="crm-v2-modal-backdrop" onClick={() => setShowTemplateBulkRemoveModal(false)} />
+          <div className="crm-v2-modal-content">
+            <header>
+              <h3>Remover templates selecionados</h3>
+              <button type="button" onClick={() => setShowTemplateBulkRemoveModal(false)}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+            <p style={{ marginTop: 4, color: '#334155' }}>
+              Você está prestes a remover <strong>{saasTemplateSelectedCount}</strong> template(s) desta página.
+            </p>
+            <p style={{ marginTop: 0, color: '#64748b', fontSize: '0.92rem' }}>
+              Esta ação aplica remoção lógica (desativação) para manter histórico e pode ser revertida via edição.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button type="button" className="secondary-btn" onClick={() => setShowTemplateBulkRemoveModal(false)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="danger-btn"
+                onClick={() => void removeSelectedTemplatesInBulk()}
+                disabled={saasTemplateBulkRemoving}
+              >
+                {saasTemplateBulkRemoving ? 'Removendo...' : 'Confirmar remoção'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showLeadModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Novo lead manual">
