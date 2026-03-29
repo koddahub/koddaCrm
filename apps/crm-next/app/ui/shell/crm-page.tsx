@@ -293,6 +293,26 @@ type SaasTemplateItem = {
   updatedAt: string;
 };
 
+type SaasTemplateFormState = {
+  id: string;
+  templateName: string;
+  productId: string;
+  siteId: string;
+  templateKey: string;
+  templateCategory: string;
+  subject: string;
+  description: string;
+  html: string;
+  text: string;
+  availableVariables: string;
+  notes: string;
+  version: number;
+  isActive: boolean;
+};
+
+type TemplateModalMode = 'view' | 'edit';
+type TemplateModalTab = 'details' | 'html' | 'preview';
+
 type SaasEventItem = {
   id: string;
   productId: string | null;
@@ -383,6 +403,26 @@ function displayTemplateName(templateKey: string) {
     .trim();
   if (!cleaned) return 'Template sem nome';
   return cleaned.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function mapTemplateItemToForm(item: SaasTemplateItem, previous: SaasTemplateFormState): SaasTemplateFormState {
+  return {
+    ...previous,
+    id: item.id,
+    templateName: displayTemplateName(item.templateKey),
+    productId: item.productId || previous.productId,
+    siteId: item.siteId || '',
+    templateCategory: item.templateKey.includes('reset') ? 'seguranca' : 'transacional',
+    templateKey: item.templateKey,
+    subject: item.subject,
+    description: '',
+    html: item.html || '',
+    text: item.text || '',
+    availableVariables: '',
+    notes: '',
+    version: item.version || 1,
+    isActive: item.isActive,
+  };
 }
 
 function currency(cents: number | null | undefined) {
@@ -562,7 +602,7 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     env: 'production',
     isActive: true,
   });
-  const [saasTemplateForm, setSaasTemplateForm] = useState({
+  const [saasTemplateForm, setSaasTemplateForm] = useState<SaasTemplateFormState>({
     id: '',
     templateName: 'Boas-vindas',
     productId: '',
@@ -602,6 +642,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [showTemplateBulkRemoveModal, setShowTemplateBulkRemoveModal] = useState(false);
   const [saasTemplateBulkRemoving, setSaasTemplateBulkRemoving] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [templateModalMode, setTemplateModalMode] = useState<TemplateModalMode>('view');
+  const [templateModalTab, setTemplateModalTab] = useState<TemplateModalTab>('details');
+  const [templateModalSource, setTemplateModalSource] = useState<SaasTemplateItem | null>(null);
+  const [templateModalSnapshot, setTemplateModalSnapshot] = useState<SaasTemplateFormState | null>(null);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSidebarDrawerOpen, setIsSidebarDrawerOpen] = useState(false);
@@ -765,6 +810,11 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     setPurgeTarget(null);
     setPurgeConfirm('');
     setShowTemplateBulkRemoveModal(false);
+    setShowTemplateModal(false);
+    setTemplateModalMode('view');
+    setTemplateModalTab('details');
+    setTemplateModalSource(null);
+    setTemplateModalSnapshot(null);
   }
 
   async function logout() {
@@ -1107,6 +1157,36 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
     await loadSaas();
   }
 
+  async function saveTemplateFromModal() {
+    if (!saasTemplateForm.id) {
+      setNotice('Selecione um template válido para editar.');
+      return;
+    }
+
+    setSaasSaving(true);
+    const res = await fetch('/api/control-panel/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(saasTemplateForm),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    setSaasSaving(false);
+    if (!res.ok) {
+      setNotice(data.error || 'Falha ao salvar alterações do template');
+      return;
+    }
+
+    setNotice('Template atualizado com sucesso.');
+    setShowTemplateModal(false);
+    setTemplateModalMode('view');
+    setTemplateModalTab('details');
+    setTemplateModalSource(null);
+    setTemplateModalSnapshot(null);
+    setSaasTemplatePage(1);
+    await loadSaas();
+  }
+
   function resetSaasTemplateEditor() {
     setSaasTemplateForm((prev) => ({
       ...prev,
@@ -1123,28 +1203,48 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
       isActive: true,
     }));
     setSaasTemplatePreviewOpen(false);
+    setTemplateModalMode('view');
   }
 
   function startSaasTemplateEdit(item: SaasTemplateItem) {
-    setSaasTemplateForm((prev) => ({
-      ...prev,
-      id: item.id,
-      templateName: displayTemplateName(item.templateKey),
-      productId: item.productId || prev.productId,
-      siteId: item.siteId || '',
-      templateCategory: item.templateKey.includes('reset') ? 'seguranca' : 'transacional',
-      templateKey: item.templateKey,
-      subject: item.subject,
-      description: '',
-      html: item.html || '',
-      text: item.text || '',
-      availableVariables: '',
-      notes: '',
-      version: item.version || 1,
-      isActive: item.isActive,
-    }));
+    setSaasTemplateForm((prev) => mapTemplateItemToForm(item, prev));
     setSaasTemplatePreviewOpen(false);
+    setTemplateModalSource(item);
+    setTemplateModalSnapshot((prev) => mapTemplateItemToForm(item, prev || saasTemplateForm));
+    setShowTemplateModal(false);
+    setTemplateModalMode('view');
+    setTemplateModalTab('details');
     setSaasTab('templates');
+  }
+
+  function openTemplateModal(item: SaasTemplateItem, mode: TemplateModalMode = 'view') {
+    const nextForm = mapTemplateItemToForm(item, saasTemplateForm);
+    setSaasTemplateForm(nextForm);
+    setTemplateModalSource(item);
+    setTemplateModalSnapshot(nextForm);
+    setTemplateModalMode(mode);
+    setTemplateModalTab('details');
+    setShowTemplateModal(true);
+    setSaasTemplatePreviewOpen(false);
+  }
+
+  function closeTemplateModal() {
+    if (templateModalMode === 'edit' && templateModalSnapshot) {
+      setSaasTemplateForm(templateModalSnapshot);
+    }
+    setShowTemplateModal(false);
+    setTemplateModalMode('view');
+    setTemplateModalTab('details');
+    setTemplateModalSource(null);
+    setTemplateModalSnapshot(null);
+  }
+
+  function cancelTemplateModalEdit() {
+    if (templateModalSnapshot) {
+      setSaasTemplateForm(templateModalSnapshot);
+    }
+    setTemplateModalMode('view');
+    setTemplateModalTab('details');
   }
 
   function toggleTemplateSelection(templateId: string) {
@@ -1905,6 +2005,13 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
   const saasTemplateSelectedCount = saasTemplateVisibleIds.filter((id) => selectedTemplateIds.includes(id)).length;
   const allVisibleTemplatesSelected =
     saasTemplateVisibleIds.length > 0 && saasTemplateSelectedCount === saasTemplateVisibleIds.length;
+  const templateModalHasHtml = (saasTemplateForm.html || '').trim().length > 0;
+  const templateModalPreviewMarkup = useMemo(() => {
+    if (templateModalHasHtml) {
+      return String(saasTemplateForm.html || '').replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+    }
+    return `<pre style="margin:0;white-space:pre-wrap;line-height:1.6;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">${saasTemplateForm.text || 'Nenhum conteúdo disponível.'}</pre>`;
+  }, [templateModalHasHtml, saasTemplateForm.html, saasTemplateForm.text]);
 
   useEffect(() => {
     setSelectedTemplateIds((prev) => {
@@ -2804,7 +2911,10 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
 
                   <form className="stack-form saas-template-form" onSubmit={submitSaasTemplate}>
                     <section className="saas-template-section">
-                      <h5>Metadados</h5>
+                      <div className="saas-template-section-head">
+                        <h5>Metadados</h5>
+                        <p>Defina identificação, categoria e escopo do template.</p>
+                      </div>
                       <div className="saas-template-grid-two">
                         <div className="saas-field-group">
                           <label className="saas-field-label" htmlFor="cp-template-name">Nome do template</label>
@@ -2931,7 +3041,10 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                     </section>
 
                     <section className="saas-template-section">
-                      <h5>Conteúdo</h5>
+                      <div className="saas-template-section-head">
+                        <h5>Conteúdo</h5>
+                        <p>Mantenha o HTML principal e o texto fallback sincronizados.</p>
+                      </div>
                       <div className="saas-field-group">
                         <label className="saas-field-label" htmlFor="cp-template-html">Conteúdo HTML</label>
                         <textarea
@@ -2955,7 +3068,10 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                     </section>
 
                     <section className="saas-template-section">
-                      <h5>Variáveis e configurações</h5>
+                      <div className="saas-template-section-head">
+                        <h5>Variáveis e configurações</h5>
+                        <p>Documente placeholders e instruções internas de uso.</p>
+                      </div>
                       <div className="saas-field-group">
                         <label className="saas-field-label" htmlFor="cp-template-vars">Variáveis disponíveis</label>
                         <textarea
@@ -3017,9 +3133,12 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                   <div className="saas-template-table-head">
                     <div>
                       <h4>Templates cadastrados</h4>
-                      <p>Selecione um item para editar rapidamente e manter histórico de versões por template.</p>
+                      <p>Visualize, edite e selecione templates em lote mantendo histórico por versão.</p>
                     </div>
-                    <span className="saas-email-table-count">{saasTemplates.length} registro(s)</span>
+                    <div className="saas-template-table-head-meta">
+                      <span className="saas-email-table-count">{saasTemplates.length} registro(s)</span>
+                      <small>Seleção aplicada apenas na página atual</small>
+                    </div>
                   </div>
 
                   {saasTemplateSelectedCount > 0 ? (
@@ -3103,13 +3222,22 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                                   </td>
                                   <td>{shortDateTime(item.updatedAt)}</td>
                                   <td>
-                                    <button
-                                      type="button"
-                                      className="secondary-btn saas-inline-action"
-                                      onClick={() => startSaasTemplateEdit(item)}
-                                    >
-                                      Editar
-                                    </button>
+                                    <div className="saas-template-row-actions">
+                                      <button
+                                        type="button"
+                                        className="secondary-btn saas-inline-action"
+                                        onClick={() => openTemplateModal(item, 'view')}
+                                      >
+                                        Visualizar
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="secondary-btn saas-inline-action is-muted"
+                                        onClick={() => startSaasTemplateEdit(item)}
+                                      >
+                                        Editar
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               ))}
@@ -3143,13 +3271,22 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
                             <p><b>Site:</b> {item.siteDomain || '-'}</p>
                             <p><b>Assunto:</b> {item.subject}</p>
                             <p><b>Versão:</b> v{item.version}</p>
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={() => startSaasTemplateEdit(item)}
-                            >
-                              Editar template
-                            </button>
+                            <div className="saas-template-mobile-actions">
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() => openTemplateModal(item, 'view')}
+                              >
+                                Visualizar
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() => startSaasTemplateEdit(item)}
+                              >
+                                Editar no formulário
+                              </button>
+                            </div>
                           </article>
                         ))}
                       </div>
@@ -3590,6 +3727,277 @@ export function CrmPage({ section, dealId }: CrmPageProps) {
           </Link>
         ))}
       </nav>
+
+      {showTemplateModal && templateModalSource ? (
+        <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Visualização de template">
+          <div className="crm-v2-modal-backdrop" onClick={closeTemplateModal} />
+          <div className="crm-v2-modal-content template-modal-content">
+            <header>
+              <div className="template-modal-head">
+                <h3>{displayTemplateName(saasTemplateForm.templateKey)}</h3>
+                <p>
+                  {saasTemplateForm.templateKey || 'sem-chave'} · atualizado em {shortDateTime(templateModalSource.updatedAt)}
+                </p>
+              </div>
+              <button type="button" onClick={closeTemplateModal}>
+                <i className="bi bi-x-lg" aria-hidden="true" />
+              </button>
+            </header>
+
+            <div className="template-modal-toolbar">
+              <div className="template-modal-tabs" role="tablist" aria-label="Visualização do template">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={templateModalTab === 'details'}
+                  className={templateModalTab === 'details' ? 'is-active' : ''}
+                  onClick={() => setTemplateModalTab('details')}
+                >
+                  Detalhes
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={templateModalTab === 'html'}
+                  className={templateModalTab === 'html' ? 'is-active' : ''}
+                  onClick={() => setTemplateModalTab('html')}
+                >
+                  HTML
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={templateModalTab === 'preview'}
+                  className={templateModalTab === 'preview' ? 'is-active' : ''}
+                  onClick={() => setTemplateModalTab('preview')}
+                >
+                  Preview
+                </button>
+              </div>
+              <span className={`saas-status-chip ${saasTemplateForm.isActive ? 'is-active' : 'is-inactive'}`}>
+                {saasTemplateForm.isActive ? 'Ativo' : 'Inativo'}
+              </span>
+            </div>
+
+            {templateModalTab === 'details' ? (
+              <div className="template-modal-panel">
+                <div className="template-modal-grid">
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-name">Nome do template</label>
+                    <input
+                      id="template-modal-name"
+                      className="saas-input"
+                      value={saasTemplateForm.templateName}
+                      onChange={(e) =>
+                        setSaasTemplateForm((prev) => ({
+                          ...prev,
+                          templateName: e.target.value,
+                          templateKey: prev.templateKey ? prev.templateKey : normalizeTemplateKey(e.target.value),
+                        }))
+                      }
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-key">Nome interno</label>
+                    <input
+                      id="template-modal-key"
+                      className="saas-input"
+                      value={saasTemplateForm.templateKey}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateKey: normalizeTemplateKey(e.target.value) }))}
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                </div>
+
+                <div className="template-modal-grid template-modal-grid-three">
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-product">Produto</label>
+                    <select
+                      id="template-modal-product"
+                      className="saas-input"
+                      value={saasTemplateForm.productId}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, productId: e.target.value, siteId: '' }))}
+                      disabled={templateModalMode !== 'edit'}
+                    >
+                      <option value="">Selecione um produto</option>
+                      {saasProducts.map((product) => (
+                        <option key={product.id} value={product.id}>
+                          {product.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-site">Site/Domínio</label>
+                    <select
+                      id="template-modal-site"
+                      className="saas-input"
+                      value={saasTemplateForm.siteId}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, siteId: e.target.value }))}
+                      disabled={templateModalMode !== 'edit'}
+                    >
+                      <option value="">Sem site específico</option>
+                      {saasSites
+                        .filter((site) => !saasTemplateForm.productId || site.productId === saasTemplateForm.productId)
+                        .map((site) => (
+                          <option key={site.id} value={site.id}>
+                            {site.domain}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-category">Categoria</label>
+                    <select
+                      id="template-modal-category"
+                      className="saas-input"
+                      value={saasTemplateForm.templateCategory}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, templateCategory: e.target.value }))}
+                      disabled={templateModalMode !== 'edit'}
+                    >
+                      <option value="transacional">Transacional</option>
+                      <option value="seguranca">Segurança</option>
+                      <option value="comunicacao">Comunicação</option>
+                      <option value="operacional">Operacional</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="template-modal-grid">
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-subject">Assunto</label>
+                    <input
+                      id="template-modal-subject"
+                      className="saas-input"
+                      value={saasTemplateForm.subject}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, subject: e.target.value }))}
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-version">Versão</label>
+                    <input
+                      id="template-modal-version"
+                      className="saas-input"
+                      type="number"
+                      min={1}
+                      value={saasTemplateForm.version}
+                      onChange={(e) =>
+                        setSaasTemplateForm((prev) => ({
+                          ...prev,
+                          version: Math.max(1, Number.parseInt(e.target.value || '1', 10) || 1),
+                        }))
+                      }
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                </div>
+
+                <div className="saas-field-group">
+                  <label className="saas-field-label" htmlFor="template-modal-description">Descrição</label>
+                  <textarea
+                    id="template-modal-description"
+                    className="saas-input saas-template-textarea"
+                    value={saasTemplateForm.description}
+                    onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, description: e.target.value }))}
+                    disabled={templateModalMode !== 'edit'}
+                  />
+                </div>
+
+                <div className="template-modal-grid">
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-vars">Variáveis</label>
+                    <textarea
+                      id="template-modal-vars"
+                      className="saas-input saas-template-textarea"
+                      value={saasTemplateForm.availableVariables}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, availableVariables: e.target.value }))}
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                  <div className="saas-field-group">
+                    <label className="saas-field-label" htmlFor="template-modal-notes">Observações</label>
+                    <textarea
+                      id="template-modal-notes"
+                      className="saas-input saas-template-textarea"
+                      value={saasTemplateForm.notes}
+                      onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, notes: e.target.value }))}
+                      disabled={templateModalMode !== 'edit'}
+                    />
+                  </div>
+                </div>
+
+                <label className="saas-check-row template-modal-check">
+                  <input
+                    type="checkbox"
+                    checked={saasTemplateForm.isActive}
+                    onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                    disabled={templateModalMode !== 'edit'}
+                  />
+                  <span>Template ativo</span>
+                </label>
+              </div>
+            ) : null}
+
+            {templateModalTab === 'html' ? (
+              <div className="template-modal-panel">
+                <div className="saas-field-group">
+                  <label className="saas-field-label" htmlFor="template-modal-html">Conteúdo HTML</label>
+                  <textarea
+                    id="template-modal-html"
+                    className="saas-input saas-template-editor template-modal-editor"
+                    value={saasTemplateForm.html}
+                    onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, html: e.target.value }))}
+                    disabled={templateModalMode !== 'edit'}
+                  />
+                </div>
+                <div className="saas-field-group">
+                  <label className="saas-field-label" htmlFor="template-modal-text">Texto fallback</label>
+                  <textarea
+                    id="template-modal-text"
+                    className="saas-input saas-template-textarea"
+                    value={saasTemplateForm.text}
+                    onChange={(e) => setSaasTemplateForm((prev) => ({ ...prev, text: e.target.value }))}
+                    disabled={templateModalMode !== 'edit'}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {templateModalTab === 'preview' ? (
+              <div className="template-modal-panel">
+                <div className="template-modal-preview-frame" dangerouslySetInnerHTML={{ __html: templateModalPreviewMarkup }} />
+              </div>
+            ) : null}
+
+            <footer className="template-modal-actions">
+              <button type="button" className="secondary-btn" onClick={closeTemplateModal}>
+                Fechar
+              </button>
+              {templateModalMode === 'view' ? (
+                <>
+                  <button type="button" className="secondary-btn" onClick={() => startSaasTemplateEdit(templateModalSource)}>
+                    Editar no formulário
+                  </button>
+                  <button type="button" className="primary-btn" onClick={() => setTemplateModalMode('edit')}>
+                    Editar neste modal
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="secondary-btn" onClick={cancelTemplateModalEdit}>
+                    Cancelar alterações
+                  </button>
+                  <button type="button" className="primary-btn" onClick={() => void saveTemplateFromModal()} disabled={saasSaving}>
+                    {saasSaving ? 'Salvando...' : 'Salvar alterações'}
+                  </button>
+                </>
+              )}
+            </footer>
+          </div>
+        </div>
+      ) : null}
 
       {showTemplateBulkRemoveModal ? (
         <div className="crm-v2-modal" role="dialog" aria-modal="true" aria-label="Confirmar remoção em lote de templates">
