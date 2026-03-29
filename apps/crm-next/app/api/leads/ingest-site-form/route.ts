@@ -191,8 +191,10 @@ export async function POST(req: NextRequest) {
       return { lead, deal };
     });
 
+    let leadNotificationQueueId: string | null = null;
+    let leadNotificationError: string | null = null;
     try {
-      await notifyNewLeadByEmail({
+      leadNotificationQueueId = await notifyNewLeadByEmail({
         source: "site_form",
         leadId: result.lead.id,
         dealId: result.deal.id,
@@ -207,14 +209,28 @@ export async function POST(req: NextRequest) {
         payload: body,
       });
     } catch (notifyError) {
-      console.error("[lead-notify] Falha ao enfileirar e-mail de novo lead (site_form)", notifyError);
+      leadNotificationError = notifyError instanceof Error ? notifyError.message : String(notifyError);
+      console.error("[lead-notify] Falha ao enfileirar e-mail de novo lead (site_form)", {
+        leadId: result.lead.id,
+        dealId: result.deal.id,
+        error: leadNotificationError,
+      });
     }
 
     // ✅ Resposta de sucesso com CORS
     return addCorsHeaders(
       req,
       NextResponse.json(
-        { ok: true, leadId: result.lead.id, dealId: result.deal.id },
+        {
+          ok: true,
+          leadId: result.lead.id,
+          dealId: result.deal.id,
+          leadNotification: {
+            queued: Boolean(leadNotificationQueueId),
+            queueId: leadNotificationQueueId,
+            error: leadNotificationError,
+          },
+        },
         { status: 201 },
       ),
     );

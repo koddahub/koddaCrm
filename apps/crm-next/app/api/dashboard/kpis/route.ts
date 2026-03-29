@@ -36,6 +36,7 @@ export async function GET(req: NextRequest) {
     slaRisco,
     ticketsAbertos,
     finance,
+    leadNotificationRows,
   ] = await Promise.all([
     prisma.lead.count({ where: { createdAt: { gte: dayAgo } } }),
     prisma.lead.count({ where: { createdAt: { gte: weekAgo } } }),
@@ -97,9 +98,64 @@ export async function GET(req: NextRequest) {
     prisma.deal.count({ where: { lifecycleStatus: { not: 'CLIENT' }, slaDeadline: { lt: now } } }),
     prisma.ticketQueue.count({ where: { status: { in: ['NEW', 'OPEN', 'PENDING'] } } }),
     getFinanceOverview(),
+    prisma.$queryRawUnsafe<
+      Array<{
+        sent24h: number;
+        failed24h: number;
+        pending24h: number;
+        simulated24h: number;
+        total24h: number;
+        pendingOver10m: number;
+        lastSentAt: Date | null;
+        lastFailedAt: Date | null;
+      }>
+    >(
+      `
+        SELECT
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'SENT'
+              AND q.created_at >= now() - interval '24 hours') AS "sent24h",
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'FAILED'
+              AND q.created_at >= now() - interval '24 hours') AS "failed24h",
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'PENDING'
+              AND q.created_at >= now() - interval '24 hours') AS "pending24h",
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'SENT_SIMULATED'
+              AND q.created_at >= now() - interval '24 hours') AS "simulated24h",
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.created_at >= now() - interval '24 hours') AS "total24h",
+          (SELECT COUNT(*)::int FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'PENDING'
+              AND q.created_at < now() - interval '10 minutes') AS "pendingOver10m",
+          (SELECT MAX(q.processed_at) FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'SENT') AS "lastSentAt",
+          (SELECT MAX(COALESCE(q.processed_at, q.created_at)) FROM crm.email_queue q
+            WHERE q.subject ILIKE '[CRM] Novo lead recebido:%'
+              AND q.status = 'FAILED') AS "lastFailedAt"
+      `
+    ),
   ]);
 
   const classes = clientClassRows[0] || { ativos: 0, atrasados: 0, inativos: 0, fantasma: 0 };
+  const leadNotification = leadNotificationRows[0] || {
+    sent24h: 0,
+    failed24h: 0,
+    pending24h: 0,
+    simulated24h: 0,
+    total24h: 0,
+    pendingOver10m: 0,
+    lastSentAt: null,
+    lastFailedAt: null,
+  };
 
   return NextResponse.json({
     prospeccao: {
@@ -124,6 +180,18 @@ export async function GET(req: NextRequest) {
       recebidosMes: finance.recebidosMes,
       inadimplenciaAberta: finance.inadimplenciaAberta,
       dreResultadoMes: finance.dre.resultado,
+    },
+    comunicacao: {
+      leadNotification: {
+        sent24h: leadNotification.sent24h,
+        failed24h: leadNotification.failed24h,
+        pending24h: leadNotification.pending24h,
+        simulated24h: leadNotification.simulated24h,
+        total24h: leadNotification.total24h,
+        pendingOver10m: leadNotification.pendingOver10m,
+        lastSentAt: leadNotification.lastSentAt,
+        lastFailedAt: leadNotification.lastFailedAt,
+      },
     },
   });
 }

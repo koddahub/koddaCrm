@@ -81,6 +81,18 @@ type DashboardData = {
     inadimplenciaAberta: number;
     dreResultadoMes: number;
   };
+  comunicacao: {
+    leadNotification: {
+      sent24h: number;
+      failed24h: number;
+      pending24h: number;
+      simulated24h: number;
+      total24h: number;
+      pendingOver10m: number;
+      lastSentAt: string | null;
+      lastFailedAt: string | null;
+    };
+  };
 };
 
 type ClienteItem = {
@@ -372,7 +384,7 @@ type DashboardMetric = {
 };
 
 type DashboardBlock = {
-  id: 'prospeccao' | 'financeiro' | 'operacao';
+  id: 'prospeccao' | 'financeiro' | 'operacao' | 'comunicacao';
   title: string;
   subtitle: string;
   icon: string;
@@ -385,7 +397,6 @@ const MENU_ITEMS: MenuItem[] = [
   { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
   { key: 'clientes', label: 'Clientes', icon: 'bi-people-fill', href: '/clientes' },
   { key: 'saas', label: 'Painel de Controle', icon: 'bi-boxes', href: '/painel-de-controle' },
-  { key: 'communication', label: 'Comunicação', icon: 'bi-chat-square-dots-fill', href: '/painel/comunicacao' },
   { key: 'social_accounts', label: 'Social · Contas', icon: 'bi-instagram', href: '/social/contas' },
   { key: 'social_posts', label: 'Social · Posts', icon: 'bi-images', href: '/social/posts' },
   { key: 'social_logs', label: 'Social · Logs', icon: 'bi-journal-code', href: '/social/logs' },
@@ -542,7 +553,7 @@ export function CrmPage({
   saasInitialTab = 'emails',
   saasTemplatesRouteMode = 'embedded',
   saasTemplateRouteId,
-  communicationView = 'overview',
+  communicationView,
   communicationRecordId,
 }: CrmPageProps) {
   const pathname = usePathname();
@@ -678,6 +689,7 @@ export function CrmPage({
   const isTemplateCreateRoute = saasTemplatesRouteMode === 'create';
   const isTemplateViewRoute = saasTemplatesRouteMode === 'view';
   const isTemplateEditRoute = saasTemplatesRouteMode === 'edit';
+  const isModernControlPanel = section === 'saas' && Boolean(communicationView);
 
   const [dragDealId, setDragDealId] = useState<string | null>(null);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -739,6 +751,16 @@ export function CrmPage({
     const inativos = dashboardData.operacao.clientesInativos;
     const fantasma = dashboardData.operacao.clientesFantasma;
     const slaRisco = dashboardData.operacao.slaRisco;
+    const leadNotification = dashboardData.comunicacao?.leadNotification || {
+      sent24h: 0,
+      failed24h: 0,
+      pending24h: 0,
+      simulated24h: 0,
+      total24h: 0,
+      pendingOver10m: 0,
+      lastSentAt: null,
+      lastFailedAt: null,
+    };
 
     const severityByCount = (value: number, attentionThreshold = 1, criticalThreshold = 5): KpiSeverity => {
       if (value >= criticalThreshold) return 'critical';
@@ -810,6 +832,58 @@ export function CrmPage({
           { label: 'Operações em curso', value: String(dashboardData.operacao.operacoesEmCurso), severity: 'normal', icon: 'bi-kanban' },
           { label: 'SLA em risco', value: String(slaRisco), severity: severityByCount(slaRisco, 1, 2), icon: 'bi-alarm' },
           { label: 'Tickets abertos', value: String(dashboardData.operacao.ticketsAbertos), severity: severityByCount(dashboardData.operacao.ticketsAbertos, 1, 8), icon: 'bi-ticket-detailed' },
+        ],
+      },
+      {
+        id: 'comunicacao',
+        title: 'Comunicação',
+        subtitle: 'Saúde do alerta de novo lead para contato@koddahub.com.br.',
+        icon: 'bi-envelope-check',
+        metrics: [
+          {
+            label: 'Alertas enviados 24h',
+            value: String(leadNotification.sent24h),
+            emphasis: true,
+            severity: leadNotification.sent24h > 0 ? 'success' : 'normal',
+            icon: 'bi-send-check',
+          },
+          {
+            label: 'Falhas 24h',
+            value: String(leadNotification.failed24h),
+            severity: severityByCount(leadNotification.failed24h, 1, 3),
+            hint: leadNotification.failed24h > 0 ? 'Verificar worker/SMTP' : 'Sem falhas recentes',
+            icon: 'bi-exclamation-octagon',
+          },
+          {
+            label: 'Pendentes 24h',
+            value: String(leadNotification.pending24h),
+            severity: severityByCount(leadNotification.pending24h, 1, 5),
+            hint: leadNotification.pending24h > 0 ? 'Há mensagens aguardando processamento' : 'Fila em dia',
+            icon: 'bi-hourglass-split',
+          },
+          {
+            label: 'Pendentes +10min',
+            value: String(leadNotification.pendingOver10m),
+            severity: leadNotification.pendingOver10m > 0 ? 'critical' : 'success',
+            hint: leadNotification.pendingOver10m > 0 ? 'Possível atraso de worker' : 'Sem atraso relevante',
+            icon: 'bi-alarm',
+          },
+          {
+            label: 'Simulados 24h',
+            value: String(leadNotification.simulated24h),
+            severity: leadNotification.simulated24h > 0 ? 'attention' : 'normal',
+            hint: leadNotification.simulated24h > 0 ? 'Envio em modo simulado detectado' : 'Sem envios simulados',
+            icon: 'bi-bezier2',
+          },
+          {
+            label: 'Último envio',
+            value: shortDateTime(leadNotification.lastSentAt),
+            severity: leadNotification.lastSentAt ? 'success' : 'attention',
+            hint: leadNotification.lastFailedAt
+              ? `Última falha: ${shortDateTime(leadNotification.lastFailedAt)}`
+              : 'Sem falhas recentes',
+            icon: 'bi-clock-history',
+          },
         ],
       },
     ];
@@ -1787,7 +1861,12 @@ export function CrmPage({
       return;
     }
 
-    setNotice('Lead cadastrado com sucesso.');
+    const notificationQueued = data?.leadNotification?.queued !== false;
+    if (notificationQueued) {
+      setNotice('Lead cadastrado com sucesso.');
+    } else {
+      setNotice('Lead cadastrado, mas o alerta por e-mail não foi enfileirado. Verifique worker/SMTP.');
+    }
     setShowLeadModal(false);
     setLeadForm({
       name: '',
@@ -2076,7 +2155,9 @@ export function CrmPage({
     section === 'dashboard'
       ? 'Visão rápida da saúde comercial, financeira e operacional.'
       : section === 'saas'
-        ? 'Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.'
+        ? isModernControlPanel
+          ? 'Central de Comunicação/Engajamento aplicada no Painel de Controle com listagem como foco principal.'
+          : 'Centralize produtos, sites, e-mails, templates e eventos automáticos em uma visão operacional única.'
         : section === 'communication'
           ? 'Central de Comunicação/Engajamento com listagens, filtros e cadastros separados por domínio.'
         : section === 'social_accounts' || section === 'social_posts' || section === 'social_logs'
@@ -2688,11 +2769,11 @@ export function CrmPage({
           </section>
         ) : null}
 
-        {section === 'communication' ? (
-          <CommunicationModule view={communicationView} recordId={communicationRecordId} setNotice={setNotice} />
+        {section === 'communication' || isModernControlPanel ? (
+          <CommunicationModule view={communicationView || 'overview'} recordId={communicationRecordId} setNotice={setNotice} />
         ) : null}
 
-        {section === 'saas' ? (
+        {section === 'saas' && !isModernControlPanel ? (
           <section className="crm-v2-panel saas-v2-panel">
             <div className="saas-hero">
               <div>

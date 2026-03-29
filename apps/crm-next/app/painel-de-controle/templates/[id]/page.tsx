@@ -7,12 +7,5 @@ type TemplateDetailPageProps = {
 };
 
 export default function ControlPanelTemplateDetailPage({ params }: TemplateDetailPageProps) {
-  return (
-    <CrmPage
-      section="saas"
-      saasInitialTab="templates"
-      saasTemplatesRouteMode="view"
-      saasTemplateRouteId={params.id}
-    />
-  );
+  return <CrmPage section="saas" communicationView="templates-view" communicationRecordId={params.id} />;
 }

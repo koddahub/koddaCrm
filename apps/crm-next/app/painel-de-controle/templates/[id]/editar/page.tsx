@@ -7,12 +7,5 @@ type TemplateEditPageProps = {
 };
 
 export default function ControlPanelTemplateEditPage({ params }: TemplateEditPageProps) {
-  return (
-    <CrmPage
-      section="saas"
-      saasInitialTab="templates"
-      saasTemplatesRouteMode="edit"
-      saasTemplateRouteId={params.id}
-    />
-  );
+  return <CrmPage section="saas" communicationView="templates-edit" communicationRecordId={params.id} />;
 }

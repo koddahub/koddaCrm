@@ -280,7 +280,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
   const [automations, setAutomations] = useState<AutomationItem[]>([]);
   const [socialAccounts, setSocialAccounts] = useState<SocialItem[]>([]);
   const [socialMetaConfigured, setSocialMetaConfigured] = useState(true);
-  const [socialConnectUrl, setSocialConnectUrl] = useState('/api/social/instagram/oauth/start?returnTo=/painel/comunicacao/social');
+  const [socialConnectUrl, setSocialConnectUrl] = useState('/api/social/instagram/oauth/start?returnTo=/painel-de-controle/social');
 
   const [emailsPage, setEmailsPage] = useState(1);
   const [templatesPage, setTemplatesPage] = useState(1);
@@ -401,7 +401,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       setAutomations(automationsData.items || []);
       setSocialAccounts(socialData.items || []);
       setSocialMetaConfigured(Boolean(socialData.metaConfigured !== false));
-      setSocialConnectUrl('/api/social/instagram/oauth/start?returnTo=/painel/comunicacao/social');
+      setSocialConnectUrl('/api/social/instagram/oauth/start?returnTo=/painel-de-controle/social');
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -686,7 +686,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
 
     notify(emailForm.id ? 'E-mail atualizado com sucesso.' : 'E-mail criado com sucesso.');
     await loadData();
-    router.push('/painel/comunicacao/emails');
+    router.push('/painel-de-controle/emails');
   }
 
   async function removeEmail(item: EmailItem) {
@@ -756,7 +756,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
 
     notify(templateForm.id ? 'Template atualizado com sucesso.' : 'Template criado com sucesso.');
     await loadData();
-    router.push('/painel/comunicacao/templates');
+    router.push('/painel-de-controle/templates');
   }
 
   async function removeTemplate(item: TemplateItem) {
@@ -825,7 +825,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
 
     notify(automationForm.id ? 'Automação atualizada com sucesso.' : 'Automação criada com sucesso.');
     await loadData();
-    router.push('/painel/comunicacao/automacoes');
+    router.push('/painel-de-controle/automacoes');
   }
 
   async function removeAutomation(item: AutomationItem) {
@@ -883,7 +883,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
 
     notify('Conta social atualizada com sucesso.');
     await loadData();
-    router.push('/painel/comunicacao/social');
+    router.push('/painel-de-controle/social');
   }
 
   async function removeSocial(item: SocialRow) {
@@ -909,11 +909,11 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
   const readOnlyTemplateForm = view === 'templates-view';
 
   const subnavItems = [
-    { key: 'overview', label: 'Visão Geral', href: '/painel/comunicacao' },
-    { key: 'emails', label: 'E-mails', href: '/painel/comunicacao/emails' },
-    { key: 'templates', label: 'Templates', href: '/painel/comunicacao/templates' },
-    { key: 'automations', label: 'Automações', href: '/painel/comunicacao/automacoes' },
-    { key: 'social', label: 'Redes Sociais', href: '/painel/comunicacao/social' },
+    { key: 'overview', label: 'Visão Geral', href: '/painel-de-controle' },
+    { key: 'emails', label: 'E-mails', href: '/painel-de-controle/emails' },
+    { key: 'templates', label: 'Templates', href: '/painel-de-controle/templates' },
+    { key: 'automations', label: 'Automações', href: '/painel-de-controle/automacoes' },
+    { key: 'social', label: 'Redes Sociais', href: '/painel-de-controle/social' },
   ] as const;
 
   return (
@@ -975,7 +975,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               <h3>E-mails</h3>
               <p>Gerencie e-mails transacionais e de boas-vindas vinculados ao ecossistema.</p>
             </div>
-            <Link href="/painel/comunicacao/emails/novo" className="primary-btn">
+            <Link href="/painel-de-controle/emails/novo" className="primary-btn">
               <i className="bi bi-plus-circle" aria-hidden="true" /> + Novo e-mail
             </Link>
           </div>
@@ -1055,8 +1055,8 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                         <td>{toDateTime(item.updatedAt)}</td>
                         <td>
                           <div className="comm-row-actions">
-                            <Link href={`/painel/comunicacao/emails/${item.id}`} className="secondary-btn">Visualizar</Link>
-                            <Link href={`/painel/comunicacao/emails/${item.id}/editar`} className="secondary-btn">Editar</Link>
+                            <Link href={`/painel-de-controle/emails/${item.id}`} className="secondary-btn">Visualizar</Link>
+                            <Link href={`/painel-de-controle/emails/${item.id}/editar`} className="secondary-btn">Editar</Link>
                             <button type="button" className="danger-btn" onClick={() => void removeEmail(item)} disabled={saving}>Remover</button>
                           </div>
                         </td>
@@ -1074,9 +1074,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       {!loading && (view === 'emails-create' || view === 'emails-edit' || view === 'emails-view') ? (
         <section className="comm-panel">
           <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb">
-            <Link href="/painel/comunicacao">Comunicação</Link>
+            <Link href="/painel-de-controle">Comunicação</Link>
             <span>›</span>
-            <Link href="/painel/comunicacao/emails">E-mails</Link>
+            <Link href="/painel-de-controle/emails">E-mails</Link>
             <span>›</span>
             <span>{view === 'emails-create' ? 'Novo e-mail' : readOnlyEmailForm ? 'Visualizar' : 'Editar'}</span>
           </nav>
@@ -1159,9 +1159,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                 {!readOnlyEmailForm ? (
                   <button type="submit" className="primary-btn" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
                 ) : null}
-                <Link href="/painel/comunicacao/emails" className="secondary-btn">Voltar para e-mails</Link>
+                <Link href="/painel-de-controle/emails" className="secondary-btn">Voltar para e-mails</Link>
                 {readOnlyEmailForm && emailCurrent ? (
-                  <Link href={`/painel/comunicacao/emails/${emailCurrent.id}/editar`} className="secondary-btn">Editar</Link>
+                  <Link href={`/painel-de-controle/emails/${emailCurrent.id}/editar`} className="secondary-btn">Editar</Link>
                 ) : null}
               </div>
             </form>
@@ -1178,7 +1178,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               <h3>Templates</h3>
               <p>Gerencie templates de comunicação vinculados a produtos, sites e automações.</p>
             </div>
-            <Link href="/painel/comunicacao/templates/novo" className="primary-btn">
+            <Link href="/painel-de-controle/templates/novo" className="primary-btn">
               <i className="bi bi-plus-circle" aria-hidden="true" /> + Novo template
             </Link>
           </div>
@@ -1246,8 +1246,8 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                         <td>{toDateTime(item.updatedAt)}</td>
                         <td>
                           <div className="comm-row-actions">
-                            <Link href={`/painel/comunicacao/templates/${item.id}`} className="secondary-btn">Visualizar</Link>
-                            <Link href={`/painel/comunicacao/templates/${item.id}/editar`} className="secondary-btn">Editar</Link>
+                            <Link href={`/painel-de-controle/templates/${item.id}`} className="secondary-btn">Visualizar</Link>
+                            <Link href={`/painel-de-controle/templates/${item.id}/editar`} className="secondary-btn">Editar</Link>
                             <button type="button" className="danger-btn" onClick={() => void removeTemplate(item)} disabled={saving}>Remover</button>
                           </div>
                         </td>
@@ -1265,9 +1265,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       {!loading && (view === 'templates-create' || view === 'templates-edit' || view === 'templates-view') ? (
         <section className="comm-panel">
           <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb">
-            <Link href="/painel/comunicacao">Comunicação</Link>
+            <Link href="/painel-de-controle">Comunicação</Link>
             <span>›</span>
-            <Link href="/painel/comunicacao/templates">Templates</Link>
+            <Link href="/painel-de-controle/templates">Templates</Link>
             <span>›</span>
             <span>{view === 'templates-create' ? 'Novo template' : readOnlyTemplateForm ? 'Visualizar' : 'Editar'}</span>
           </nav>
@@ -1363,9 +1363,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                 {!readOnlyTemplateForm ? (
                   <button type="submit" className="primary-btn" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
                 ) : null}
-                <Link href="/painel/comunicacao/templates" className="secondary-btn">Voltar para templates</Link>
+                <Link href="/painel-de-controle/templates" className="secondary-btn">Voltar para templates</Link>
                 {readOnlyTemplateForm && templateCurrent ? (
-                  <Link href={`/painel/comunicacao/templates/${templateCurrent.id}/editar`} className="secondary-btn">Editar</Link>
+                  <Link href={`/painel-de-controle/templates/${templateCurrent.id}/editar`} className="secondary-btn">Editar</Link>
                 ) : null}
               </div>
             </form>
@@ -1382,7 +1382,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               <h3>Automações</h3>
               <p>Configure gatilhos e regras de envio vinculadas ao comportamento do usuário.</p>
             </div>
-            <Link href="/painel/comunicacao/automacoes/nova" className="primary-btn">
+            <Link href="/painel-de-controle/automacoes/nova" className="primary-btn">
               <i className="bi bi-plus-circle" aria-hidden="true" /> + Nova automação
             </Link>
           </div>
@@ -1449,7 +1449,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                         <td>
                           <div className="comm-row-actions">
                             <button type="button" className="secondary-btn" onClick={() => setPreviewAutomation(item)}>Visualizar</button>
-                            <Link href={`/painel/comunicacao/automacoes/${item.id}/editar`} className="secondary-btn">Editar</Link>
+                            <Link href={`/painel-de-controle/automacoes/${item.id}/editar`} className="secondary-btn">Editar</Link>
                             <button type="button" className="danger-btn" onClick={() => void removeAutomation(item)} disabled={saving}>Remover</button>
                           </div>
                         </td>
@@ -1467,9 +1467,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       {!loading && (view === 'automations-create' || view === 'automations-edit') ? (
         <section className="comm-panel">
           <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb">
-            <Link href="/painel/comunicacao">Comunicação</Link>
+            <Link href="/painel-de-controle">Comunicação</Link>
             <span>›</span>
-            <Link href="/painel/comunicacao/automacoes">Automações</Link>
+            <Link href="/painel-de-controle/automacoes">Automações</Link>
             <span>›</span>
             <span>{view === 'automations-create' ? 'Nova automação' : 'Editar automação'}</span>
           </nav>
@@ -1534,7 +1534,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               </section>
               <div className="comm-form-actions">
                 <button type="submit" className="primary-btn" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
-                <Link href="/painel/comunicacao/automacoes" className="secondary-btn">Voltar para automações</Link>
+                <Link href="/painel-de-controle/automacoes" className="secondary-btn">Voltar para automações</Link>
               </div>
             </form>
           ) : (
@@ -1550,7 +1550,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               <h3>Redes Sociais</h3>
               <p>Centralize contas conectadas e integrações sociais do ecossistema Koddahub.</p>
             </div>
-            <Link href="/painel/comunicacao/social/nova" className="primary-btn">
+            <Link href="/painel-de-controle/social/nova" className="primary-btn">
               <i className="bi bi-plus-circle" aria-hidden="true" /> + Conectar conta
             </Link>
           </div>
@@ -1607,8 +1607,8 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
                         <td>{toDateTime(item.lastSyncedAt)}</td>
                         <td>
                           <div className="comm-row-actions">
-                            <Link href={`/painel/comunicacao/social/${item.id}/editar`} className="secondary-btn">Visualizar</Link>
-                            <Link href={`/painel/comunicacao/social/${item.id}/editar`} className="secondary-btn">Editar</Link>
+                            <Link href={`/painel-de-controle/social/${item.id}/editar`} className="secondary-btn">Visualizar</Link>
+                            <Link href={`/painel-de-controle/social/${item.id}/editar`} className="secondary-btn">Editar</Link>
                             <button type="button" className="danger-btn" onClick={() => void removeSocial(item)} disabled={saving}>Remover</button>
                           </div>
                         </td>
@@ -1626,9 +1626,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       {!loading && view === 'social-create' ? (
         <section className="comm-panel">
           <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb">
-            <Link href="/painel/comunicacao">Comunicação</Link>
+            <Link href="/painel-de-controle">Comunicação</Link>
             <span>›</span>
-            <Link href="/painel/comunicacao/social">Redes Sociais</Link>
+            <Link href="/painel-de-controle/social">Redes Sociais</Link>
             <span>›</span>
             <span>Conectar conta</span>
           </nav>
@@ -1644,7 +1644,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               <a className="primary-btn" href={socialConnectUrl}>
                 <i className="bi bi-instagram" aria-hidden="true" /> Conectar com Instagram
               </a>
-              <Link href="/painel/comunicacao/social" className="secondary-btn">Voltar para redes sociais</Link>
+              <Link href="/painel-de-controle/social" className="secondary-btn">Voltar para redes sociais</Link>
             </div>
           </div>
         </section>
@@ -1653,9 +1653,9 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
       {!loading && view === 'social-edit' ? (
         <section className="comm-panel">
           <nav className="saas-template-breadcrumbs" aria-label="Breadcrumb">
-            <Link href="/painel/comunicacao">Comunicação</Link>
+            <Link href="/painel-de-controle">Comunicação</Link>
             <span>›</span>
-            <Link href="/painel/comunicacao/social">Redes Sociais</Link>
+            <Link href="/painel-de-controle/social">Redes Sociais</Link>
             <span>›</span>
             <span>Editar conta</span>
           </nav>
@@ -1693,7 +1693,7 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
               </section>
               <div className="comm-form-actions">
                 <button type="submit" className="primary-btn" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</button>
-                <Link href="/painel/comunicacao/social" className="secondary-btn">Voltar para redes sociais</Link>
+                <Link href="/painel-de-controle/social" className="secondary-btn">Voltar para redes sociais</Link>
               </div>
             </form>
           )}

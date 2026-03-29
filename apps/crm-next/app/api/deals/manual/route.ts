@@ -100,8 +100,10 @@ export async function POST(req: NextRequest) {
       return { lead, deal };
     });
 
+    let leadNotificationQueueId: string | null = null;
+    let leadNotificationError: string | null = null;
     try {
-      await notifyNewLeadByEmail({
+      leadNotificationQueueId = await notifyNewLeadByEmail({
         source: 'manual',
         leadId: result.lead.id,
         dealId: result.deal.id,
@@ -116,10 +118,27 @@ export async function POST(req: NextRequest) {
         payload: body,
       });
     } catch (notifyError) {
-      console.error('[lead-notify] Falha ao enfileirar e-mail de novo lead (manual)', notifyError);
+      leadNotificationError = notifyError instanceof Error ? notifyError.message : String(notifyError);
+      console.error('[lead-notify] Falha ao enfileirar e-mail de novo lead (manual)', {
+        leadId: result.lead.id,
+        dealId: result.deal.id,
+        error: leadNotificationError,
+      });
     }
 
-    return NextResponse.json({ ok: true, leadId: result.lead.id, dealId: result.deal.id }, { status: 201 });
+    return NextResponse.json(
+      {
+        ok: true,
+        leadId: result.lead.id,
+        dealId: result.deal.id,
+        leadNotification: {
+          queued: Boolean(leadNotificationQueueId),
+          queueId: leadNotificationQueueId,
+          error: leadNotificationError,
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
     return NextResponse.json({ error: 'Falha ao criar lead manual', details: String(error) }, { status: 500 });
   }
