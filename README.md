@@ -1,88 +1,28 @@
-# Projeto Área Cliente KoddaHub (Portal PHP + CRM Next.js)
+# Projeto Área Cliente KoddaHub
 
-Estrutura local para:
-- Portal do cliente (PHP) em `8081`
-- CRM V2 (Next.js + Prisma) em `8092`
-- Cobrança recorrente via ASAAS (PIX + cartão)
-- Banco compartilhado com schemas separados (`client`, `crm`, `audit`)
+Repositório combinado do ecossistema KoddaHub com:
+- portal do cliente em PHP (`apps/cliente/public`)
+- CRM V2 em Next.js + Prisma (`apps/crm-next`)
+- worker em PHP (`worker/worker.php`)
+- banco compartilhado em PostgreSQL
 
-## Subida local
-
+## Subida rápida (local)
 ```bash
 cd /home/server/projects/projeto-area-cliente
 cp .env.example .env
 ./scripts/up.sh
-# ou manual: docker compose up -d --build
 ```
 
-Acessos:
-- Portal cliente: `http://192.168.25.3:8081/signup?plan=basic`
-- CRM V2: `http://192.168.25.3:8092/login`
+Acessos locais:
+- Portal: `http://192.168.25.3:8081`
+- CRM: `http://192.168.25.3:8092/login`
 
-Login padrão CRM V2:
-- E-mail: `admin@koddahub.local`
-- Senha: `admin123`
-
-## Deploy recomendado
-
+## Deploy operacional
 ```bash
 cd /home/server/projects/projeto-area-cliente
-./deploy.sh
+./script/deploy.sh
 ```
 
-Documentação operacional completa:
-- `docs/DEPLOY_CRM_8092.md`
-
-## Fluxo implementado (V1 local)
-
-1. Cliente entra em `/signup?plan=basic|profissional|pro`
-2. Cadastro PF/PJ + método de pagamento (PIX/cartão)
-3. API cria customer e assinatura ASAAS (modo real com token / mock sem token)
-4. Redireciona para `/checkout`
-5. Em confirmação de pagamento (webhook), assinatura ativa e cria fila de WhatsApp manual
-6. Cliente preenche briefing em `/onboarding/site-brief`
-7. Sistema gera `prompt_json + prompt_text` para criação do site institucional de 1 página
-8. CRM recebe automaticamente lead/tarefas/tickets em filas operacionais
-
-## Observações ASAAS
-
-- Configure no `.env`:
-  - `ASAAS_API_KEY`
-  - `ASAAS_WEBHOOK_TOKEN`
-  - `ASAAS_BASE_URL`
-- Sem `ASAAS_API_KEY`, API entra em modo mock para desenvolvimento.
-
-## Endpoints principais
-
-### Portal (8081)
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/billing/customers`
-- `POST /api/billing/subscriptions`
-- `POST /api/billing/subscriptions/{id}/change-plan`
-- `POST /api/webhooks/asaas`
-- `POST /api/onboarding/site-brief`
-- `POST /api/tickets`
-
-### CRM V2 (8092)
-- `POST /api/auth/login`
-- `GET /api/dashboard/kpis`
-- `GET /api/pipelines`
-- `GET /api/pipelines/:id/board`
-- `PATCH /api/pipeline-cards/:id/move`
-- `POST /api/signup-sessions/start`
-- `POST /api/signup-sessions/:id/heartbeat`
-- `POST /api/proposals-avulsas`
-- `PATCH /api/proposals-avulsas/:id/status`
-- `POST /api/automation/reconcile`
-- `POST /api/leads/ingest-site-form`
-- `POST /api/projects/create-for-organization`
-
-## Estrutura
-
-- `apps/cliente/public/index.php`
-- `apps/crm-next/*`
-- `apps/shared/src/*`
-- `database/init/001_init.sql`
-- `worker/worker.php`
-- `docker-compose.yml`
+## Documentação principal
+- Índice mestre: `docs/README.md`
+- Guia operacional para agentes: `AGENTS.md`
