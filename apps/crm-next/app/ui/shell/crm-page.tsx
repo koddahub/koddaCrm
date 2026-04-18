@@ -393,8 +393,8 @@ type DashboardBlock = {
 
 const MENU_ITEMS: MenuItem[] = [
   { key: 'dashboard', label: 'Dashboard', icon: 'bi-speedometer2', href: '/dashboard' },
-  { key: 'pipeline_hospedagem', label: 'Pipeline Hospedagem', icon: 'bi-diagram-3-fill', href: '/pipeline/hospedagem' },
-  { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
+  { key: 'pipeline_hospedagem', label: 'Jornada Comercial', icon: 'bi-diagram-3-fill', href: '/pipeline/hospedagem' },
+  { key: 'pipeline_avulsos', label: 'Funil Comercial', icon: 'bi-grid-1x2-fill', href: '/pipeline/avulsos' },
   { key: 'clientes', label: 'Clientes', icon: 'bi-people-fill', href: '/clientes' },
   { key: 'saas', label: 'Painel de Controle', icon: 'bi-boxes', href: '/painel-de-controle' },
   { key: 'social_accounts', label: 'Social · Contas', icon: 'bi-instagram', href: '/social/contas' },
@@ -475,9 +475,9 @@ function sectionTitle(section: SectionKey) {
     case 'dashboard':
       return 'Dashboard';
     case 'pipeline_hospedagem':
-      return 'Pipeline Hospedagem';
+      return 'Jornada Comercial';
     case 'pipeline_avulsos':
-      return 'Pipeline Avulsos';
+      return 'Funil Comercial';
     case 'clientes':
       return 'Clientes';
     case 'saas':
@@ -567,6 +567,7 @@ export function CrmPage({
   const [dashboardError, setDashboardError] = useState('');
   const [dashboardUpdatedAt, setDashboardUpdatedAt] = useState<string | null>(null);
   const [pipelineData, setPipelineData] = useState<PipelineTableData | null>(null);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
   const [clientesItems, setClientesItems] = useState<ClienteItem[]>([]);
   const [clientesCounts, setClientesCounts] = useState({ ATIVO: 0, ATRASADO: 0, INATIVO: 0, FANTASMA: 0 });
   const [clientesPage, setClientesPage] = useState(1);
@@ -966,6 +967,22 @@ export function CrmPage({
     const data = await res.json();
     if (res.ok) {
       setPipelineData(data);
+      const visibleLeadIds = new Set<string>(
+        (data?.stages || []).flatMap((stage: PipelineStage) => (stage.rows || []).map((row) => row.id)),
+      );
+      setSelectedLeadIds((prev) => {
+        let changed = false;
+        const next = new Set<string>();
+        prev.forEach((id) => {
+          if (visibleLeadIds.has(id)) {
+            next.add(id);
+            return;
+          }
+          changed = true;
+        });
+        if (!changed && next.size === prev.size) return prev;
+        return next;
+      });
       return;
     }
     setNotice(data.error || 'Falha ao carregar pipeline');
@@ -1942,6 +1959,32 @@ export function CrmPage({
     }
   }
 
+  function toggleOne(id: string) {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllVisible(visibleIds: string[]) {
+    if (visibleIds.length === 0) return;
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      const allVisibleSelected = visibleIds.every((id) => next.has(id));
+      if (allVisibleSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
   function toggleClientSelection(clientId: string) {
     setSelectedClients((prev) =>
       prev.includes(clientId) ? prev.filter((id) => id !== clientId) : [...prev, clientId],
@@ -2154,6 +2197,10 @@ export function CrmPage({
   const topbarDescription =
     section === 'dashboard'
       ? 'Visão rápida da saúde comercial, financeira e operacional.'
+      : section === 'pipeline_avulsos'
+        ? 'Gestão Comercial de Oportunidades com visão por etapa e ações rápidas.'
+        : section === 'pipeline_hospedagem'
+          ? 'Jornada Comercial de hospedagem com acompanhamento por etapa.'
       : section === 'saas'
         ? isModernControlPanel
           ? 'Central de Comunicação/Engajamento aplicada no Painel de Controle com listagem como foco principal.'
@@ -2441,126 +2488,158 @@ export function CrmPage({
           <section className="crm-v2-panel">
             <div className="table-header-actions">
               <div>
-                <h3>{pipelineData?.pipeline.name || 'Pipeline'}</h3>
-                <p>Tabela escalonada por estágio com movimentação livre.</p>
+                <h3>{pipelineType === 'avulsos' ? 'Funil Comercial' : 'Jornada Comercial'}</h3>
+                <p>
+                  {pipelineType === 'avulsos'
+                    ? 'Oportunidades organizadas por etapa com movimentação livre.'
+                    : 'Gestão Comercial de hospedagem em uma jornada por etapa.'}
+                </p>
               </div>
               <button type="button" className="primary-btn" onClick={() => setShowLeadModal(true)}>
                 <i className="bi bi-plus-circle" aria-hidden="true" /> Novo lead
               </button>
             </div>
 
-            {(pipelineData?.stages || []).map((stage) => (
-              <div
-                key={stage.id}
-                className="stage-table-block"
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={async () => {
-                  if (dragDealId) {
-                    await reorderDeal(dragDealId, stage.id, stage.rows.length);
-                    setDragDealId(null);
-                  }
-                }}
-              >
-                <div className="stage-table-head">
-                  <h4>{stage.name}</h4>
-                  <span>{stage.rows.length}</span>
-                </div>
+            {(pipelineData?.stages || []).map((stage) => {
+              const visibleIds = stage.rows.map((row) => row.id);
+              const selectedVisibleCount = visibleIds.filter((id) => selectedLeadIds.has(id)).length;
+              const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+              const someVisibleSelected = selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
 
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Nome</th>
-                        <th>E-mail</th>
-                        <th>Plano/Produto</th>
-                        <th>Valor</th>
-                        <th>SLA</th>
-                        <th>Origem</th>
-                        <th>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stage.rows.map((row, index) => (
-                        <tr
-                          key={row.id}
-                          draggable
-                          onDragStart={() => setDragDealId(row.id)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={async (event) => {
-                            event.stopPropagation();
-                            if (dragDealId) {
-                              await reorderDeal(dragDealId, stage.id, index);
-                              setDragDealId(null);
-                            }
-                          }}
-                          onClick={() => router.push(`/deals/${row.id}`)}
-                          className="table-clickable-row"
-                        >
-                          <td>{row.contactName || row.title}</td>
-                          <td>{row.contactEmail || '-'}</td>
-                          <td>{row.planCode || row.productCode || row.intent || '-'}</td>
-                          <td>{currency(row.valueCents)}</td>
-                          <td>{dateTime(row.slaDeadline)}</td>
-                          <td>{row.origin}</td>
-                          <td>
-                            <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                              <select
-                                aria-label="Mover estágio"
-                                value={stage.id}
-                                onChange={(e) => updateStage(row.id, e.target.value)}
-                              >
-                                {(pipelineData?.stages || []).map((st) => (
-                                  <option key={st.id} value={st.id}>{st.name}</option>
-                                ))}
-                              </select>
-                              <button
-                                type="button"
-                                onClick={() => moveToAdjacentStage(row.id, stage.id, 'prev')}
-                              >
-                                <i className="bi bi-arrow-up" aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => moveToAdjacentStage(row.id, stage.id, 'next')}
-                              >
-                                <i className="bi bi-arrow-down" aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label="Editar lead"
-                                title="Editar"
-                                onClick={() =>
-                                  openEditDeal({
-                                    id: row.id,
-                                    title: row.title,
-                                    contactName: row.contactName,
-                                    contactEmail: row.contactEmail,
-                                    contactPhone: row.contactPhone,
-                                    intent: row.intent,
-                                    valueCents: row.valueCents,
-                                  })
-                                }
-                              >
-                                <i className="bi bi-pencil-square" aria-hidden="true" />
-                              </button>
-                              <button
-                                type="button"
-                                className="danger-inline-btn"
-                                aria-label="Excluir lead"
-                                title="Excluir"
-                                onClick={() => openDeleteDealModal(row.id, row.contactName || row.title)}
-                              >
-                                <i className="bi bi-trash3" aria-hidden="true" />
-                              </button>
-                            </div>
-                          </td>
+              return (
+                <div
+                  key={stage.id}
+                  className="stage-table-block"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={async () => {
+                    if (dragDealId) {
+                      await reorderDeal(dragDealId, stage.id, stage.rows.length);
+                      setDragDealId(null);
+                    }
+                  }}
+                >
+                  <div className="stage-table-head">
+                    <h4>{stage.name}</h4>
+                    <span>{stage.rows.length}</span>
+                  </div>
+
+                  <div className="table-wrap">
+                    <table className="pipeline-main-table">
+                      <thead>
+                        <tr>
+                          <th>
+                            <input
+                              type="checkbox"
+                              checked={allVisibleSelected}
+                              ref={(input) => {
+                                if (input) input.indeterminate = someVisibleSelected;
+                              }}
+                              onChange={() => toggleAllVisible(visibleIds)}
+                              onClick={(event) => event.stopPropagation()}
+                              aria-label={`Selecionar todos os leads visíveis no estágio ${stage.name}`}
+                            />
+                          </th>
+                          <th>Nome</th>
+                          <th>E-mail</th>
+                          <th>Plano/Produto</th>
+                          <th>Valor</th>
+                          <th>SLA</th>
+                          <th>Origem</th>
+                          <th>Ações</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {stage.rows.map((row, index) => (
+                          <tr
+                            key={row.id}
+                            draggable
+                            onDragStart={() => setDragDealId(row.id)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={async (event) => {
+                              event.stopPropagation();
+                              if (dragDealId) {
+                                await reorderDeal(dragDealId, stage.id, index);
+                                setDragDealId(null);
+                              }
+                            }}
+                            onClick={() => router.push(`/deals/${row.id}`)}
+                            className={`table-clickable-row${selectedLeadIds.has(row.id) ? ' is-selected' : ''}`}
+                          >
+                            <td onClick={(event) => event.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={selectedLeadIds.has(row.id)}
+                                onChange={() => toggleOne(row.id)}
+                                onClick={(event) => event.stopPropagation()}
+                                aria-label={`Selecionar lead ${row.contactName || row.title}`}
+                              />
+                            </td>
+                            <td>{row.contactName || row.title}</td>
+                            <td>{row.contactEmail || '-'}</td>
+                            <td>{row.planCode || row.productCode || row.intent || '-'}</td>
+                            <td>{currency(row.valueCents)}</td>
+                            <td>{dateTime(row.slaDeadline)}</td>
+                            <td>{row.origin}</td>
+                            <td>
+                              <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+                                <select
+                                  aria-label="Mover estágio"
+                                  value={stage.id}
+                                  onChange={(e) => updateStage(row.id, e.target.value)}
+                                >
+                                  {(pipelineData?.stages || []).map((st) => (
+                                    <option key={st.id} value={st.id}>{st.name}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => moveToAdjacentStage(row.id, stage.id, 'prev')}
+                                >
+                                  <i className="bi bi-arrow-up" aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => moveToAdjacentStage(row.id, stage.id, 'next')}
+                                >
+                                  <i className="bi bi-arrow-down" aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="Editar lead"
+                                  title="Editar"
+                                  onClick={() =>
+                                    openEditDeal({
+                                      id: row.id,
+                                      title: row.title,
+                                      contactName: row.contactName,
+                                      contactEmail: row.contactEmail,
+                                      contactPhone: row.contactPhone,
+                                      intent: row.intent,
+                                      valueCents: row.valueCents,
+                                    })
+                                  }
+                                >
+                                  <i className="bi bi-pencil-square" aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger-inline-btn"
+                                  aria-label="Excluir lead"
+                                  title="Excluir"
+                                  onClick={() => openDeleteDealModal(row.id, row.contactName || row.title)}
+                                >
+                                  <i className="bi bi-trash3" aria-hidden="true" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </section>
         ) : null}
 

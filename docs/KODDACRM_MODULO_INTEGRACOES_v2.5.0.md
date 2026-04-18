@@ -3,7 +3,7 @@
 ## Metadados
 
 | Campo | Valor |
-|---|---|
+|------ |---|
 | Sistema | KoddaCRM |
 | Módulo | Integrações |
 | Tipo de atualização | Evolutiva |

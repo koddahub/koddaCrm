@@ -387,21 +387,24 @@ export function CommunicationModule({ view, recordId, setNotice }: Communication
         socialRes.json().catch(() => ({})),
       ]);
 
-      if (!productsRes.ok) throw new Error(productsData.error || 'Falha ao carregar produtos.');
-      if (!sitesRes.ok) throw new Error(sitesData.error || 'Falha ao carregar sites.');
-      if (!emailsRes.ok) throw new Error(emailsData.error || 'Falha ao carregar e-mails.');
-      if (!templatesRes.ok) throw new Error(templatesData.error || 'Falha ao carregar templates.');
-      if (!automationsRes.ok) throw new Error(automationsData.error || 'Falha ao carregar automações.');
-      if (!socialRes.ok) throw new Error(socialData.error || 'Falha ao carregar redes sociais.');
+      const warnings: string[] = [];
 
-      setProducts(productsData.items || []);
-      setSites(sitesData.items || []);
-      setEmails(emailsData.items || []);
-      setTemplates(templatesData.items || []);
-      setAutomations(automationsData.items || []);
-      setSocialAccounts(socialData.items || []);
-      setSocialMetaConfigured(Boolean(socialData.metaConfigured !== false));
+      if (!productsRes.ok) warnings.push(productsData.error || 'Falha ao carregar produtos.');
+      if (!sitesRes.ok) warnings.push(sitesData.error || 'Falha ao carregar sites.');
+      if (!emailsRes.ok) warnings.push(emailsData.error || 'Falha ao carregar e-mails.');
+      if (!templatesRes.ok) warnings.push(templatesData.error || 'Falha ao carregar templates.');
+      if (!automationsRes.ok) warnings.push(automationsData.error || 'Falha ao carregar automações.');
+      if (!socialRes.ok) warnings.push(socialData.error || 'Falha ao carregar redes sociais.');
+
+      setProducts(productsRes.ok ? (productsData.items || []) : []);
+      setSites(sitesRes.ok ? (sitesData.items || []) : []);
+      setEmails(emailsRes.ok ? (emailsData.items || []) : []);
+      setTemplates(templatesRes.ok ? (templatesData.items || []) : []);
+      setAutomations(automationsRes.ok ? (automationsData.items || []) : []);
+      setSocialAccounts(socialRes.ok ? (socialData.items || []) : []);
+      setSocialMetaConfigured(socialRes.ok ? Boolean(socialData.metaConfigured !== false) : false);
       setSocialConnectUrl('/api/social/instagram/oauth/start?returnTo=/painel-de-controle/social');
+      setError(warnings.join(' '));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {

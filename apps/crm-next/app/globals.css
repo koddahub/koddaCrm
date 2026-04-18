@@ -1579,8 +1579,28 @@ td {
   cursor: pointer;
 }
 
+.table-clickable-row.is-selected {
+  background: #eff6ff;
+}
+
 .table-clickable-row:hover {
   background: #f8fafc;
+}
+
+.pipeline-main-table th:first-child,
+.pipeline-main-table td:first-child {
+  width: 42px;
+  min-width: 42px;
+  text-align: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.pipeline-main-table input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #1d4ed8;
 }
 
 .row-actions {

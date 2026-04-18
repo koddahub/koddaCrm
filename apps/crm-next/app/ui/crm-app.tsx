@@ -76,8 +76,8 @@ type Ticket = {
 
 const MENU_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: 'bi-speedometer2' },
-  { key: 'pipeline_hospedagem', label: 'Pipeline Hospedagem', icon: 'bi-kanban-fill' },
-  { key: 'pipeline_avulsos', label: 'Pipeline Avulsos', icon: 'bi-grid-1x2-fill' },
+  { key: 'pipeline_hospedagem', label: 'Jornada Comercial', icon: 'bi-kanban-fill' },
+  { key: 'pipeline_avulsos', label: 'Funil Comercial', icon: 'bi-grid-1x2-fill' },
   { key: 'operacao_hospedagem', label: 'Operacao Hospedagem', icon: 'bi-clipboard2-check-fill' },
   { key: 'operacao_avulsos', label: 'Operacao Avulsos', icon: 'bi-diagram-3-fill' },
   { key: 'leads', label: 'Leads', icon: 'bi-person-lines-fill' },
@@ -331,7 +331,7 @@ export function CrmApp() {
         {selectedPipelineCode ? (
           <section className="kanban-wrapper">
             <div className="kanban-header">
-              <strong>{board?.pipeline.name || 'Pipeline'}</strong>
+              <strong>{board?.pipeline.name || 'Funil Comercial'}</strong>
               <small>Arraste os cards entre estagios.</small>
             </div>
             <div className="kanban-board">

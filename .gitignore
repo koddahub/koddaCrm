@@ -28,3 +28,4 @@ storage/postgres/
 
 # Código SQL/migrations locais
 database/
+AGENTS.md
