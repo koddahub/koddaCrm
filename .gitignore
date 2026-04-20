@@ -1,11 +1,18 @@
-# Dependências
+# ===================================
+# 1. DEPENDÊNCIAS (Node.js / PNPM / Yarn)
+# ===================================
 node_modules/
 **/node_modules/
 npm-debug.log*
 yarn-error.log*
+yarn-debug.log*
 pnpm-debug.log*
+pnpm-lock.yaml   # se quiser versionar, comente esta linha
+package-lock.json # se quiser versionar, comente
 
-# Build outputs
+# ===================================
+# 2. BUILD E CACHE (Next.js, React, TypeScript)
+# ===================================
 dist/
 build/
 out/
@@ -13,19 +20,84 @@ out/
 **/.next/
 coverage/
 *.tsbuildinfo
+.cache/
+.parcel-cache/
+.eslintcache
 
-# Arquivos grandes e temporários
-*.log
-*.tmp
-*.cache
-.DS_Store
-
-# Arquivos locais
+# ===================================
+# 3. ARQUIVOS DE AMBIENTE E SEGREDOS
+# ===================================
 .env
 .env.local
 .env.*.local
-storage/postgres/
+.env.production
+.env.development
+.env.test
+.secrets/
+*.pem
+*.key
+*.crt
 
-# Código SQL/migrations locais
-database/
-AGENTS.md
+# ===================================
+# 4. LOGS (sistema e aplicação)
+# ===================================
+logs/
+*.log
+*.log.*
+script/logs/      # se existir
+scripts/logs/
+
+# ===================================
+# 5. DOCKER (volumes locais, dados persistentes)
+# ===================================
+docker/volumes/
+docker/data/
+storage/postgres/   # já existente
+storage/redis/
+*.pid
+*.dockerignore
+
+# ===================================
+# 6. BANCO DE DADOS LOCAL E MIGRAÇÕES
+# ===================================
+database/           # mantido do original
+prisma/*.db
+prisma/*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# ===================================
+# 7. ARQUIVOS ESPECÍFICOS DO PROJETO (conforme sua estrutura)
+# ===================================
+AGENTS.md           # mantido
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.swo
+*~
+
+# ===================================
+# 8. IDE E EDITORES
+# ===================================
+.vscode/
+.idea/
+*.sublime-*
+.project
+.classpath
+
+# ===================================
+# 9. RELATÓRIOS E TESTES
+# ===================================
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# ===================================
+# 10. SCRIPTS DE DEPLOY LOCAIS (segurança)
+# ===================================
+script/deploy.sh
+scripts/deploy.sh
+script/*-local.sh
+scripts/*-local.sh
