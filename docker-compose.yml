@@ -12,6 +12,7 @@ services:
       - ./storage:/storage
       - /home/server/projects:/home/server/projects
     environment:
+      TZ: America/Sao_Paulo
       APP_CONTEXT: cliente
       DB_HOST: ac_postgres
       DB_PORT: 5432
@@ -51,6 +52,7 @@ services:
     ports:
       - "8092:3000"
     environment:
+      TZ: America/Sao_Paulo
       NODE_ENV: production
       DATABASE_URL: postgresql://ac_user:ac_pass@ac_postgres:5432/ac_db?schema=public
       CRM_ADMIN_EMAIL: admin@koddahub.local
@@ -77,6 +79,7 @@ services:
     container_name: ac_postgres
     restart: unless-stopped
     environment:
+      TZ: America/Sao_Paulo
       POSTGRES_DB: ac_db
       POSTGRES_USER: ac_user
       POSTGRES_PASSWORD: ac_pass
@@ -104,6 +107,7 @@ services:
       - ./storage:/storage
       - /home/server/projects:/home/server/projects
     environment:
+      TZ: America/Sao_Paulo
       DB_HOST: ac_postgres
       DB_PORT: 5432
       DB_NAME: ac_db

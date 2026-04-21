@@ -7,6 +7,40 @@ $logFile = __DIR__ . '/../storage/logs/worker.log';
 $publishConsecutiveChecks = (int)(getenv('PUBLICATION_STRICT_CONSECUTIVE') ?: 2);
 $publishIntervalMinutes = (int)(getenv('PUBLICATION_STRICT_INTERVAL_MINUTES') ?: 10);
 $publicationChecksWindow = max(2, $publishConsecutiveChecks);
+date_default_timezone_set('America/Sao_Paulo');
+
+/**
+ * Envia callback para o Praja atualizar o status do envio
+ */
+function notifyPrajaCallback(string $sendLogId, string $status, string $message = '', string $provider = 'smtp'): void
+{
+    $callbackUrl = envString('PRAJA_CALLBACK_URL', '');
+    if ($callbackUrl === '') return;
+
+    $secret = envString('CRM_WEBHOOK_SECRET', '');
+    $payload = json_encode([
+        'sendLogId' => $sendLogId,
+        'status'    => $status,
+        'message'   => $message,
+        'provider'  => $provider,
+    ]);
+
+    $headers = ['Content-Type: application/json', 'Content-Length: ' . strlen($payload)];
+    if ($secret !== '') {
+        $headers[] = 'X-CRM-Webhook-Token: ' . $secret;
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method'  => 'POST',
+            'header'  => implode("\r\n", $headers),
+            'content' => $payload,
+            'timeout' => 5,
+            'ignore_errors' => true,
+        ],
+    ]);
+    @file_get_contents($callbackUrl, false, $context);
+}
 
 function envString(string $key, string $default = ''): string
 {
@@ -2318,9 +2352,11 @@ while (true) {
                     $attachmentPaths[] = $resolved;
                 }
             }
+            // Extrai o send_log_id que o Praja armazenou no attachments
+            $sendLogId = $attachments['email_marketing_send_log_id'] ?? null;
 
             $mailMode = strtolower(envString('MAIL_MODE', 'simulate'));
-            $testCopyTo = envString('MAIL_TEST_COPY_TO', 'arielrluz@gmail.com');
+            $testCopyTo = envString('MAIL_TEST_COPY_TO', '');
             $targetEmail = trim((string)($mail['email_to'] ?? ''));
 
             if ($targetEmail === '') {
